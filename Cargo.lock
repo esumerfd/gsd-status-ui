@@ -603,6 +603,11 @@ dependencies = [
 [[package]]
 name = "gsd-status-ui"
 version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "leaf-adapter",
+ "ratatui",
+]
 
 [[package]]
 name = "hashbrown"

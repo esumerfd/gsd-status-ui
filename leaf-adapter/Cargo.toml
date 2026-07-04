@@ -1,0 +1,12 @@
+[package]
+name = "leaf-adapter"
+version = "0.1.0"
+edition = "2021"
+description = "Isolates gsd-status from leaf: markdown file -> scrollable ratatui doc panel"
+
+[dependencies]
+leaf = { path = "../vendor/leaf", default-features = false }
+ratatui = "0.30"
+
+[dev-dependencies]
+tempfile = "3.27.0"

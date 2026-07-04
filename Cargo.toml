@@ -1,3 +1,8 @@
+[workspace]
+members = ["leaf-adapter"]
+# vendor/leaf keeps its own workspace/lockfile; consumed via path dependency.
+exclude = ["vendor/leaf"]
+
 [package]
 name = "gsd-status-ui"
 version = "0.1.0"

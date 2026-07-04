@@ -68,6 +68,31 @@ fn scrolling_changes_the_visible_region() {
 }
 
 #[test]
+fn page_and_edge_scrolling() {
+    let body: String = (1..=50).map(|i| format!("line number {i}\n\n")).collect();
+    let f = fixture(&body);
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    let top = rendered_text(&mut view, 40, 5);
+
+    view.page_down();
+    let paged = rendered_text(&mut view, 40, 5);
+    assert_ne!(top, paged, "page_down did not move");
+
+    view.to_bottom();
+    let bottom = rendered_text(&mut view, 40, 5);
+    assert!(bottom.contains("line number 50"), "not at bottom:\n{bottom}");
+
+    view.to_top();
+    let back = rendered_text(&mut view, 40, 5);
+    assert_eq!(top, back, "to_top did not return to the start");
+
+    view.page_down();
+    view.page_up();
+    let again = rendered_text(&mut view, 40, 5);
+    assert_eq!(top, again, "page_up did not undo page_down");
+}
+
+#[test]
 fn open_missing_file_is_an_error() {
     let err = DocView::open(std::path::Path::new("/nonexistent/nope.md"), 40);
     assert!(matches!(err, Err(DocViewError::Io { .. })));

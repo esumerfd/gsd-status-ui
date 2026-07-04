@@ -29,6 +29,7 @@ pub struct DocView {
     title: String,
     doc: leaf::viewer::Document,
     scroll: u16,
+    last_viewport: u16,
 }
 
 impl DocView {
@@ -42,10 +43,20 @@ impl DocView {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
+        let mut doc = leaf::viewer::parse(&src, width as usize);
+        // Drop trailing blank lines so to_bottom lands on content, not padding.
+        while doc
+            .lines
+            .last()
+            .is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
+        {
+            doc.lines.pop();
+        }
         Ok(Self {
             title,
-            doc: leaf::viewer::parse(&src, width as usize),
+            doc,
             scroll: 0,
+            last_viewport: 10,
         })
     }
 
@@ -70,7 +81,29 @@ impl DocView {
         self.scroll = self.scroll.saturating_sub(1);
     }
 
+    pub fn page_down(&mut self) {
+        self.scroll = self.scroll.saturating_add(self.page());
+    }
+
+    pub fn page_up(&mut self) {
+        self.scroll = self.scroll.saturating_sub(self.page());
+    }
+
+    pub fn to_top(&mut self) {
+        self.scroll = 0;
+    }
+
+    /// Scrolls past the end; the render-time clamp settles it on the last page.
+    pub fn to_bottom(&mut self) {
+        self.scroll = u16::MAX;
+    }
+
+    fn page(&self) -> u16 {
+        self.last_viewport.saturating_sub(1).max(1)
+    }
+
     fn clamp_scroll(&mut self, viewport_height: u16) {
+        self.last_viewport = viewport_height;
         let max = (self.doc.lines.len() as u16).saturating_sub(viewport_height);
         self.scroll = self.scroll.min(max);
     }

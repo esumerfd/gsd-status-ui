@@ -1,6 +1,7 @@
 //! Interactive tabbed shell. Owns the terminal; first tab is the status
 //! panel, further tabs are leaf-rendered documents. Leaf (the doc viewer)
-//! owns all unmodified keys; every shell action is Alt-<key>.
+//! owns the unmodified keys; shell actions are Ctrl-<key> (plus Tab/BackTab
+//! and digit tab-jumps, which no viewer key uses).
 
 pub(crate) mod app;
 
@@ -20,7 +21,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-const HINTS: &str = "M-p/r/v/u/c/d open · M-j/k step · M-h/l tab · M-x close · M-q quit";
+const HINTS: &str = "C-p/r/v/u/t/d open · C-j/k step · Tab/C-h/l tab · C-x close · C-q quit";
 
 pub(crate) struct Ui {
     app: App,
@@ -58,44 +59,37 @@ impl Ui {
             return;
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) {
-            if let KeyCode::Char('c') = key.code {
-                self.app.quit = true;
-            }
-            return;
-        }
-        if key.modifiers.contains(KeyModifiers::ALT) {
             self.on_shell_key(key.code);
         } else {
-            self.on_viewer_key(key.code);
+            self.on_unmodified_key(key.code);
         }
     }
 
     fn on_shell_key(&mut self, code: KeyCode) {
         match code {
+            // Ctrl-C stays quit by convention; context lives on Ctrl-t.
+            KeyCode::Char('c') | KeyCode::Char('q') => self.app.quit = true,
             KeyCode::Char('p') => self.open(DocKind::Plan),
             KeyCode::Char('r') => self.open(DocKind::Research),
             KeyCode::Char('v') => self.open(DocKind::Validation),
             KeyCode::Char('u') => self.open(DocKind::Uat),
-            KeyCode::Char('c') => self.open(DocKind::Context),
+            KeyCode::Char('t') => self.open(DocKind::Context),
             KeyCode::Char('d') => self.open(DocKind::Discussion),
-            KeyCode::Char('j') => {
+            KeyCode::Char('j') | KeyCode::Down => {
                 let req = self.app.change_step(1);
                 self.apply(req);
             }
-            KeyCode::Char('k') => {
+            KeyCode::Char('k') | KeyCode::Up => {
                 let req = self.app.change_step(-1);
                 self.apply(req);
             }
-            KeyCode::Char('h') => self.app.focus_prev(),
+            // Some terminals deliver Ctrl-h as (Ctrl-)Backspace.
+            KeyCode::Char('h') | KeyCode::Backspace => self.app.focus_prev(),
             KeyCode::Char('l') => self.app.focus_next(),
             KeyCode::Char('x') => {
                 if let Some(closed) = self.app.close_current() {
                     self.views.remove(&closed);
                 }
-            }
-            KeyCode::Char('q') => self.app.quit = true,
-            KeyCode::Char(n @ '1'..='9') => {
-                self.app.focus_slot(n as usize - '0' as usize);
             }
             _ => {}
         }
@@ -106,7 +100,23 @@ impl Ui {
         self.apply(request);
     }
 
-    fn on_viewer_key(&mut self, code: KeyCode) {
+    fn on_unmodified_key(&mut self, code: KeyCode) {
+        // Shell aliases on keys no viewer binding uses.
+        match code {
+            KeyCode::Tab => {
+                self.app.focus_next();
+                return;
+            }
+            KeyCode::BackTab => {
+                self.app.focus_prev();
+                return;
+            }
+            KeyCode::Char(n @ '1'..='9') => {
+                self.app.focus_slot(n as usize - '0' as usize);
+                return;
+            }
+            _ => {}
+        }
         if let Focus::Status = self.app.focus() {
             if let KeyCode::Char('q') = code {
                 self.app.quit = true;
@@ -270,8 +280,8 @@ mod tests {
         Ui::new(report, build_app(&phases))
     }
 
-    fn alt(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
     fn plain(c: char) -> KeyEvent {
@@ -300,13 +310,13 @@ mod tests {
         assert!(s.contains("Status"), "{s}");
         assert!(s.contains("Robot Coffee Service"), "{s}");
         assert!(s.contains("Phase 2 · step 02-02 (2/3)"), "{s}");
-        assert!(s.contains("M-j/k step"), "{s}");
+        assert!(s.contains("C-j/k step"), "{s}");
     }
 
     #[test]
-    fn alt_p_opens_the_step_plan_in_a_named_tab() {
+    fn ctrl_p_opens_the_step_plan_in_a_named_tab() {
         let mut ui = sample_ui();
-        ui.on_key(alt('p'));
+        ui.on_key(ctrl('p'));
         let s = screen(&mut ui);
         assert!(s.contains("02-02-PLAN.md"), "tab name missing: {s}");
         assert!(
@@ -318,25 +328,25 @@ mod tests {
     #[test]
     fn end_to_end_key_sequence_maintains_per_step_tabsets() {
         let mut ui = sample_ui();
-        ui.on_key(alt('p'));
-        ui.on_key(alt('r'));
+        ui.on_key(ctrl('p'));
+        ui.on_key(ctrl('r'));
         let s = screen(&mut ui);
         assert!(s.contains("02-02-PLAN.md"), "{s}");
         assert!(s.contains("02-RESEARCH.md"), "{s}");
 
         // Later step: fresh tab set, plan auto-opens.
-        ui.on_key(alt('j'));
+        ui.on_key(ctrl('j'));
         let s = screen(&mut ui);
         assert!(s.contains("02-03-PLAN.md"), "{s}");
         assert!(!s.contains("02-RESEARCH.md"), "step tab sets must not mix: {s}");
         assert!(s.contains("Spill Recovery"), "{s}");
 
         // Open validation on this step, then go back.
-        ui.on_key(alt('v'));
+        ui.on_key(ctrl('v'));
         let s = screen(&mut ui);
         assert!(s.contains("02-VALIDATION.md"), "{s}");
 
-        ui.on_key(alt('k'));
+        ui.on_key(ctrl('k'));
         let s = screen(&mut ui);
         assert!(s.contains("02-02-PLAN.md"), "{s}");
         assert!(s.contains("02-RESEARCH.md"), "{s}");
@@ -345,18 +355,47 @@ mod tests {
     }
 
     #[test]
-    fn alt_u_opens_uat_document() {
+    fn ctrl_u_opens_uat_document() {
         let mut ui = sample_ui();
-        ui.on_key(alt('u'));
+        ui.on_key(ctrl('u'));
         let s = screen(&mut ui);
         assert!(s.contains("02-UAT.md"), "{s}");
         assert!(s.contains("Morning rush order"), "{s}");
     }
 
     #[test]
+    fn ctrl_t_opens_context_document() {
+        let mut ui = sample_ui();
+        ui.on_key(ctrl('t'));
+        let s = screen(&mut ui);
+        assert!(s.contains("02-CONTEXT.md"), "{s}");
+        assert!(s.contains("Decisions Locked"), "{s}");
+    }
+
+    #[test]
+    fn tab_and_ctrl_arrows_are_robust_aliases() {
+        let mut ui = sample_ui();
+        ui.on_key(ctrl('p'));
+        // Tab cycles focus: doc -> status.
+        ui.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        let s = screen(&mut ui);
+        assert!(s.contains("Robot Coffee Service"), "tab should cycle to status: {s}");
+        ui.on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        let s = screen(&mut ui);
+        assert!(s.contains("Cup Handling"), "backtab should return to doc: {s}");
+        // Ctrl-Down/Up change step like Ctrl-j/k.
+        ui.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+        let s = screen(&mut ui);
+        assert!(s.contains("02-03-PLAN.md"), "{s}");
+        ui.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL));
+        let s = screen(&mut ui);
+        assert!(s.contains("02-02-PLAN.md"), "{s}");
+    }
+
+    #[test]
     fn unmodified_keys_scroll_the_focused_document() {
         let mut ui = sample_ui();
-        ui.on_key(alt('p'));
+        ui.on_key(ctrl('p'));
         let before = screen(&mut ui);
         for _ in 0..8 {
             ui.on_key(plain('j'));
@@ -369,10 +408,10 @@ mod tests {
     }
 
     #[test]
-    fn alt_x_closes_and_falls_back_to_status() {
+    fn ctrl_x_closes_and_falls_back_to_status() {
         let mut ui = sample_ui();
-        ui.on_key(alt('p'));
-        ui.on_key(alt('x'));
+        ui.on_key(ctrl('p'));
+        ui.on_key(ctrl('x'));
         let s = screen(&mut ui);
         assert!(!s.contains("02-02-PLAN.md"), "{s}");
         assert!(s.contains("Robot Coffee Service"), "status body expected: {s}");
@@ -381,7 +420,7 @@ mod tests {
     #[test]
     fn quit_keys_set_quit_flag() {
         let mut ui = sample_ui();
-        ui.on_key(alt('q'));
+        ui.on_key(ctrl('q'));
         assert!(ui.quit());
 
         let mut ui = sample_ui();
@@ -389,10 +428,10 @@ mod tests {
         assert!(ui.quit());
 
         let mut ui = sample_ui();
-        ui.on_key(alt('p'));
+        ui.on_key(ctrl('p'));
         ui.on_key(plain('q')); // on a doc tab plain q belongs to the viewer
         assert!(!ui.quit());
-        ui.on_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        ui.on_key(ctrl('c')); // Ctrl-C always quits (not context — that's Ctrl-t)
         assert!(ui.quit());
     }
 
@@ -406,7 +445,7 @@ mod tests {
         phases[0].stage = Stage::Executing;
         let report = crate::report::render_to_string(planning, &state, &phases);
         let mut ui = Ui::new(report, build_app(&phases));
-        ui.on_key(alt('r'));
+        ui.on_key(ctrl('r'));
         let s = screen(&mut ui);
         assert!(s.contains("no research document"), "{s}");
     }

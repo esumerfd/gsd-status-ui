@@ -65,10 +65,11 @@ fn print_help() {
     println!("With a TTY it opens the tabbed TUI; otherwise (or with --plain) it prints a report.");
     println!("Honors NO_COLOR in plain mode.");
     println!();
-    println!("Keys (TUI): all shell actions are Alt-<key>; plain keys go to the doc viewer.");
-    println!("  Alt-p/r/v/u/c/d  open plan/research/validation/uat/context/discussion");
-    println!("  Alt-j / Alt-k    later / earlier step        Alt-h / Alt-l  switch tab");
-    println!("  Alt-1..9         jump to tab                 Alt-x          close tab");
-    println!("  Alt-q, Ctrl-C    quit");
+    println!("Keys (TUI): shell actions are Ctrl-<key>; plain keys go to the doc viewer.");
+    println!("  Ctrl-p/r/v/u/t/d   open plan/research/validation/uat/conText/discussion");
+    println!("  Ctrl-j / Ctrl-k    later / earlier step (also Ctrl-Down / Ctrl-Up)");
+    println!("  Tab / Shift-Tab    switch tab (also Ctrl-l / Ctrl-h);  1..9 jump to tab");
+    println!("  Ctrl-x             close tab");
+    println!("  Ctrl-q, Ctrl-C     quit (plain q quits on the Status tab)");
     println!("  In a document: j/k/arrows scroll, PgUp/PgDn page, g/G top/bottom.");
 }

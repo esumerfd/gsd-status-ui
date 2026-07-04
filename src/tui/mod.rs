@@ -12,16 +12,17 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use crossterm::{execute, terminal};
 use leaf_adapter::DocView;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::Paragraph;
+use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-const HINTS: &str = "C-p/r/v/u/t/d open · C-j/k step · Tab/C-h/l tab · C-x close · C-q quit";
+const HINTS: &str = "C-o open · C-j/k step · Tab/C-h/l tab · C-x close · C-q quit";
+const DIALOG_HINTS: &str = "j/k select · Enter open · Esc cancel";
 
 pub(crate) struct Ui {
     app: App,
@@ -65,23 +66,39 @@ impl Ui {
         if key.kind != KeyEventKind::Press {
             return;
         }
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if ctrl && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q')) {
+            self.app.quit = true;
+            return;
+        }
+        if self.app.dialog().is_some() {
+            self.on_dialog_key(key.code, ctrl);
+            return;
+        }
+        if ctrl {
             self.on_shell_key(key.code);
         } else {
             self.on_unmodified_key(key.code);
         }
     }
 
+    fn on_dialog_key(&mut self, code: KeyCode, ctrl: bool) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => self.app.close_dialog(),
+            KeyCode::Char('o') if ctrl => self.app.close_dialog(),
+            KeyCode::Char('j') | KeyCode::Down => self.app.dialog_move(1),
+            KeyCode::Char('k') | KeyCode::Up => self.app.dialog_move(-1),
+            KeyCode::Enter => {
+                let request = self.app.dialog_select();
+                self.apply(request);
+            }
+            _ => {}
+        }
+    }
+
     fn on_shell_key(&mut self, code: KeyCode) {
         match code {
-            // Ctrl-C stays quit by convention; context lives on Ctrl-t.
-            KeyCode::Char('c') | KeyCode::Char('q') => self.app.quit = true,
-            KeyCode::Char('p') => self.open(DocKind::Plan),
-            KeyCode::Char('r') => self.open(DocKind::Research),
-            KeyCode::Char('v') => self.open(DocKind::Validation),
-            KeyCode::Char('u') => self.open(DocKind::Uat),
-            KeyCode::Char('t') => self.open(DocKind::Context),
-            KeyCode::Char('d') => self.open(DocKind::Discussion),
+            KeyCode::Char('o') => self.app.open_dialog(),
             KeyCode::Char('j') | KeyCode::Down => {
                 let req = self.app.change_step(1);
                 self.apply(req);
@@ -100,11 +117,6 @@ impl Ui {
             }
             _ => {}
         }
-    }
-
-    fn open(&mut self, kind: DocKind) {
-        let request = self.app.open_doc(kind);
-        self.apply(request);
     }
 
     fn on_unmodified_key(&mut self, code: KeyCode) {
@@ -193,9 +205,50 @@ impl Ui {
                 if let Some(view) = self.views.get_mut(&(self.app.current, kind)) {
                     view.render(frame, body);
                 } else {
-                    frame.render_widget(Paragraph::new("(no view — press M-x to close)"), body);
+                    frame.render_widget(Paragraph::new("(no view — press C-x to close)"), body);
                 }
             }
+        }
+
+        // ── open-document dialog ──
+        if let Some(dialog) = self.app.dialog() {
+            let name_width = dialog
+                .items
+                .iter()
+                .map(|(_, n)| n.chars().count())
+                .max()
+                .unwrap_or(0)
+                .max(16);
+            let width = (name_width as u16 + 8).min(frame.area().width);
+            let height = (dialog.items.len() as u16 + 2).min(frame.area().height);
+            let popup = Rect {
+                x: frame.area().x + (frame.area().width.saturating_sub(width)) / 2,
+                y: frame.area().y + (frame.area().height.saturating_sub(height)) / 2,
+                width,
+                height,
+            };
+            frame.render_widget(Clear, popup);
+            let lines: Vec<Line> = dialog
+                .items
+                .iter()
+                .enumerate()
+                .map(|(i, (kind, name))| {
+                    let open_marker = if self.app.tabs().contains(kind) { "●" } else { " " };
+                    let style = if i == dialog.selected {
+                        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    Line::from(Span::styled(
+                        format!(" {open_marker} {name:<name_width$} "),
+                        style,
+                    ))
+                })
+                .collect();
+            frame.render_widget(
+                Paragraph::new(lines).block(Block::bordered().title(" Open document ")),
+                popup,
+            );
         }
 
         // ── footer ──
@@ -209,7 +262,11 @@ impl Ui {
             ),
             None => "no steps".to_string(),
         };
-        let right = self.app.flash.clone().unwrap_or_else(|| HINTS.to_string());
+        let right = if self.app.dialog().is_some() {
+            DIALOG_HINTS.to_string()
+        } else {
+            self.app.flash.clone().unwrap_or_else(|| HINTS.to_string())
+        };
         let footer_line = Line::from(vec![
             Span::styled(position, Style::default().add_modifier(Modifier::BOLD)),
             Span::raw("   "),
@@ -277,6 +334,15 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
+    /// Ctrl-o, move the selection down `moves` times, Enter.
+    fn open_via_dialog(ui: &mut Ui, moves: usize) {
+        ui.on_key(ctrl('o'));
+        for _ in 0..moves {
+            ui.on_key(plain('j'));
+        }
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    }
+
     fn screen(ui: &mut Ui) -> String {
         let backend = TestBackend::new(90, 24);
         let mut term = ratatui::Terminal::new(backend).unwrap();
@@ -318,22 +384,68 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_p_opens_the_step_plan_in_a_named_tab() {
+    fn ctrl_o_lists_the_step_documents_in_order() {
         let mut ui = sample_ui();
-        ui.on_key(ctrl('p'));
+        ui.on_key(ctrl('o'));
+        let s = screen(&mut ui);
+        assert!(s.contains("Open document"), "{s}");
+        for name in [
+            "02-02-PLAN.md",
+            "02-RESEARCH.md",
+            "02-VALIDATION.md",
+            "02-UAT.md",
+            "02-CONTEXT.md",
+            "02-DISCUSSION-LOG.md",
+        ] {
+            assert!(s.contains(name), "dialog missing {name}: {s}");
+        }
+        assert!(s.contains("Enter open"), "dialog hints: {s}");
+
+        // Esc cancels: dialog gone, nothing opened.
+        ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let s = screen(&mut ui);
+        assert!(!s.contains("Open document"), "{s}");
+        assert!(s.contains("Robot Coffee Service"), "back on status: {s}");
+    }
+
+    #[test]
+    fn dialog_enter_opens_the_step_plan_in_a_named_tab() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0); // plan is first
         let s = screen(&mut ui);
         assert!(s.contains("02-02-PLAN.md"), "tab name missing: {s}");
         assert!(
             s.contains("Cup Handling and Fill-Level Detection"),
             "doc body missing: {s}"
         );
+        assert!(!s.contains("Open document"), "dialog must close: {s}");
+    }
+
+    #[test]
+    fn dialog_marks_already_open_documents() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 1); // research
+        ui.on_key(ctrl('o'));
+        let s = screen(&mut ui);
+        assert!(s.contains("● 02-RESEARCH.md"), "open marker: {s}");
+    }
+
+    #[test]
+    fn dialog_on_phase_1_lists_only_existing_docs() {
+        let mut ui = sample_ui();
+        ui.on_key(ctrl('k'));
+        ui.on_key(ctrl('k')); // phase 1, step 01-01
+        ui.on_key(ctrl('o'));
+        let s = screen(&mut ui);
+        assert!(s.contains("01-01-PLAN.md"), "{s}");
+        assert!(!s.contains("01-RESEARCH.md"), "phase 1 has no research: {s}");
     }
 
     #[test]
     fn end_to_end_key_sequence_maintains_per_step_tabsets() {
         let mut ui = sample_ui();
-        ui.on_key(ctrl('p'));
-        ui.on_key(ctrl('r'));
+        open_via_dialog(&mut ui, 0); // plan
+        open_via_dialog(&mut ui, 1); // research
         let s = screen(&mut ui);
         assert!(s.contains("02-02-PLAN.md"), "{s}");
         assert!(s.contains("02-RESEARCH.md"), "{s}");
@@ -346,7 +458,7 @@ mod tests {
         assert!(s.contains("Spill Recovery"), "{s}");
 
         // Open validation on this step, then go back.
-        ui.on_key(ctrl('v'));
+        open_via_dialog(&mut ui, 2); // plan, research, validation
         let s = screen(&mut ui);
         assert!(s.contains("02-VALIDATION.md"), "{s}");
 
@@ -359,18 +471,14 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_u_opens_uat_document() {
+    fn dialog_opens_uat_and_context_documents() {
         let mut ui = sample_ui();
-        ui.on_key(ctrl('u'));
+        open_via_dialog(&mut ui, 3); // uat
         let s = screen(&mut ui);
         assert!(s.contains("02-UAT.md"), "{s}");
         assert!(s.contains("Morning rush order"), "{s}");
-    }
 
-    #[test]
-    fn ctrl_t_opens_context_document() {
-        let mut ui = sample_ui();
-        ui.on_key(ctrl('t'));
+        open_via_dialog(&mut ui, 4); // context
         let s = screen(&mut ui);
         assert!(s.contains("02-CONTEXT.md"), "{s}");
         assert!(s.contains("Decisions Locked"), "{s}");
@@ -379,7 +487,7 @@ mod tests {
     #[test]
     fn tab_and_ctrl_arrows_are_robust_aliases() {
         let mut ui = sample_ui();
-        ui.on_key(ctrl('p'));
+        open_via_dialog(&mut ui, 0);
         // Tab cycles focus: doc -> status.
         ui.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         let s = screen(&mut ui);
@@ -399,7 +507,7 @@ mod tests {
     #[test]
     fn unmodified_keys_scroll_the_focused_document() {
         let mut ui = sample_ui();
-        ui.on_key(ctrl('p'));
+        open_via_dialog(&mut ui, 0);
         let before = screen(&mut ui);
         for _ in 0..8 {
             ui.on_key(plain('j'));
@@ -414,7 +522,7 @@ mod tests {
     #[test]
     fn ctrl_x_closes_and_falls_back_to_status() {
         let mut ui = sample_ui();
-        ui.on_key(ctrl('p'));
+        open_via_dialog(&mut ui, 0);
         ui.on_key(ctrl('x'));
         let s = screen(&mut ui);
         assert!(!s.contains("02-02-PLAN.md"), "{s}");
@@ -432,10 +540,15 @@ mod tests {
         assert!(ui.quit());
 
         let mut ui = sample_ui();
-        ui.on_key(ctrl('p'));
+        open_via_dialog(&mut ui, 0);
         ui.on_key(plain('q')); // on a doc tab plain q belongs to the viewer
         assert!(!ui.quit());
-        ui.on_key(ctrl('c')); // Ctrl-C always quits (not context — that's Ctrl-t)
+        ui.on_key(ctrl('c')); // Ctrl-C always quits, even with a doc focused
+        assert!(ui.quit());
+
+        let mut ui = sample_ui();
+        ui.on_key(ctrl('o'));
+        ui.on_key(ctrl('q')); // quit works even while the dialog is open
         assert!(ui.quit());
     }
 
@@ -461,14 +574,4 @@ mod tests {
         assert!(s.contains("already at the first step"), "{s}");
     }
 
-    #[test]
-    fn missing_doc_flashes_in_footer() {
-        let mut ui = sample_ui();
-        // Navigate back to phase 1 (01-navigation-skeleton has no RESEARCH doc).
-        ui.on_key(ctrl('k'));
-        ui.on_key(ctrl('k'));
-        ui.on_key(ctrl('r'));
-        let s = screen(&mut ui);
-        assert!(s.contains("no research document"), "{s}");
-    }
 }

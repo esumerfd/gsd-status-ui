@@ -66,7 +66,7 @@ fn print_help() {
     println!("Honors NO_COLOR in plain mode.");
     println!();
     println!("Keys (TUI): shell actions are Ctrl-<key>; plain keys go to the doc viewer.");
-    println!("  Ctrl-p/r/v/u/t/d   open plan/research/validation/uat/conText/discussion");
+    println!("  Ctrl-o             open-document dialog (j/k select, Enter open, Esc cancel)");
     println!("  Ctrl-j / Ctrl-k    later / earlier step (also Ctrl-Down / Ctrl-Up)");
     println!("  Tab / Shift-Tab    switch tab (also Ctrl-l / Ctrl-h);  1..9 jump to tab");
     println!("  Ctrl-x             close tab");

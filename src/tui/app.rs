@@ -36,6 +36,14 @@ pub(crate) enum Focus {
     Doc(DocKind),
 }
 
+/// The Ctrl-o "open document" picker: the current step's existing documents
+/// in canonical tab order.
+#[derive(Debug)]
+pub(crate) struct OpenDialog {
+    pub(crate) items: Vec<(DocKind, String)>,
+    pub(crate) selected: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 struct TabSet {
     tabs: Vec<DocKind>,
@@ -47,6 +55,7 @@ pub(crate) struct App {
     entries: Vec<StepEntry>,
     pub(crate) current: usize,
     tabsets: Vec<TabSet>,
+    dialog: Option<OpenDialog>,
     pub(crate) flash: Option<String>,
     pub(crate) quit: bool,
 }
@@ -62,6 +71,7 @@ impl App {
             entries,
             current,
             tabsets,
+            dialog: None,
             flash: None,
             quit: false,
         }
@@ -174,6 +184,54 @@ impl App {
             return self.open_doc(DocKind::Plan);
         }
         None
+    }
+
+    pub(crate) fn dialog(&self) -> Option<&OpenDialog> {
+        self.dialog.as_ref()
+    }
+
+    /// Open the Ctrl-o picker listing the current step's existing documents.
+    pub(crate) fn open_dialog(&mut self) {
+        self.flash = None;
+        let Some(entry) = self.entries.get(self.current) else {
+            self.flash = Some("no active phase step".into());
+            return;
+        };
+        let items: Vec<(DocKind, String)> = DocKind::ORDER
+            .iter()
+            .filter_map(|kind| {
+                let path = entry.docs.path_for(*kind, &entry.step);
+                if !path.exists() {
+                    return None;
+                }
+                let name = path.file_name()?.to_string_lossy().into_owned();
+                Some((*kind, name))
+            })
+            .collect();
+        if items.is_empty() {
+            self.flash = Some("no documents for this step".into());
+            return;
+        }
+        self.dialog = Some(OpenDialog { items, selected: 0 });
+    }
+
+    pub(crate) fn close_dialog(&mut self) {
+        self.dialog = None;
+    }
+
+    pub(crate) fn dialog_move(&mut self, delta: i32) {
+        if let Some(dialog) = self.dialog.as_mut() {
+            let last = dialog.items.len().saturating_sub(1) as i32;
+            dialog.selected = (dialog.selected as i32 + delta).clamp(0, last) as usize;
+        }
+    }
+
+    /// Open the selected document and close the dialog. As with `open_doc`,
+    /// Some(request) means the shell must create the DocView.
+    pub(crate) fn dialog_select(&mut self) -> Option<OpenRequest> {
+        let dialog = self.dialog.take()?;
+        let (kind, _) = dialog.items.get(dialog.selected)?;
+        self.open_doc(*kind)
     }
 
     /// Close the focused document tab. Returns the (step, kind) whose view
@@ -378,5 +436,79 @@ mod tests {
         assert!(app.change_step(1).is_none());
         assert!(app.close_current().is_none());
         app.focus_next(); // must not panic
+        app.open_dialog(); // no docs to list
+        assert!(app.dialog().is_none());
+    }
+
+    #[test]
+    fn open_dialog_lists_existing_docs_in_canonical_order() {
+        let mut app = sample_app(); // current step 02-02: all six docs exist
+        app.open_dialog();
+        let dialog = app.dialog().expect("dialog open");
+        let names: Vec<&str> = dialog.items.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "02-02-PLAN.md",
+                "02-RESEARCH.md",
+                "02-VALIDATION.md",
+                "02-UAT.md",
+                "02-CONTEXT.md",
+                "02-DISCUSSION-LOG.md",
+            ]
+        );
+        assert_eq!(dialog.selected, 0);
+    }
+
+    #[test]
+    fn open_dialog_omits_missing_docs() {
+        // Phase 1 has only its plan file.
+        let phases = sample_phases();
+        let mut app = App::from_phases(&phases[..1]);
+        app.open_dialog();
+        let dialog = app.dialog().expect("dialog open");
+        let names: Vec<&str> = dialog.items.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, ["01-01-PLAN.md"]);
+    }
+
+    #[test]
+    fn dialog_moves_clamp_and_select_opens_the_doc() {
+        let mut app = sample_app();
+        app.open_dialog();
+        app.dialog_move(-1); // clamps at top
+        assert_eq!(app.dialog().unwrap().selected, 0);
+        app.dialog_move(1);
+        app.dialog_move(1); // -> validation
+        let req = app.dialog_select().expect("open request");
+        assert_eq!(req.kind, DocKind::Validation);
+        assert!(req.path.ends_with("02-VALIDATION.md"));
+        assert!(app.dialog().is_none(), "dialog closes on select");
+        assert_eq!(app.focus(), Focus::Doc(DocKind::Validation));
+        app.open_dialog();
+        for _ in 0..20 {
+            app.dialog_move(1); // clamps at bottom
+        }
+        assert_eq!(app.dialog().unwrap().selected, 5);
+    }
+
+    #[test]
+    fn dialog_select_of_open_doc_focuses_without_new_request() {
+        let mut app = sample_app();
+        app.open_doc(DocKind::Research);
+        app.open_dialog();
+        app.dialog_move(1); // research
+        assert!(app.dialog_select().is_none(), "already open -> focus only");
+        assert_eq!(app.focus(), Focus::Doc(DocKind::Research));
+    }
+
+    #[test]
+    fn dialog_close_cancels_without_side_effects() {
+        let mut app = sample_app();
+        app.open_dialog();
+        app.dialog_move(1);
+        app.close_dialog();
+        assert!(app.dialog().is_none());
+        assert!(app.tabs().is_empty());
+        assert_eq!(app.focus(), Focus::Status);
     }
 }

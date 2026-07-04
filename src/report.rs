@@ -182,13 +182,6 @@ pub(crate) fn render(
     Ok(())
 }
 
-/// The plain report as a String (no color) — used by the TUI status panel.
-pub(crate) fn render_to_string(planning: &Path, state: &StateMeta, phases: &[Phase]) -> String {
-    let mut buf = Vec::new();
-    render(&mut buf, planning, state, phases, false).ok();
-    String::from_utf8_lossy(&buf).into_owned()
-}
-
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();

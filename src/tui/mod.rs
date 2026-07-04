@@ -3,10 +3,10 @@
 //! owns the unmodified keys; shell actions are Ctrl-<key> (plus Tab/BackTab
 //! and digit tab-jumps, which no viewer key uses).
 
+pub(crate) mod ansi;
 pub(crate) mod app;
 
-use crate::model::{DocKind, Phase, Stage, StateMeta};
-use crate::planning::{discover_steps, PhaseDocs};
+use crate::model::{DocKind, Phase, StateMeta};
 use app::{App, Focus, OpenRequest};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::{execute, terminal};
@@ -14,7 +14,7 @@ use leaf_adapter::DocView;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use std::collections::HashMap;
@@ -26,12 +26,19 @@ const HINTS: &str = "C-p/r/v/u/t/d open · C-j/k step · Tab/C-h/l tab · C-x cl
 pub(crate) struct Ui {
     app: App,
     views: HashMap<(usize, DocKind), DocView>,
-    report: String,
+    report: Text<'static>,
     body_width: u16,
 }
 
+/// The colored status report as ratatui text (reuses the report's ANSI colors).
+pub(crate) fn status_text(planning: &Path, state: &StateMeta, phases: &[Phase]) -> Text<'static> {
+    let mut buf = Vec::new();
+    crate::report::render(&mut buf, planning, state, phases, true).ok();
+    ansi::ansi_to_text(&String::from_utf8_lossy(&buf))
+}
+
 impl Ui {
-    pub(crate) fn new(report: String, app: App) -> Self {
+    pub(crate) fn new(report: Text<'static>, app: App) -> Self {
         Self {
             app,
             views: HashMap::new(),
@@ -180,7 +187,7 @@ impl Ui {
         // ── body ──
         match self.app.focus() {
             Focus::Status => {
-                frame.render_widget(Paragraph::new(self.report.as_str()), body);
+                frame.render_widget(Paragraph::new(self.report.clone()), body);
             }
             Focus::Doc(kind) => {
                 if let Some(view) = self.views.get_mut(&(self.app.current, kind)) {
@@ -192,15 +199,15 @@ impl Ui {
         }
 
         // ── footer ──
-        let position = match self.app.current_step() {
-            Some(step) => format!(
+        let position = match self.app.current_entry() {
+            Some(entry) => format!(
                 "Phase {} · step {} ({}/{})",
-                self.app.phase_id,
-                step.id,
-                self.app.current + 1,
-                self.app.steps.len()
+                entry.phase_id,
+                entry.step.id,
+                entry.pos_in_phase + 1,
+                entry.phase_steps
             ),
-            None => format!("Phase {} · no steps", self.app.phase_id),
+            None => "no steps".to_string(),
         };
         let right = self.app.flash.clone().unwrap_or_else(|| HINTS.to_string());
         let footer_line = Line::from(vec![
@@ -212,25 +219,8 @@ impl Ui {
     }
 }
 
-/// Build the App for the first non-verified phase.
-pub(crate) fn build_app(phases: &[Phase]) -> App {
-    match phases.iter().find(|p| p.stage != Stage::Verified) {
-        Some(ph) => {
-            let docs = ph.dir.as_deref().map(PhaseDocs::new);
-            let steps = ph
-                .dir
-                .as_deref()
-                .map(|d| discover_steps(d, &ph.plans))
-                .unwrap_or_default();
-            App::new(ph.id.clone(), docs, steps)
-        }
-        None => App::new("—".into(), None, Vec::new()),
-    }
-}
-
 pub(crate) fn run(planning: &Path, state: &StateMeta, phases: &[Phase]) -> io::Result<()> {
-    let report = crate::report::render_to_string(planning, state, phases);
-    let mut ui = Ui::new(report, build_app(phases));
+    let mut ui = Ui::new(status_text(planning, state, phases), App::from_phases(phases));
 
     terminal::enable_raw_mode()?;
     execute!(io::stdout(), terminal::EnterAlternateScreen)?;
@@ -276,8 +266,7 @@ mod tests {
         let planning = Path::new("sample/.planning");
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
-        let report = crate::report::render_to_string(planning, &state, &phases);
-        Ui::new(report, build_app(&phases))
+        Ui::new(status_text(planning, &state, &phases), App::from_phases(&phases))
     }
 
     fn ctrl(c: char) -> KeyEvent {
@@ -301,6 +290,21 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    #[test]
+    fn status_tab_reuses_the_report_colors() {
+        let mut ui = sample_ui();
+        let backend = TestBackend::new(90, 24);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| ui.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let colored = buf
+            .content()
+            .iter()
+            .filter(|c| c.style().fg.is_some_and(|f| f != ratatui::style::Color::Reset))
+            .count();
+        assert!(colored > 20, "status panel should be colored, got {colored} colored cells");
     }
 
     #[test]
@@ -436,15 +440,33 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_k_crosses_into_the_previous_phase() {
+        let mut ui = sample_ui();
+        let s = screen(&mut ui);
+        assert!(s.contains("Phase 2 · step 02-02 (2/3)"), "{s}");
+
+        ui.on_key(ctrl('k')); // 02-01
+        let s = screen(&mut ui);
+        assert!(s.contains("Phase 2 · step 02-01 (1/3)"), "{s}");
+        assert!(s.contains("02-01-PLAN.md"), "auto-opened plan tab: {s}");
+
+        ui.on_key(ctrl('k')); // crosses into phase 1's last step
+        let s = screen(&mut ui);
+        assert!(s.contains("Phase 1 · step 01-01 (1/1)"), "{s}");
+        assert!(s.contains("01-01-PLAN.md"), "{s}");
+        assert!(s.contains("Map the Office"), "phase 1 plan body: {s}");
+
+        ui.on_key(ctrl('k')); // already at the very first step
+        let s = screen(&mut ui);
+        assert!(s.contains("already at the first step"), "{s}");
+    }
+
+    #[test]
     fn missing_doc_flashes_in_footer() {
-        let planning = Path::new("sample/.planning");
-        let state = crate::planning::load_state(planning);
-        let mut phases = crate::planning::load_phases(planning);
-        // Force phase 1 active (it has no RESEARCH doc).
-        phases[0].roadmap_checked = false;
-        phases[0].stage = Stage::Executing;
-        let report = crate::report::render_to_string(planning, &state, &phases);
-        let mut ui = Ui::new(report, build_app(&phases));
+        let mut ui = sample_ui();
+        // Navigate back to phase 1 (01-navigation-skeleton has no RESEARCH doc).
+        ui.on_key(ctrl('k'));
+        ui.on_key(ctrl('k'));
         ui.on_key(ctrl('r'));
         let s = screen(&mut ui);
         assert!(s.contains("no research document"), "{s}");

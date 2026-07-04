@@ -411,11 +411,6 @@ pub(crate) fn discover_steps(phase_dir: &Path, roadmap_plans: &[Plan]) -> Vec<St
     steps
 }
 
-/// The step to select on startup: first unchecked plan, else the first step.
-pub(crate) fn initial_step(steps: &[Step]) -> usize {
-    steps.iter().position(|s| !s.checked).unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,22 +434,6 @@ mod tests {
         assert_eq!(ids, ["02-01", "02-02", "02-03"]);
         assert!(steps[0].checked);
         assert!(!steps[1].checked);
-    }
-
-    #[test]
-    fn initial_step_is_first_unchecked() {
-        let steps = discover_steps(&sample_phase_dir(), &sample_plans());
-        assert_eq!(initial_step(&steps), 1); // 02-02
-    }
-
-    #[test]
-    fn initial_step_falls_back_to_first_when_all_checked() {
-        let plans: Vec<Plan> = sample_plans()
-            .into_iter()
-            .map(|mut p| { p.checked = true; p })
-            .collect();
-        let steps = discover_steps(&sample_phase_dir(), &plans);
-        assert_eq!(initial_step(&steps), 0);
     }
 
     #[test]

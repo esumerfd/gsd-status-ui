@@ -1,9 +1,26 @@
 //! Tab/step state machine. Pure state: no terminal, no leaf. The shell
 //! owns the actual DocViews and creates one per OpenRequest returned here.
+//!
+//! Steps are a flat, roadmap-ordered list spanning ALL phases that have a
+//! phase directory, so Ctrl-j/Ctrl-k walk seamlessly across phase
+//! boundaries (e.g. Ctrl-k from the current phase's first step lands on the
+//! previous phase's last step). Each step carries its phase context.
 
-use crate::model::{DocKind, Step};
-use crate::planning::PhaseDocs;
+use crate::model::{DocKind, Phase, Step};
+use crate::planning::{discover_steps, PhaseDocs};
 use std::path::PathBuf;
+
+/// One navigable step: a plan file plus the phase it belongs to.
+#[derive(Debug, Clone)]
+pub(crate) struct StepEntry {
+    pub(crate) phase_id: String,
+    pub(crate) docs: PhaseDocs,
+    pub(crate) step: Step,
+    /// 0-based position within its phase, and the phase's step count —
+    /// for the footer's "step 02-02 (2/3)" display.
+    pub(crate) pos_in_phase: usize,
+    pub(crate) phase_steps: usize,
+}
 
 /// What the shell must open (create a DocView for) after a state change.
 #[derive(Debug, PartialEq)]
@@ -27,9 +44,7 @@ struct TabSet {
 }
 
 pub(crate) struct App {
-    pub(crate) phase_id: String,
-    pub(crate) docs: Option<PhaseDocs>,
-    pub(crate) steps: Vec<Step>,
+    entries: Vec<StepEntry>,
     pub(crate) current: usize,
     tabsets: Vec<TabSet>,
     pub(crate) flash: Option<String>,
@@ -37,13 +52,14 @@ pub(crate) struct App {
 }
 
 impl App {
-    pub(crate) fn new(phase_id: String, docs: Option<PhaseDocs>, steps: Vec<Step>) -> Self {
-        let current = crate::planning::initial_step(&steps);
-        let tabsets = vec![TabSet::default(); steps.len()];
+    pub(crate) fn new(entries: Vec<StepEntry>) -> Self {
+        let current = entries
+            .iter()
+            .position(|e| !e.step.checked)
+            .unwrap_or(0);
+        let tabsets = vec![TabSet::default(); entries.len()];
         Self {
-            phase_id,
-            docs,
-            steps,
+            entries,
             current,
             tabsets,
             flash: None,
@@ -51,8 +67,30 @@ impl App {
         }
     }
 
-    pub(crate) fn current_step(&self) -> Option<&Step> {
-        self.steps.get(self.current)
+    /// Flatten all phases (roadmap order) that have a phase directory.
+    pub(crate) fn from_phases(phases: &[Phase]) -> Self {
+        let mut entries = Vec::new();
+        for phase in phases {
+            let Some(dir) = phase.dir.as_deref() else {
+                continue;
+            };
+            let steps = discover_steps(dir, &phase.plans);
+            let count = steps.len();
+            for (i, step) in steps.into_iter().enumerate() {
+                entries.push(StepEntry {
+                    phase_id: phase.id.clone(),
+                    docs: PhaseDocs::new(dir),
+                    step,
+                    pos_in_phase: i,
+                    phase_steps: count,
+                });
+            }
+        }
+        Self::new(entries)
+    }
+
+    pub(crate) fn current_entry(&self) -> Option<&StepEntry> {
+        self.entries.get(self.current)
     }
 
     pub(crate) fn tabs(&self) -> &[DocKind] {
@@ -78,11 +116,11 @@ impl App {
     /// DocView (and call `remove_tab` if that fails).
     pub(crate) fn open_doc(&mut self, kind: DocKind) -> Option<OpenRequest> {
         self.flash = None;
-        let (Some(docs), Some(step)) = (self.docs.as_ref(), self.steps.get(self.current)) else {
+        let Some(entry) = self.entries.get(self.current) else {
             self.flash = Some("no active phase step".into());
             return None;
         };
-        let path = docs.path_for(kind, step);
+        let path = entry.docs.path_for(kind, &entry.step);
         if !path.exists() {
             self.flash = Some(format!(
                 "no {} document ({})",
@@ -113,12 +151,13 @@ impl App {
         })
     }
 
-    /// Move to a later (`+1`) or earlier (`-1`) step. If the target step has
-    /// no open tabs, its plan document is auto-opened.
+    /// Move to a later (`+1`) or earlier (`-1`) step, crossing phase
+    /// boundaries. If the target step has no open tabs, its plan document is
+    /// auto-opened.
     pub(crate) fn change_step(&mut self, delta: i32) -> Option<OpenRequest> {
         self.flash = None;
-        if self.steps.is_empty() {
-            self.flash = Some("no steps in the current phase".into());
+        if self.entries.is_empty() {
+            self.flash = Some("no steps in any phase".into());
             return None;
         }
         let target = self.current as i32 + delta;
@@ -126,7 +165,7 @@ impl App {
             self.flash = Some("already at the first step".into());
             return None;
         }
-        if target as usize >= self.steps.len() {
+        if target as usize >= self.entries.len() {
             self.flash = Some("already at the last step".into());
             return None;
         }
@@ -188,24 +227,50 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    fn sample_phases() -> Vec<Phase> {
+        crate::planning::load_phases(Path::new("sample/.planning"))
+    }
+
     fn sample_app() -> App {
-        let dir = Path::new("sample/.planning/phases/02-coffee-acquisition");
-        let plans = vec![
-            crate::model::Plan { name: "02-01".into(), checked: true },
-            crate::model::Plan { name: "02-02".into(), checked: false },
-            crate::model::Plan { name: "02-03".into(), checked: false },
-        ];
-        let steps = crate::planning::discover_steps(dir, &plans);
-        assert_eq!(steps.len(), 3);
-        App::new("2".into(), Some(PhaseDocs::new(dir)), steps)
+        let app = App::from_phases(&sample_phases());
+        let ids: Vec<&str> = app.entries.iter().map(|e| e.step.id.as_str()).collect();
+        assert_eq!(ids, ["01-01", "02-01", "02-02", "02-03"]);
+        app
     }
 
     #[test]
-    fn starts_on_status_tab_of_first_unchecked_step() {
+    fn starts_on_status_tab_of_first_unchecked_step_across_phases() {
         let app = sample_app();
-        assert_eq!(app.current, 1); // 02-02
+        let entry = app.current_entry().unwrap();
+        assert_eq!(entry.step.id, "02-02");
+        assert_eq!(entry.phase_id, "2");
+        assert_eq!((entry.pos_in_phase, entry.phase_steps), (1, 3));
         assert_eq!(app.focus(), Focus::Status);
         assert!(app.tabs().is_empty());
+    }
+
+    #[test]
+    fn ctrl_k_walks_back_across_the_phase_boundary() {
+        let mut app = sample_app();
+
+        // 02-02 -> 02-01 (same phase), plan auto-opens.
+        let req = app.change_step(-1).expect("auto-open 02-01 plan");
+        assert!(req.path.ends_with("02-01-PLAN.md"));
+
+        // 02-01 -> 01-01: crosses into phase 1's last (only) step.
+        let req = app.change_step(-1).expect("auto-open 01-01 plan");
+        assert!(req.path.ends_with("01-01-PLAN.md"));
+        let entry = app.current_entry().unwrap();
+        assert_eq!(entry.phase_id, "1");
+        assert_eq!((entry.pos_in_phase, entry.phase_steps), (0, 1));
+
+        // 01-01 is the very first step.
+        assert!(app.change_step(-1).is_none());
+        assert!(app.flash.as_deref().unwrap().contains("first step"));
+
+        // And forward again crosses back into phase 2 (tabs preserved).
+        assert!(app.change_step(1).is_none()); // 02-01 kept its plan tab
+        assert_eq!(app.current_entry().unwrap().step.id, "02-01");
     }
 
     #[test]
@@ -257,15 +322,11 @@ mod tests {
     }
 
     #[test]
-    fn step_change_past_the_ends_flashes() {
+    fn step_change_past_the_last_step_flashes() {
         let mut app = sample_app();
-        app.change_step(1); // 02-03 (last)
+        app.change_step(1); // 02-03 (last — phase 3 has no directory)
         assert!(app.change_step(1).is_none());
         assert!(app.flash.as_deref().unwrap().contains("last step"));
-        app.change_step(-1);
-        app.change_step(-1); // 02-01 (first)
-        assert!(app.change_step(-1).is_none());
-        assert!(app.flash.as_deref().unwrap().contains("first step"));
     }
 
     #[test]
@@ -282,10 +343,10 @@ mod tests {
 
     #[test]
     fn missing_document_flashes_and_adds_no_tab() {
-        let dir = Path::new("sample/.planning/phases/01-navigation-skeleton");
-        let steps = crate::planning::discover_steps(dir, &[]);
-        let mut app = App::new("1".into(), Some(PhaseDocs::new(dir)), steps);
-        // Phase 1 has no RESEARCH doc.
+        // Phase 1 (01-navigation-skeleton) has no RESEARCH doc.
+        let phases = sample_phases();
+        let mut app = App::from_phases(&phases[..1]);
+        assert_eq!(app.current_entry().unwrap().step.id, "01-01");
         assert!(app.open_doc(DocKind::Research).is_none());
         assert!(app.tabs().is_empty());
         assert!(app.flash.as_deref().unwrap().contains("research"));
@@ -309,8 +370,8 @@ mod tests {
     }
 
     #[test]
-    fn phase_without_steps_is_survivable() {
-        let mut app = App::new("3".into(), None, Vec::new());
+    fn no_steps_anywhere_is_survivable() {
+        let mut app = App::new(Vec::new());
         assert_eq!(app.focus(), Focus::Status);
         assert!(app.open_doc(DocKind::Plan).is_none());
         assert!(app.flash.is_some());

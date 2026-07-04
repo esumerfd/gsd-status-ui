@@ -21,7 +21,8 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-const HINTS: &str = "C-o open · C-j/k step · Tab/C-h/l tab · C-x close · C-q quit";
+const STATUS_HINTS: &str = "j/k step · Enter plan · C-o open · Tab tab · q quit";
+const DOC_HINTS: &str = "j/k scroll · C-j/k step · C-o open · Tab tab · C-x close · C-q quit";
 const DIALOG_HINTS: &str = "j/k select · Enter open · Esc cancel";
 
 pub(crate) struct Ui {
@@ -137,8 +138,23 @@ impl Ui {
             _ => {}
         }
         if let Focus::Status = self.app.focus() {
-            if let KeyCode::Char('q') = code {
-                self.app.quit = true;
+            match code {
+                KeyCode::Char('q') => self.app.quit = true,
+                // Browse steps without opening anything.
+                KeyCode::Char('j') | KeyCode::Down => {
+                    let req = self.app.change_step(1);
+                    self.apply(req);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    let req = self.app.change_step(-1);
+                    self.apply(req);
+                }
+                // Enter viewer mode on the selected step's plan.
+                KeyCode::Enter => {
+                    let req = self.app.open_doc(DocKind::Plan);
+                    self.apply(req);
+                }
+                _ => {}
             }
             return;
         }
@@ -264,8 +280,12 @@ impl Ui {
         };
         let right = if self.app.dialog().is_some() {
             DIALOG_HINTS.to_string()
+        } else if let Some(flash) = self.app.flash.clone() {
+            flash
+        } else if matches!(self.app.focus(), Focus::Status) {
+            STATUS_HINTS.to_string()
         } else {
-            self.app.flash.clone().unwrap_or_else(|| HINTS.to_string())
+            DOC_HINTS.to_string()
         };
         let footer_line = Line::from(vec![
             Span::styled(position, Style::default().add_modifier(Modifier::BOLD)),
@@ -380,7 +400,7 @@ mod tests {
         assert!(s.contains("Status"), "{s}");
         assert!(s.contains("Robot Coffee Service"), "{s}");
         assert!(s.contains("Phase 2 · step 02-02 (2/3)"), "{s}");
-        assert!(s.contains("C-j/k step"), "{s}");
+        assert!(s.contains("j/k step · Enter plan"), "{s}");
     }
 
     #[test]
@@ -553,25 +573,46 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_k_crosses_into_the_previous_phase() {
+    fn status_jk_browses_steps_and_enter_opens_the_plan() {
         let mut ui = sample_ui();
         let s = screen(&mut ui);
         assert!(s.contains("Phase 2 · step 02-02 (2/3)"), "{s}");
 
-        ui.on_key(ctrl('k')); // 02-01
+        // Plain k browses backwards — status body stays, nothing opens.
+        ui.on_key(plain('k'));
         let s = screen(&mut ui);
         assert!(s.contains("Phase 2 · step 02-01 (1/3)"), "{s}");
-        assert!(s.contains("02-01-PLAN.md"), "auto-opened plan tab: {s}");
+        assert!(s.contains("Robot Coffee Service"), "still on status: {s}");
+        assert!(!s.contains("02-01-PLAN.md"), "nothing must auto-open: {s}");
 
-        ui.on_key(ctrl('k')); // crosses into phase 1's last step
+        // Across the phase boundary, still browsing.
+        ui.on_key(plain('k'));
         let s = screen(&mut ui);
         assert!(s.contains("Phase 1 · step 01-01 (1/1)"), "{s}");
-        assert!(s.contains("01-01-PLAN.md"), "{s}");
-        assert!(s.contains("Map the Office"), "phase 1 plan body: {s}");
+        assert!(s.contains("Robot Coffee Service"), "{s}");
 
-        ui.on_key(ctrl('k')); // already at the very first step
+        ui.on_key(plain('k'));
         let s = screen(&mut ui);
         assert!(s.contains("already at the first step"), "{s}");
+
+        // Enter opens the selected step's plan (viewer mode).
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let s = screen(&mut ui);
+        assert!(s.contains("01-01-PLAN.md"), "{s}");
+        assert!(s.contains("Map the Office"), "phase 1 plan body: {s}");
+        assert!(s.contains("C-j/k step"), "doc hints: {s}");
+
+        // Plain j now scrolls the document, not the step.
+        ui.on_key(plain('j'));
+        let s = screen(&mut ui);
+        assert!(s.contains("Phase 1 · step 01-01"), "step unchanged: {s}");
+
+        // Ctrl-j still changes step from viewer mode, staying in viewer.
+        ui.on_key(ctrl('j'));
+        let s = screen(&mut ui);
+        assert!(s.contains("Phase 2 · step 02-01 (1/3)"), "{s}");
+        assert!(s.contains("02-01-PLAN.md"), "viewer stepping auto-opens plan: {s}");
+        assert!(s.contains("Locate and Operate"), "{s}");
     }
 
 }

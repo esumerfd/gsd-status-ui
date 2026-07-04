@@ -162,8 +162,11 @@ impl App {
     }
 
     /// Move to a later (`+1`) or earlier (`-1`) step, crossing phase
-    /// boundaries. If the target step has no open tabs, its plan document is
-    /// auto-opened.
+    /// boundaries. Navigation preserves the current mode:
+    /// - from the Status tab (browsing) the selection just moves — nothing
+    ///   opens and focus stays on Status;
+    /// - from a document tab (viewer mode) the target step's docs get focus,
+    ///   auto-opening its plan when the step has no open tabs.
     pub(crate) fn change_step(&mut self, delta: i32) -> Option<OpenRequest> {
         self.flash = None;
         if self.entries.is_empty() {
@@ -179,9 +182,18 @@ impl App {
             self.flash = Some("already at the last step".into());
             return None;
         }
+        let browsing = matches!(self.focus(), Focus::Status);
         self.current = target as usize;
+        if browsing {
+            self.tabsets[self.current].focused = 0;
+            return None;
+        }
         if self.tabs().is_empty() {
             return self.open_doc(DocKind::Plan);
+        }
+        let set = &mut self.tabsets[self.current];
+        if set.focused == 0 {
+            set.focused = 1;
         }
         None
     }
@@ -308,27 +320,64 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_k_walks_back_across_the_phase_boundary() {
+    fn status_browsing_moves_selection_without_opening_docs() {
         let mut app = sample_app();
 
-        // 02-02 -> 02-01 (same phase), plan auto-opens.
-        let req = app.change_step(-1).expect("auto-open 02-01 plan");
-        assert!(req.path.ends_with("02-01-PLAN.md"));
+        // From the status tab, j/k only move the selection.
+        assert!(app.change_step(-1).is_none());
+        assert_eq!(app.current_entry().unwrap().step.id, "02-01");
+        assert_eq!(app.focus(), Focus::Status);
+        assert!(app.tabs().is_empty());
 
-        // 02-01 -> 01-01: crosses into phase 1's last (only) step.
-        let req = app.change_step(-1).expect("auto-open 01-01 plan");
-        assert!(req.path.ends_with("01-01-PLAN.md"));
+        // Crossing the phase boundary is still just browsing.
+        assert!(app.change_step(-1).is_none());
         let entry = app.current_entry().unwrap();
         assert_eq!(entry.phase_id, "1");
         assert_eq!((entry.pos_in_phase, entry.phase_steps), (0, 1));
+        assert_eq!(app.focus(), Focus::Status);
 
         // 01-01 is the very first step.
         assert!(app.change_step(-1).is_none());
         assert!(app.flash.as_deref().unwrap().contains("first step"));
+    }
 
-        // And forward again crosses back into phase 2 (tabs preserved).
-        assert!(app.change_step(1).is_none()); // 02-01 kept its plan tab
-        assert_eq!(app.current_entry().unwrap().step.id, "02-01");
+    #[test]
+    fn enter_opens_the_plan_and_viewer_stepping_stays_in_viewer() {
+        let mut app = sample_app();
+        app.change_step(-1);
+        app.change_step(-1); // browsing on 01-01, still status
+
+        // Enter: open the plan, entering viewer mode.
+        let req = app.open_doc(DocKind::Plan).expect("open 01-01 plan");
+        assert!(req.path.ends_with("01-01-PLAN.md"));
+        assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+
+        // Ctrl-j from viewer mode: keep viewing — the next step's plan
+        // auto-opens because its tab set is empty.
+        let req = app.change_step(1).expect("auto-open 02-01 plan");
+        assert!(req.path.ends_with("02-01-PLAN.md"));
+        assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+
+        // Back to 01-01: its plan tab is retained and refocused.
+        assert!(app.change_step(-1).is_none());
+        assert_eq!(app.current_entry().unwrap().step.id, "01-01");
+        assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+    }
+
+    #[test]
+    fn status_browsing_onto_a_step_with_tabs_stays_on_status() {
+        let mut app = sample_app();
+        app.open_doc(DocKind::Research); // 02-02 now has a tab, viewer focus
+        app.focus_slot(1); // back to status
+        app.change_step(1); // 02-03
+        assert_eq!(app.focus(), Focus::Status);
+        app.change_step(-1); // back onto 02-02, which has an open tab
+        assert_eq!(
+            app.focus(),
+            Focus::Status,
+            "browsing from status must not jump into a doc"
+        );
+        assert_eq!(app.tabs(), [DocKind::Research], "tab set preserved");
     }
 
     #[test]

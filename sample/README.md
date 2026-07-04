@@ -15,7 +15,7 @@ What it exercises:
 | Verified phase | Phase 1 (roadmap checked + `01-VERIFICATION.md`) |
 | Executing phase (the "current" phase) | Phase 2 — 3 plans, 1 summary |
 | Untouched phase | Phase 3 (no directory) |
-| Steps for `Ctrl-j`/`Ctrl-k` navigation | `02-01`, `02-02`, `02-03` |
+| Steps to browse with `j`/`k` (open with `Enter`) | `02-01`, `02-02`, `02-03` |
 | All document tab kinds | `02-{RESEARCH,VALIDATION,UAT,CONTEXT,DISCUSSION-LOG}.md` + per-step plans |
 | Missing-doc flash message | Phase 1 has no research/uat/etc. docs |
 | Scroll testing (long doc, tables, code fences) | `02-02-PLAN.md` |

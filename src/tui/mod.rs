@@ -21,8 +21,8 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-const STATUS_HINTS: &str = "j/k step · Enter plan · C-o open · Tab tab · q quit";
-const DOC_HINTS: &str = "j/k scroll · C-j/k step · C-o open · Tab tab · C-x close · C-q quit";
+const STATUS_HINTS: &str = "j/k step · Enter plan · o open · Tab tab · q quit";
+const DOC_HINTS: &str = "j/k scroll · C-j/k step · Tab tab · q/Esc status · C-q quit";
 const DIALOG_HINTS: &str = "j/k select · Enter open · Esc cancel";
 
 pub(crate) struct Ui {
@@ -139,6 +139,7 @@ impl Ui {
         }
         if let Focus::Status = self.app.focus() {
             match code {
+                // The back-out chain ends here: q on status exits the app.
                 KeyCode::Char('q') => self.app.quit = true,
                 // Browse steps without opening anything.
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -149,11 +150,12 @@ impl Ui {
                     let req = self.app.change_step(-1);
                     self.apply(req);
                 }
-                // Enter viewer mode on the selected step's plan.
+                // Enter doc mode on the selected step's plan.
                 KeyCode::Enter => {
                     let req = self.app.open_doc(DocKind::Plan);
                     self.apply(req);
                 }
+                KeyCode::Char('o') => self.app.open_dialog(),
                 _ => {}
             }
             return;
@@ -161,6 +163,11 @@ impl Ui {
         let Focus::Doc(kind) = self.app.focus() else {
             return;
         };
+        // q/Esc back out of doc mode to the status panel; the tab stays open.
+        if matches!(code, KeyCode::Char('q') | KeyCode::Esc) {
+            self.app.focus_slot(1);
+            return;
+        }
         let Some(view) = self.views.get_mut(&(self.app.current, kind)) else {
             return;
         };
@@ -268,15 +275,19 @@ impl Ui {
         }
 
         // ── footer ──
+        let mode = match self.app.focus() {
+            Focus::Status => "[status]",
+            Focus::Doc(_) => "[doc]",
+        };
         let position = match self.app.current_entry() {
             Some(entry) => format!(
-                "Phase {} · step {} ({}/{})",
+                "{mode} Phase {} · step {} ({}/{})",
                 entry.phase_id,
                 entry.step.id,
                 entry.pos_in_phase + 1,
                 entry.phase_steps
             ),
-            None => "no steps".to_string(),
+            None => format!("{mode} no steps"),
         };
         let right = if self.app.dialog().is_some() {
             DIALOG_HINTS.to_string()
@@ -439,6 +450,50 @@ mod tests {
             "doc body missing: {s}"
         );
         assert!(!s.contains("Open document"), "dialog must close: {s}");
+    }
+
+    #[test]
+    fn q_backs_out_one_level_doc_then_status_then_quit() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0); // in a doc
+        ui.on_key(plain('q'));
+        assert!(!ui.quit(), "first q must not quit");
+        let s = screen(&mut ui);
+        assert!(s.contains("Robot Coffee Service"), "q returns to status: {s}");
+        assert!(s.contains("02-02-PLAN.md"), "tab stays open: {s}");
+        ui.on_key(plain('q'));
+        assert!(ui.quit(), "second q (on status) exits the app");
+    }
+
+    #[test]
+    fn esc_leaves_a_doc_like_q() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0);
+        ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(!ui.quit());
+        let s = screen(&mut ui);
+        assert!(s.contains("Robot Coffee Service"), "Esc returns to status: {s}");
+    }
+
+    #[test]
+    fn plain_o_opens_the_dialog_from_status() {
+        let mut ui = sample_ui();
+        ui.on_key(plain('o'));
+        let s = screen(&mut ui);
+        assert!(s.contains("Open document"), "{s}");
+    }
+
+    #[test]
+    fn footer_shows_the_mode() {
+        let mut ui = sample_ui();
+        let s = screen(&mut ui);
+        assert!(s.contains("[status]"), "{s}");
+        open_via_dialog(&mut ui, 0);
+        let s = screen(&mut ui);
+        assert!(s.contains("[doc]"), "{s}");
+        ui.on_key(plain('q'));
+        let s = screen(&mut ui);
+        assert!(s.contains("[status]"), "back on status: {s}");
     }
 
     #[test]

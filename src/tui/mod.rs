@@ -54,6 +54,29 @@ impl Ui {
         self.app.quit
     }
 
+    /// Replace the status panel body (periodic refresh).
+    pub(crate) fn set_report(&mut self, report: Text<'static>) {
+        self.report = report;
+    }
+
+    /// Reload the focused document if its file changed on disk since it
+    /// was opened. Scroll and any active search survive the reload.
+    /// Returns true when a reload happened.
+    pub(crate) fn reload_stale_doc(&mut self) -> bool {
+        let Focus::Doc(kind) = self.app.focus() else {
+            return false;
+        };
+        let Some(view) = self.views.get_mut(&(self.app.current, kind)) else {
+            return false;
+        };
+        if !view.is_stale() {
+            return false;
+        }
+        // A failed reload (file mid-write) keeps the old view; the next
+        // check retries.
+        view.reload(self.body_width.max(20)).is_ok()
+    }
+
     fn apply(&mut self, request: Option<OpenRequest>) {
         let Some(req) = request else { return };
         match DocView::open(&req.path, self.body_width.max(20)) {
@@ -372,7 +395,7 @@ pub(crate) fn run(planning: &Path, state: &StateMeta, phases: &[Phase]) -> io::R
 
     let backend = CrosstermBackend::new(io::stdout());
     let mut term = ratatui::Terminal::new(backend)?;
-    let result = event_loop(&mut term, &mut ui);
+    let result = event_loop(&mut term, &mut ui, planning);
     restore_terminal();
     result
 }
@@ -382,17 +405,41 @@ fn restore_terminal() {
     execute!(io::stdout(), terminal::LeaveAlternateScreen).ok();
 }
 
+/// How long to block waiting for a key before running refresh checks.
+const TICK: std::time::Duration = std::time::Duration::from_millis(500);
+/// The status report re-reads .planning/ this often.
+const STATUS_REFRESH: std::time::Duration = std::time::Duration::from_secs(60);
+/// The focused document's file is checked for changes this often.
+const DOC_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
 fn event_loop(
     term: &mut ratatui::Terminal<CrosstermBackend<io::Stdout>>,
     ui: &mut Ui,
+    planning: &Path,
 ) -> io::Result<()> {
+    let mut last_status = std::time::Instant::now();
+    let mut last_doc_check = std::time::Instant::now();
     loop {
         term.draw(|frame| ui.draw(frame))?;
         if ui.quit() {
             return Ok(());
         }
-        if let Event::Key(key) = event::read()? {
-            ui.on_key(key);
+        if event::poll(TICK)? {
+            if let Event::Key(key) = event::read()? {
+                ui.on_key(key);
+            }
+            continue;
+        }
+        // Poll timed out: an idle tick — run the refresh checks.
+        if last_status.elapsed() >= STATUS_REFRESH {
+            last_status = std::time::Instant::now();
+            let state = crate::planning::load_state(planning);
+            let phases = crate::planning::load_phases(planning);
+            ui.set_report(status_text(planning, &state, &phases));
+        }
+        if last_doc_check.elapsed() >= DOC_CHECK {
+            last_doc_check = std::time::Instant::now();
+            ui.reload_stale_doc();
         }
     }
 }
@@ -770,6 +817,41 @@ mod tests {
         ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let s = screen(&mut ui);
         assert!(s.contains("no matches"), "{s}");
+    }
+
+    #[test]
+    fn set_report_refreshes_the_status_panel() {
+        let mut ui = sample_ui();
+        let s = screen(&mut ui);
+        assert!(s.contains("Robot Coffee Service"), "{s}");
+        ui.set_report(Text::raw("Refreshed Report Body"));
+        let s = screen(&mut ui);
+        assert!(s.contains("Refreshed Report Body"), "{s}");
+    }
+
+    #[test]
+    fn reload_stale_doc_refreshes_the_focused_document() {
+        let tmp = std::env::temp_dir().join(format!("gsd-reload-test-{}.md", std::process::id()));
+        std::fs::write(&tmp, "# Temp\n\nfirst version\n").expect("write");
+
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0); // doc mode on the 02-02 plan
+        ui.views.insert(
+            (ui.app.current, DocKind::Plan),
+            DocView::open(&tmp, 80).expect("open temp doc"),
+        );
+        let s = screen(&mut ui);
+        assert!(s.contains("first version"), "{s}");
+
+        assert!(!ui.reload_stale_doc(), "unchanged file must not reload");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&tmp, "# Temp\n\nsecond version\n").expect("rewrite");
+        assert!(ui.reload_stale_doc(), "changed file must reload");
+        let s = screen(&mut ui);
+        assert!(s.contains("second version"), "{s}");
+
+        std::fs::remove_file(&tmp).ok();
     }
 
     #[test]

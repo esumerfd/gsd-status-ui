@@ -3,7 +3,8 @@
 //! body (markdown parsing, styling, scrolling) lives here.
 
 use ratatui::{layout::Rect, text::Text, widgets::Paragraph, Frame};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 #[derive(Debug)]
 pub enum DocViewError {
@@ -39,42 +40,102 @@ struct SearchState {
 
 pub struct DocView {
     title: String,
+    path: PathBuf,
     doc: leaf::viewer::Document,
     plain_lines: Vec<String>,
+    mtime: Option<SystemTime>,
     scroll: u16,
     last_viewport: u16,
     search: SearchState,
 }
 
+/// Read and parse a file into rendered lines plus their searchable text.
+/// The mtime is taken before the read so a write racing the read shows
+/// up as stale on the next check rather than being missed.
+fn load(path: &Path, width: u16) -> Result<LoadedDoc, DocViewError> {
+    let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let src = std::fs::read_to_string(path).map_err(|source| DocViewError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let mut doc = leaf::viewer::parse(&src, width as usize);
+    // Drop trailing blank lines so to_bottom lands on content, not padding.
+    while doc
+        .lines
+        .last()
+        .is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
+    {
+        doc.lines.pop();
+    }
+    let plain_lines = leaf::viewer::searchable_lines(&doc);
+    Ok(LoadedDoc {
+        doc,
+        plain_lines,
+        mtime,
+    })
+}
+
+struct LoadedDoc {
+    doc: leaf::viewer::Document,
+    plain_lines: Vec<String>,
+    mtime: Option<SystemTime>,
+}
+
 impl DocView {
     /// Read and parse a markdown file, wrapping to `width` columns.
     pub fn open(path: &Path, width: u16) -> Result<Self, DocViewError> {
-        let src = std::fs::read_to_string(path).map_err(|source| DocViewError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
+        let loaded = load(path, width)?;
         let title = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
-        let mut doc = leaf::viewer::parse(&src, width as usize);
-        // Drop trailing blank lines so to_bottom lands on content, not padding.
-        while doc
-            .lines
-            .last()
-            .is_some_and(|l| l.spans.iter().all(|s| s.content.trim().is_empty()))
-        {
-            doc.lines.pop();
-        }
-        let plain_lines = leaf::viewer::searchable_lines(&doc);
         Ok(Self {
             title,
-            doc,
-            plain_lines,
+            path: path.to_path_buf(),
+            doc: loaded.doc,
+            plain_lines: loaded.plain_lines,
+            mtime: loaded.mtime,
             scroll: 0,
             last_viewport: 10,
             search: SearchState::default(),
         })
+    }
+
+    /// True when the file's mtime has moved since the last open/reload.
+    /// A file that can't be stat'ed (deleted, mid-rename) is not stale —
+    /// there is nothing new to show yet.
+    pub fn is_stale(&self) -> bool {
+        match std::fs::metadata(&self.path).and_then(|m| m.modified()) {
+            Ok(fresh) => Some(fresh) != self.mtime,
+            Err(_) => false,
+        }
+    }
+
+    /// Re-read the file, keeping the scroll position (clamped at the next
+    /// render) and re-running the active search query on the new content
+    /// without jumping the viewport.
+    pub fn reload(&mut self, width: u16) -> Result<(), DocViewError> {
+        let loaded = load(&self.path, width)?;
+        self.doc = loaded.doc;
+        self.plain_lines = loaded.plain_lines;
+        self.mtime = loaded.mtime;
+        if !self.search.query.is_empty() {
+            self.compute_matches();
+        }
+        Ok(())
+    }
+
+    /// Fill `matches` for the current query and reset the active index.
+    fn compute_matches(&mut self) {
+        let q = self.search.query.to_lowercase();
+        self.search.matches = self
+            .plain_lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains(&q))
+            .map(|(i, _)| i)
+            .collect();
+        self.search.idx = 0;
     }
 
     /// File name, used as the tab label.
@@ -146,14 +207,7 @@ impl DocView {
         if self.search.query.is_empty() {
             return;
         }
-        let q = self.search.query.to_lowercase();
-        self.search.matches = self
-            .plain_lines
-            .iter()
-            .enumerate()
-            .filter(|(_, line)| line.contains(&q))
-            .map(|(i, _)| i)
-            .collect();
+        self.compute_matches();
         self.jump_to_match();
     }
 

@@ -220,3 +220,51 @@ fn slash_starts_with_an_empty_draft_even_after_a_search() {
     view.begin_search();
     assert_eq!(view.search_draft(), "");
 }
+
+#[test]
+fn is_stale_flags_a_changed_file() {
+    let f = fixture("# Doc\n\noriginal body.\n");
+    let view = DocView::open(f.path(), 40).expect("open");
+    assert!(!view.is_stale(), "freshly opened view must not be stale");
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(f.path(), "# Doc\n\nrewritten body.\n").expect("rewrite");
+    assert!(view.is_stale(), "mtime change must mark the view stale");
+}
+
+#[test]
+fn reload_shows_new_content_and_keeps_scroll() {
+    let body: String = (1..=50).map(|i| format!("line number {i}\n\n")).collect();
+    let f = fixture(&body);
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    for _ in 0..10 {
+        view.scroll_down();
+    }
+    let before = rendered_text(&mut view, 40, 5);
+
+    let changed: String = (1..=50).map(|i| format!("updated row {i}\n\n")).collect();
+    std::fs::write(f.path(), &changed).expect("rewrite");
+    view.reload(40).expect("reload");
+
+    assert!(!view.is_stale(), "reload must clear staleness");
+    let after = rendered_text(&mut view, 40, 5);
+    assert!(after.contains("updated row"), "new content:\n{after}");
+    assert_ne!(before, after);
+    assert!(
+        !after.contains("updated row 1 "),
+        "scroll position must be preserved, not reset to top:\n{after}"
+    );
+}
+
+#[test]
+fn reload_reruns_the_active_search() {
+    let f = fixture("# Doc\n\nneedle one.\n");
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    search_for(&mut view, "needle");
+    assert_eq!(view.search_match_count(), 1);
+
+    std::fs::write(f.path(), "# Doc\n\nneedle one.\n\nneedle two.\n").expect("rewrite");
+    view.reload(40).expect("reload");
+    assert_eq!(view.search_query(), "needle", "query survives reload");
+    assert_eq!(view.search_match_count(), 2, "matches re-run on new content");
+}

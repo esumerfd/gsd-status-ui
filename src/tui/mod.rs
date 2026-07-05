@@ -13,7 +13,7 @@ use crossterm::{execute, terminal};
 use leaf_adapter::DocView;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Clear, Paragraph};
 use ratatui::Frame;
@@ -215,11 +215,16 @@ impl Ui {
         }
         let mut spans: Vec<Span> = Vec::new();
         for (i, title) in titles.iter().enumerate() {
-            let style = if i == focused_slot {
+            let mut style = if i == focused_slot {
                 Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
             } else {
                 Style::default().add_modifier(Modifier::DIM)
             };
+            if i == 0 {
+                // The phase/step tab is green (matching the report's "done"
+                // accent) so the live position stands out from doc tabs.
+                style = style.fg(Color::Green);
+            }
             spans.push(Span::styled(format!(" {title} "), style));
             spans.push(Span::raw("│"));
         }
@@ -648,6 +653,23 @@ mod tests {
         ui.on_key(ctrl('k'));
         let s = screen(&mut ui);
         assert!(s.contains("Phase 1/Step 01-01"), "{s}");
+    }
+
+    #[test]
+    fn status_tab_label_is_green() {
+        let mut ui = sample_ui();
+        let backend = TestBackend::new(90, 24);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| ui.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        // Tab bar is row 0; the label starts after the leading pad space.
+        let green_cells = (0..90)
+            .filter(|&x| buf[(x, 0u16)].style().fg == Some(ratatui::style::Color::Green))
+            .count();
+        assert!(
+            green_cells >= "Phase 2/Step 02-02".len(),
+            "status tab label should be green, got {green_cells} green cells"
+        );
     }
 
     #[test]

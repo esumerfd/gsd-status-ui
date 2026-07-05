@@ -42,7 +42,22 @@ An interactive TUI mode (step/tab navigation over a phase's Plan, Research,
 Validation, Context, and Discussion documents, backed by the `leaf-adapter`
 crate) is under active development — see [Project layout](#project-layout).
 
-## Build & install
+## Install
+
+### Homebrew
+
+```bash
+brew tap esumerfd/gsd-status-ui https://github.com/esumerfd/gsd-status-ui
+brew install esumerfd/gsd-status-ui/gsd-status
+```
+
+Binaries are prebuilt for macOS (Apple Silicon and Intel) and Linux (x86_64)
+by the [release workflow](.github/workflows/release.yml), which publishes them
+to GitHub Releases and updates [`Formula/gsd-status.rb`](Formula/gsd-status.rb).
+To cut a release, push a `v*` tag — or run the workflow manually to auto-bump
+the minor version.
+
+### From source
 
 ```bash
 make build      # cargo build --release
@@ -79,7 +94,8 @@ leaf-adapter/    isolates gsd-status from `leaf`: renders a markdown file into
                  a scrollable ratatui doc panel. The only crate that touches
                  leaf types.
 
-vendor/leaf/     git submodule — the markdown/ratatui viewer leaf-adapter wraps
+vendor/leaf/     vendored copy of the markdown/ratatui viewer leaf-adapter
+                 wraps (see vendor/README.md for upstream + local patches)
 sample/          example .planning/ workspace used in tests/cli.rs and for
                  manual TUI testing
 ```

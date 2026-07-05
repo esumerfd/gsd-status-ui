@@ -1,0 +1,156 @@
+name: Release gsd-status
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Create the git tag (workflow_dispatch only) and publish the tag name
+  # for all downstream jobs to reference.
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve tag name
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            latest=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // "v0.0.0"')
+            ver=${latest#v}
+            IFS='.' read -r major minor patch <<< "$ver"
+            minor=$((minor + 1))
+            new_tag="v${major}.${minor}.0"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$new_tag" || true
+            git push origin "$new_tag" || true
+            echo "name=$new_tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # Build a native binary for each target platform and upload the
+  # platform tarball to the GitHub Release.
+  build:
+    name: Build (${{ matrix.target }})
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-14
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        id: package
+        run: |
+          archive="gsd-status-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.tar.gz"
+          tar czf "$archive" -C "target/${{ matrix.target }}/release" gsd-status
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          files: ${{ steps.package.outputs.archive }}
+          generate_release_notes: true
+
+  # After all platform binaries are uploaded, update Formula/gsd-status.rb
+  # on main so `brew install esumerfd/gsd-status-ui/gsd-status` works.
+  formula:
+    name: Update Homebrew formula
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download release tarballs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: gh release download "$TAG" --pattern "gsd-status-${TAG}-*.tar.gz"
+
+      - name: Compute SHA256 checksums
+        id: sha
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          arm64=$(sha256sum "gsd-status-${TAG}-aarch64-apple-darwin.tar.gz" | awk '{print $1}')
+          x86=$(sha256sum "gsd-status-${TAG}-x86_64-apple-darwin.tar.gz" | awk '{print $1}')
+          linux=$(sha256sum "gsd-status-${TAG}-x86_64-unknown-linux-gnu.tar.gz" | awk '{print $1}')
+          echo "arm64=$arm64" >> "$GITHUB_OUTPUT"
+          echo "x86=$x86"     >> "$GITHUB_OUTPUT"
+          echo "linux=$linux" >> "$GITHUB_OUTPUT"
+
+      - name: Write formula
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SHA_ARM64: ${{ steps.sha.outputs.arm64 }}
+          SHA_X86: ${{ steps.sha.outputs.x86 }}
+          SHA_LINUX: ${{ steps.sha.outputs.linux }}
+        run: |
+          sed \
+            -e "s|{{TAG}}|${TAG}|g" \
+            -e "s|{{VER}}|${TAG#v}|g" \
+            -e "s|{{SHA_ARM64}}|${SHA_ARM64}|g" \
+            -e "s|{{SHA_X86}}|${SHA_X86}|g" \
+            -e "s|{{SHA_LINUX}}|${SHA_LINUX}|g" \
+            Formula/gsd-status.rb.tmpl > Formula/gsd-status.rb
+
+      - name: Commit and push formula
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/gsd-status.rb
+          git commit -m "chore: update Homebrew formula to ${TAG}"
+          git push

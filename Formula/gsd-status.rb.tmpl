@@ -1,0 +1,30 @@
+# This file is updated automatically by the release workflow.
+class GsdStatus < Formula
+  desc "Terminal status view for a GSD planning workspace"
+  homepage "https://github.com/esumerfd/gsd-status-ui"
+  version "{{VER}}"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/esumerfd/gsd-status-ui/releases/download/{{TAG}}/gsd-status-{{TAG}}-aarch64-apple-darwin.tar.gz"
+      sha256 "{{SHA_ARM64}}"
+    end
+    on_intel do
+      url "https://github.com/esumerfd/gsd-status-ui/releases/download/{{TAG}}/gsd-status-{{TAG}}-x86_64-apple-darwin.tar.gz"
+      sha256 "{{SHA_X86}}"
+    end
+  end
+
+  on_linux do
+    url "https://github.com/esumerfd/gsd-status-ui/releases/download/{{TAG}}/gsd-status-{{TAG}}-x86_64-unknown-linux-gnu.tar.gz"
+    sha256 "{{SHA_LINUX}}"
+  end
+
+  def install
+    bin.install "gsd-status"
+  end
+
+  test do
+    system "#{bin}/gsd-status", "--help"
+  end
+end

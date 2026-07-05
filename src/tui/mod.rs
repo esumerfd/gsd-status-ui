@@ -198,7 +198,13 @@ impl Ui {
                 self.app.tabs().iter().position(|k| *k == kind).unwrap_or(0) + 1
             }
         };
-        let mut titles: Vec<String> = vec!["Status".into()];
+        // The first tab is the status panel; its label names the selected
+        // phase/step so stepping (j/k, C-j/k) is visible from any tab.
+        let status_title = match self.app.current_entry() {
+            Some(entry) => format!("Phase {}/Step {}", entry.phase_id, entry.step.id),
+            None => "Status".to_string(),
+        };
+        let mut titles: Vec<String> = vec![status_title];
         for kind in self.app.tabs() {
             let title = self
                 .views
@@ -408,7 +414,7 @@ mod tests {
     fn initial_screen_shows_status_tab_with_report_and_footer() {
         let mut ui = sample_ui();
         let s = screen(&mut ui);
-        assert!(s.contains("Status"), "{s}");
+        assert!(s.contains("Phase 2/Step 02-02"), "{s}");
         assert!(s.contains("Robot Coffee Service"), "{s}");
         assert!(s.contains("Phase 2 · step 02-02 (2/3)"), "{s}");
         assert!(s.contains("j/k step · Enter plan"), "{s}");
@@ -625,6 +631,23 @@ mod tests {
         ui.on_key(ctrl('o'));
         ui.on_key(ctrl('q')); // quit works even while the dialog is open
         assert!(ui.quit());
+    }
+
+    #[test]
+    fn status_tab_label_tracks_the_selected_phase_and_step() {
+        let mut ui = sample_ui();
+        let s = screen(&mut ui);
+        assert!(s.contains("Phase 2/Step 02-02"), "tab label shows selection: {s}");
+
+        // Browsing with plain k moves the label with the selection.
+        ui.on_key(plain('k'));
+        let s = screen(&mut ui);
+        assert!(s.contains("Phase 2/Step 02-01"), "{s}");
+
+        // Ctrl-k across the phase boundary updates the phase too.
+        ui.on_key(ctrl('k'));
+        let s = screen(&mut ui);
+        assert!(s.contains("Phase 1/Step 01-01"), "{s}");
     }
 
     #[test]

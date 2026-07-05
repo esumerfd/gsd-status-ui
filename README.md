@@ -28,30 +28,15 @@ gsd-status [path]
 If `path` is omitted, it walks up from the current directory looking for a
 `.planning/` directory. Output looks like:
 
-```
-╭─ GSD STATUS ────────────────────────────────────────────────╮
-  Robot Coffee Service
-  /path/to/project/.planning
-  milestone: M1 (v1)    status: executing
-  progress:  ████████░░░░░░░░░░░░░░░░  33%  (1/3 phases · 1/4 plans)
-╰─────────────────────────────────────────────────────────────╯
-
-  Phases
-  ───────────────────────────────────────────────────────────
-  ✓  Phase 1   Navigation Skeleton                 —        verified
-  ●  Phase 2   Coffee Acquisition                3/3 plans  executing
-  ·  Phase 3   Delivery                             —       not started
-
-  Next
-  ───────────────────────────────────────────────────────────
-  ...
-    /gsd-execute-phase 2       continue executing remaining plans
-    /gsd-progress              show concrete next step
-    /gsd-help                  list all GSD commands
-```
+![Status panel](assets/status-panel.png)
 
 Honors `NO_COLOR`; colored output is skipped automatically when stdout isn't a
 terminal.
+
+The interactive TUI lets you drill into a phase's plan, research, validation,
+and UAT documents:
+
+![Plan document panel](assets/plan-panel.png)
 
 An interactive TUI mode (step/tab navigation over a phase's Plan, Research,
 Validation, Context, and Discussion documents, backed by the `leaf-adapter`

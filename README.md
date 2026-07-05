@@ -1,5 +1,7 @@
 # gsd-status-ui
 
+![gsd-status-ui banner](assets/banner.png)
+
 A terminal status view for [GSD](https://github.com/open-gsd/gsd-core) planning
 workspaces — point it at a project directory and it reports which phase you're
 on, how many plans are done, and what to run next.

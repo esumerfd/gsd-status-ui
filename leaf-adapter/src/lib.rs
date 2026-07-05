@@ -123,10 +123,12 @@ impl DocView {
         self.scroll = u16::MAX;
     }
 
-    /// Enter search input mode; the draft starts from the last query.
+    /// Enter search input mode with a blank draft. (Leaf pre-fills the
+    /// last query here; we don't — q/Esc backing out to the status panel
+    /// makes re-searching the same word rare, retyping cheap.)
     pub fn begin_search(&mut self) {
         self.search.mode = true;
-        self.search.draft = self.search.query.clone();
+        self.search.draft.clear();
     }
 
     /// Leave input mode and drop the query and matches entirely.

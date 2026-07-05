@@ -183,9 +183,6 @@ fn draft_editing_and_cancel_clear_the_search() {
     search_for(&mut view, "needle");
     assert_eq!(view.search_match_count(), 1);
     view.begin_search();
-    for _ in 0..6 {
-        view.pop_search_draft();
-    }
     view.confirm_search();
     assert_eq!(view.search_match_count(), 0);
     assert_eq!(view.search_query(), "");
@@ -209,4 +206,17 @@ fn active_match_line_is_highlighted() {
         .filter(|c| c.style().bg.is_some_and(|b| b != ratatui::style::Color::Reset))
         .count();
     assert!(highlighted > 0, "active match line should get a background highlight");
+}
+
+#[test]
+fn slash_starts_with_an_empty_draft_even_after_a_search() {
+    let f = fixture("# Doc\n\nneedle one.\n");
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    search_for(&mut view, "needle");
+    assert_eq!(view.search_match_count(), 1);
+
+    // A new search starts blank; the previous matches stay active
+    // until the draft is confirmed or cancelled.
+    view.begin_search();
+    assert_eq!(view.search_draft(), "");
 }

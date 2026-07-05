@@ -97,3 +97,116 @@ fn open_missing_file_is_an_error() {
     let err = DocView::open(std::path::Path::new("/nonexistent/nope.md"), 40);
     assert!(matches!(err, Err(DocViewError::Io { .. })));
 }
+
+fn search_for(view: &mut leaf_adapter::DocView, query: &str) {
+    view.begin_search();
+    for ch in query.chars() {
+        view.push_search_draft(ch);
+    }
+    view.confirm_search();
+}
+
+#[test]
+fn confirmed_search_jumps_to_the_first_match() {
+    let body: String = (1..=50)
+        .map(|i| {
+            if i == 20 || i == 40 {
+                format!("needle target {i}\n\n")
+            } else {
+                format!("line number {i}\n\n")
+            }
+        })
+        .collect();
+    let f = fixture(&body);
+    let mut view = DocView::open(f.path(), 40).expect("open");
+
+    search_for(&mut view, "needle");
+    assert_eq!(view.search_match_count(), 2);
+    assert_eq!(view.search_index(), 0);
+    assert!(!view.is_search_mode(), "confirm leaves input mode");
+    let text = rendered_text(&mut view, 40, 5);
+    assert!(text.contains("needle target 20"), "not at first match:\n{text}");
+}
+
+#[test]
+fn next_and_prev_match_cycle_with_wraparound() {
+    let body: String = (1..=50)
+        .map(|i| {
+            if i == 20 || i == 40 {
+                format!("needle target {i}\n\n")
+            } else {
+                format!("line number {i}\n\n")
+            }
+        })
+        .collect();
+    let f = fixture(&body);
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    search_for(&mut view, "needle");
+
+    view.next_match();
+    let text = rendered_text(&mut view, 40, 5);
+    assert!(text.contains("needle target 40"), "second match:\n{text}");
+
+    view.next_match(); // wraps to the first
+    let text = rendered_text(&mut view, 40, 5);
+    assert!(text.contains("needle target 20"), "wraparound:\n{text}");
+
+    view.prev_match(); // wraps back to the last
+    let text = rendered_text(&mut view, 40, 5);
+    assert!(text.contains("needle target 40"), "prev wraps:\n{text}");
+}
+
+#[test]
+fn search_is_case_insensitive() {
+    let f = fixture("# Doc\n\nThe NeEdLe hides here.\n");
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    search_for(&mut view, "needle");
+    assert_eq!(view.search_match_count(), 1);
+}
+
+#[test]
+fn draft_editing_and_cancel_clear_the_search() {
+    let f = fixture("# Doc\n\nneedle one.\n");
+    let mut view = DocView::open(f.path(), 40).expect("open");
+
+    view.begin_search();
+    assert!(view.is_search_mode());
+    view.push_search_draft('x');
+    view.push_search_draft('y');
+    view.pop_search_draft();
+    assert_eq!(view.search_draft(), "x");
+    view.cancel_search();
+    assert!(!view.is_search_mode());
+    assert_eq!(view.search_match_count(), 0);
+
+    // Confirming an empty draft also resets everything.
+    search_for(&mut view, "needle");
+    assert_eq!(view.search_match_count(), 1);
+    view.begin_search();
+    for _ in 0..6 {
+        view.pop_search_draft();
+    }
+    view.confirm_search();
+    assert_eq!(view.search_match_count(), 0);
+    assert_eq!(view.search_query(), "");
+}
+
+#[test]
+fn active_match_line_is_highlighted() {
+    let f = fixture("# Doc\n\nplain line.\n\nneedle line.\n");
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    search_for(&mut view, "needle");
+
+    let backend = TestBackend::new(40, 10);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| view.render(frame, frame.area()))
+        .expect("draw");
+    let buffer = terminal.backend().buffer().clone();
+    let highlighted = buffer
+        .content()
+        .iter()
+        .filter(|c| c.style().bg.is_some_and(|b| b != ratatui::style::Color::Reset))
+        .count();
+    assert!(highlighted > 0, "active match line should get a background highlight");
+}

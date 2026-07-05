@@ -25,11 +25,25 @@ impl std::fmt::Display for DocViewError {
 
 impl std::error::Error for DocViewError {}
 
+/// In-document search, modeled on leaf's own SearchState: `/` collects a
+/// draft, confirming runs a case-insensitive substring search over the
+/// rendered lines, n/N cycle matches with wraparound.
+#[derive(Default)]
+struct SearchState {
+    mode: bool,
+    draft: String,
+    query: String,
+    matches: Vec<usize>,
+    idx: usize,
+}
+
 pub struct DocView {
     title: String,
     doc: leaf::viewer::Document,
+    plain_lines: Vec<String>,
     scroll: u16,
     last_viewport: u16,
+    search: SearchState,
 }
 
 impl DocView {
@@ -52,11 +66,14 @@ impl DocView {
         {
             doc.lines.pop();
         }
+        let plain_lines = leaf::viewer::searchable_lines(&doc);
         Ok(Self {
             title,
             doc,
+            plain_lines,
             scroll: 0,
             last_viewport: 10,
+            search: SearchState::default(),
         })
     }
 
@@ -65,11 +82,19 @@ impl DocView {
         &self.title
     }
 
-    /// Draw the document into a tab body.
+    /// Draw the document into a tab body. The active search match line
+    /// (if visible) gets leaf's search highlight.
     pub fn render(&mut self, frame: &mut Frame, area: Rect) {
         self.clamp_scroll(area.height);
-        let paragraph =
-            Paragraph::new(Text::from(self.doc.lines.clone())).scroll((self.scroll, 0));
+        let mut lines = self.doc.lines.clone();
+        if let Some(&line_idx) = self.search.matches.get(self.search.idx) {
+            if !self.search.query.is_empty() {
+                if let Some(line) = lines.get_mut(line_idx) {
+                    *line = leaf::viewer::highlight_line(line, &self.search.query);
+                }
+            }
+        }
+        let paragraph = Paragraph::new(Text::from(lines)).scroll((self.scroll, 0));
         frame.render_widget(paragraph, area);
     }
 
@@ -96,6 +121,93 @@ impl DocView {
     /// Scrolls past the end; the render-time clamp settles it on the last page.
     pub fn to_bottom(&mut self) {
         self.scroll = u16::MAX;
+    }
+
+    /// Enter search input mode; the draft starts from the last query.
+    pub fn begin_search(&mut self) {
+        self.search.mode = true;
+        self.search.draft = self.search.query.clone();
+    }
+
+    /// Leave input mode and drop the query and matches entirely.
+    pub fn cancel_search(&mut self) {
+        self.search = SearchState::default();
+    }
+
+    /// Leave input mode and run the drafted query; an empty draft clears
+    /// the search. Jumps to the first matching line.
+    pub fn confirm_search(&mut self) {
+        self.search.mode = false;
+        self.search.query = std::mem::take(&mut self.search.draft);
+        self.search.matches.clear();
+        self.search.idx = 0;
+        if self.search.query.is_empty() {
+            return;
+        }
+        let q = self.search.query.to_lowercase();
+        self.search.matches = self
+            .plain_lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line.contains(&q))
+            .map(|(i, _)| i)
+            .collect();
+        self.jump_to_match();
+    }
+
+    pub fn push_search_draft(&mut self, ch: char) {
+        self.search.draft.push(ch);
+    }
+
+    pub fn pop_search_draft(&mut self) {
+        self.search.draft.pop();
+    }
+
+    pub fn next_match(&mut self) {
+        if self.search.matches.is_empty() {
+            return;
+        }
+        self.search.idx = (self.search.idx + 1) % self.search.matches.len();
+        self.jump_to_match();
+    }
+
+    pub fn prev_match(&mut self) {
+        if self.search.matches.is_empty() {
+            return;
+        }
+        self.search.idx = self
+            .search
+            .idx
+            .checked_sub(1)
+            .unwrap_or(self.search.matches.len() - 1);
+        self.jump_to_match();
+    }
+
+    pub fn is_search_mode(&self) -> bool {
+        self.search.mode
+    }
+
+    pub fn search_draft(&self) -> &str {
+        &self.search.draft
+    }
+
+    pub fn search_query(&self) -> &str {
+        &self.search.query
+    }
+
+    pub fn search_match_count(&self) -> usize {
+        self.search.matches.len()
+    }
+
+    /// 0-based index of the active match.
+    pub fn search_index(&self) -> usize {
+        self.search.idx
+    }
+
+    fn jump_to_match(&mut self) {
+        if let Some(&line) = self.search.matches.get(self.search.idx) {
+            self.scroll = line.min(u16::MAX as usize) as u16;
+        }
     }
 
     fn page(&self) -> u16 {

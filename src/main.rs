@@ -68,6 +68,7 @@ fn print_help() {
     println!("Keys (TUI) — modal: q always backs out one level (doc -> status -> exit).");
     println!("  [status]  j/k browse phase/steps · Enter open plan · o open-doc dialog · q quit");
     println!("  [doc]     j/k/arrows scroll · PgUp/PgDn page · g/G top/bottom · q/Esc to status");
+    println!("            / search (type · Enter find · Esc cancel) · n/N next/prev match");
     println!("  anywhere  Ctrl-j/Ctrl-k change step · Tab / 1..9 switch tab · Ctrl-x close tab");
     println!("            Ctrl-q / Ctrl-C quit");
     println!("  dialog    j/k select · Enter open · Esc cancel");

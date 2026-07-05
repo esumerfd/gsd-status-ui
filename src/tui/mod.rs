@@ -22,7 +22,8 @@ use std::io;
 use std::path::Path;
 
 const STATUS_HINTS: &str = "j/k step · Enter plan · o open · Tab tab · q quit";
-const DOC_HINTS: &str = "j/k scroll · C-j/k step · Tab tab · q/Esc status · C-q quit";
+const DOC_HINTS: &str = "j/k scroll · / find · C-j/k step · q/Esc status · C-q quit";
+const SEARCH_HINTS: &str = "Enter find · Esc cancel";
 const DIALOG_HINTS: &str = "j/k select · Enter open · Esc cancel";
 
 pub(crate) struct Ui {
@@ -121,6 +122,22 @@ impl Ui {
     }
 
     fn on_unmodified_key(&mut self, code: KeyCode) {
+        // While drafting a search, every unmodified key belongs to the
+        // draft — including q, digits, and Tab-adjacent keys.
+        if let Focus::Doc(kind) = self.app.focus() {
+            if let Some(view) = self.views.get_mut(&(self.app.current, kind)) {
+                if view.is_search_mode() {
+                    match code {
+                        KeyCode::Esc => view.cancel_search(),
+                        KeyCode::Enter => view.confirm_search(),
+                        KeyCode::Backspace => view.pop_search_draft(),
+                        KeyCode::Char(c) => view.push_search_draft(c),
+                        _ => {}
+                    }
+                    return;
+                }
+            }
+        }
         // Shell aliases on keys no viewer binding uses.
         match code {
             KeyCode::Tab => {
@@ -178,6 +195,9 @@ impl Ui {
             KeyCode::PageUp | KeyCode::Char('b') => view.page_up(),
             KeyCode::Char('g') | KeyCode::Home => view.to_top(),
             KeyCode::Char('G') | KeyCode::End => view.to_bottom(),
+            KeyCode::Char('/') => view.begin_search(),
+            KeyCode::Char('n') => view.next_match(),
+            KeyCode::Char('N') => view.prev_match(),
             _ => {}
         }
     }
@@ -305,10 +325,26 @@ impl Ui {
             ),
             None => format!("{mode} no steps"),
         };
+        let doc_view = match self.app.focus() {
+            Focus::Doc(kind) => self.views.get(&(self.app.current, kind)),
+            Focus::Status => None,
+        };
         let right = if self.app.dialog().is_some() {
             DIALOG_HINTS.to_string()
+        } else if let Some(view) = doc_view.filter(|v| v.is_search_mode()) {
+            format!("/{} · {SEARCH_HINTS}", view.search_draft())
         } else if let Some(flash) = self.app.flash.clone() {
             flash
+        } else if let Some(view) = doc_view.filter(|v| !v.search_query().is_empty()) {
+            if view.search_match_count() == 0 {
+                format!("no matches for \"{}\" · / edit", view.search_query())
+            } else {
+                format!(
+                    "match {}/{} · n/N · / edit · q/Esc status",
+                    view.search_index() + 1,
+                    view.search_match_count()
+                )
+            }
         } else if matches!(self.app.focus(), Focus::Status) {
             STATUS_HINTS.to_string()
         } else {
@@ -677,6 +713,63 @@ mod tests {
             green_cells >= "Phase 2/Step 02".len(),
             "status tab label should be green, got {green_cells} green cells"
         );
+    }
+
+    #[test]
+    fn slash_searches_within_a_doc() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0); // 02-02 plan
+        let s = screen(&mut ui);
+        assert!(
+            !s.contains("Retraction trajectory"),
+            "search target must start off-screen: {s}"
+        );
+
+        // '/' enters search input; typed keys are draft text, not shell keys.
+        ui.on_key(plain('/'));
+        ui.on_key(plain('q'));
+        ui.on_key(plain('1'));
+        let s = screen(&mut ui);
+        assert!(!ui.quit(), "q while drafting must not quit");
+        assert!(s.contains("/q1"), "draft echoed in footer: {s}");
+        assert!(s.contains("Cup Handling"), "doc still focused, not tab 1: {s}");
+
+        // Edit the draft to a real query and confirm: jump to the match.
+        ui.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        ui.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        for ch in "retraction".chars() {
+            ui.on_key(plain(ch));
+        }
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let s = screen(&mut ui);
+        assert!(s.contains("Retraction trajectory"), "jumped to match: {s}");
+        assert!(s.contains("match 1/"), "match counter in footer: {s}");
+        assert!(s.contains("n/N"), "cycle hint in footer: {s}");
+
+        // n cycles matches without leaving the doc.
+        ui.on_key(plain('n'));
+        let s = screen(&mut ui);
+        assert!(s.contains("PLAN.md"), "still in the doc: {s}");
+
+        // Esc while drafting cancels the search and restores normal keys.
+        ui.on_key(plain('/'));
+        ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let s = screen(&mut ui);
+        assert!(!s.contains("match 1/"), "cancel clears the search: {s}");
+        assert!(s.contains("[doc]"), "still in doc mode: {s}");
+    }
+
+    #[test]
+    fn search_with_no_matches_reports_it() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0);
+        ui.on_key(plain('/'));
+        for ch in "zzzyyxx".chars() {
+            ui.on_key(plain(ch));
+        }
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let s = screen(&mut ui);
+        assert!(s.contains("no matches"), "{s}");
     }
 
     #[test]

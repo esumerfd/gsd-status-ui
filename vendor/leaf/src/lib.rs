@@ -46,6 +46,21 @@ pub mod viewer {
             lines: result.lines,
         }
     }
+
+    /// Lowercased plain text per rendered line, for substring search —
+    /// the same shape the app's own search runs against (`plain_lines`).
+    pub fn searchable_lines(doc: &Document) -> Vec<String> {
+        crate::markdown::build_searchable_lines(&doc.lines)
+            .into_iter()
+            .map(|line| line.to_lowercase())
+            .collect()
+    }
+
+    /// Re-style a rendered line with leaf's search highlight (line
+    /// background plus emphasized match text) for `query` occurrences.
+    pub fn highlight_line(line: &Line<'static>, query: &str) -> Line<'static> {
+        crate::markdown::highlight_line(line, &crate::theme::app_theme().markdown, query)
+    }
 }
 
 #[cfg(test)]

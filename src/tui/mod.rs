@@ -201,7 +201,12 @@ impl Ui {
         // The first tab is the status panel; its label names the selected
         // phase/step so stepping (j/k, C-j/k) is visible from any tab.
         let status_title = match self.app.current_entry() {
-            Some(entry) => format!("Phase {}/Step {}", entry.phase_id, entry.step.id),
+            Some(entry) => {
+                // Step ids repeat the phase prefix ("02-03"); the label
+                // already names the phase, so show only the step part.
+                let step = entry.step.id.split('-').next_back().unwrap_or_default();
+                format!("Phase {}/Step {}", entry.phase_id, step)
+            }
             None => "Status".to_string(),
         };
         let mut titles: Vec<String> = vec![status_title];
@@ -419,7 +424,7 @@ mod tests {
     fn initial_screen_shows_status_tab_with_report_and_footer() {
         let mut ui = sample_ui();
         let s = screen(&mut ui);
-        assert!(s.contains("Phase 2/Step 02-02"), "{s}");
+        assert!(s.contains("Phase 2/Step 02 "), "{s}");
         assert!(s.contains("Robot Coffee Service"), "{s}");
         assert!(s.contains("Phase 2 · step 02-02 (2/3)"), "{s}");
         assert!(s.contains("j/k step · Enter plan"), "{s}");
@@ -642,17 +647,19 @@ mod tests {
     fn status_tab_label_tracks_the_selected_phase_and_step() {
         let mut ui = sample_ui();
         let s = screen(&mut ui);
-        assert!(s.contains("Phase 2/Step 02-02"), "tab label shows selection: {s}");
+        // The label drops the step id's phase prefix: 02-02 -> Step 02.
+        assert!(s.contains("Phase 2/Step 02 "), "tab label shows selection: {s}");
+        assert!(!s.contains("Phase 2/Step 02-02"), "no phase prefix in step: {s}");
 
         // Browsing with plain k moves the label with the selection.
         ui.on_key(plain('k'));
         let s = screen(&mut ui);
-        assert!(s.contains("Phase 2/Step 02-01"), "{s}");
+        assert!(s.contains("Phase 2/Step 01 "), "{s}");
 
         // Ctrl-k across the phase boundary updates the phase too.
         ui.on_key(ctrl('k'));
         let s = screen(&mut ui);
-        assert!(s.contains("Phase 1/Step 01-01"), "{s}");
+        assert!(s.contains("Phase 1/Step 01 "), "{s}");
     }
 
     #[test]
@@ -667,7 +674,7 @@ mod tests {
             .filter(|&x| buf[(x, 0u16)].style().fg == Some(ratatui::style::Color::Green))
             .count();
         assert!(
-            green_cells >= "Phase 2/Step 02-02".len(),
+            green_cells >= "Phase 2/Step 02".len(),
             "status tab label should be green, got {green_cells} green cells"
         );
     }

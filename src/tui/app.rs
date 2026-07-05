@@ -8,7 +8,7 @@
 
 use crate::model::{DocKind, Phase, Step};
 use crate::planning::{discover_steps, PhaseDocs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// One navigable step: a plan file plus the phase it belongs to.
 #[derive(Debug, Clone)]
@@ -77,19 +77,37 @@ impl App {
         }
     }
 
-    /// Flatten all phases (roadmap order) that have a phase directory.
+    /// Flatten all phases in roadmap order. A phase with no step plans yet
+    /// (or no phase directory at all) still gets one unchecked placeholder
+    /// entry ("Step 1"), so an unstarted phase is selectable — and becomes
+    /// the default once every real step before it is checked.
     pub(crate) fn from_phases(phases: &[Phase]) -> Self {
         let mut entries = Vec::new();
         for phase in phases {
-            let Some(dir) = phase.dir.as_deref() else {
+            let dir = phase.dir.as_deref();
+            let docs = PhaseDocs::new(dir.unwrap_or_else(|| Path::new("")));
+            let steps = dir
+                .map(|d| discover_steps(d, &phase.plans))
+                .unwrap_or_default();
+            if steps.is_empty() {
+                entries.push(StepEntry {
+                    phase_id: phase.id.clone(),
+                    docs,
+                    step: Step {
+                        id: "1".into(),
+                        plan_path: PathBuf::new(),
+                        checked: false,
+                    },
+                    pos_in_phase: 0,
+                    phase_steps: 1,
+                });
                 continue;
-            };
-            let steps = discover_steps(dir, &phase.plans);
+            }
             let count = steps.len();
             for (i, step) in steps.into_iter().enumerate() {
                 entries.push(StepEntry {
                     phase_id: phase.id.clone(),
-                    docs: PhaseDocs::new(dir),
+                    docs: docs.clone(),
                     step,
                     pos_in_phase: i,
                     phase_steps: count,
@@ -304,7 +322,8 @@ mod tests {
     fn sample_app() -> App {
         let app = App::from_phases(&sample_phases());
         let ids: Vec<&str> = app.entries.iter().map(|e| e.step.id.as_str()).collect();
-        assert_eq!(ids, ["01-01", "02-01", "02-02", "02-03"]);
+        // "1" is the placeholder for phase 3, which has no plans yet.
+        assert_eq!(ids, ["01-01", "02-01", "02-02", "02-03", "1"]);
         app
     }
 
@@ -431,7 +450,9 @@ mod tests {
     #[test]
     fn step_change_past_the_last_step_flashes() {
         let mut app = sample_app();
-        app.change_step(1); // 02-03 (last — phase 3 has no directory)
+        app.change_step(1); // 02-03
+        app.change_step(1); // phase 3 placeholder (last)
+        assert_eq!(app.current_entry().unwrap().phase_id, "3");
         assert!(app.change_step(1).is_none());
         assert!(app.flash.as_deref().unwrap().contains("last step"));
     }
@@ -474,6 +495,31 @@ mod tests {
         assert_eq!(app.focus(), Focus::Status);
         app.focus_prev(); // wraps back
         assert_eq!(app.focus(), Focus::Doc(DocKind::Context));
+    }
+
+    #[test]
+    fn phase_without_steps_gets_a_placeholder_entry() {
+        let app = App::from_phases(&sample_phases());
+        let last = app.entries.last().expect("placeholder entry");
+        assert_eq!(last.phase_id, "3");
+        assert_eq!(last.step.id, "1");
+        assert!(!last.step.checked, "an unstarted phase is unchecked");
+        assert_eq!((last.pos_in_phase, last.phase_steps), (0, 1));
+    }
+
+    #[test]
+    fn starts_on_the_unstarted_phase_when_all_steps_are_checked() {
+        // Mark every real step checked; the phase-3 placeholder must win.
+        let mut app = App::from_phases(&sample_phases());
+        for entry in app.entries.iter_mut() {
+            if entry.phase_id != "3" {
+                entry.step.checked = true;
+            }
+        }
+        let app = App::new(app.entries);
+        let entry = app.current_entry().unwrap();
+        assert_eq!(entry.phase_id, "3");
+        assert_eq!(entry.step.id, "1");
     }
 
     #[test]

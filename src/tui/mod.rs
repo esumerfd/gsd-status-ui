@@ -214,8 +214,10 @@ impl Ui {
         match code {
             KeyCode::Char('j') | KeyCode::Down => view.scroll_down(),
             KeyCode::Char('k') | KeyCode::Up => view.scroll_up(),
-            KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f') => view.page_down(),
-            KeyCode::PageUp | KeyCode::Char('b') => view.page_up(),
+            KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f') | KeyCode::Char('d') => {
+                view.page_down()
+            }
+            KeyCode::PageUp | KeyCode::Char('b') | KeyCode::Char('u') => view.page_up(),
             KeyCode::Char('g') | KeyCode::Home => view.to_top(),
             KeyCode::Char('G') | KeyCode::End => view.to_bottom(),
             KeyCode::Char('/') => view.begin_search(),
@@ -691,6 +693,23 @@ mod tests {
         ui.on_key(plain('g'));
         let back = screen(&mut ui);
         assert_eq!(before, back, "g must return to top");
+    }
+
+    #[test]
+    fn d_and_u_page_the_document_like_pagedown_pageup() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0);
+        let top = screen(&mut ui);
+
+        ui.on_key(plain('d'));
+        let paged = screen(&mut ui);
+        assert_ne!(top, paged, "d must page down");
+
+        ui.on_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        ui.on_key(plain('u'));
+        ui.on_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
+        let back = screen(&mut ui);
+        assert_eq!(top, back, "u must page up by the same amount as d");
     }
 
     #[test]

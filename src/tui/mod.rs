@@ -21,9 +21,26 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-const STATUS_HINTS: &str = "j/k step · Enter plan · o open · Tab tab · q quit";
-const DOC_HINTS: &str = "j/k scroll · / find · C-j/k step · q/Esc status · C-q quit";
+const STATUS_HINTS: &str = "j/k step · Enter plan · o open · ? help · q quit";
+const DOC_HINTS: &str = "j/k scroll · / find · ? help · q/Esc status";
 const SEARCH_HINTS: &str = "Enter find · Esc cancel";
+const HELP_HINTS: &str = "q/Esc close";
+
+/// The ? overlay: every key by the mode it applies in.
+const HELP_TEXT: &str = "\
+ [status]   j/k      browse steps
+            Enter    open the step's plan
+            o        open-document dialog
+            q        quit
+ [doc]      j/k      scroll · d/u page
+            g/G      top / bottom
+            /        search · n/N next/prev match
+            q/Esc    back to status
+ search     type     edit query · Enter find · Esc cancel
+ dialog     j/k      select · Enter open · Esc cancel
+ anywhere   Tab/1-9  switch tab · C-x close tab
+            C-j/k    change step · C-q quit
+            ?        this help";
 const DIALOG_HINTS: &str = "j/k select · Enter open · Esc cancel";
 
 pub(crate) struct Ui {
@@ -31,6 +48,7 @@ pub(crate) struct Ui {
     views: HashMap<(usize, DocKind), DocView>,
     report: Text<'static>,
     body_width: u16,
+    help: bool,
 }
 
 /// The colored status report as ratatui text (reuses the report's ANSI colors).
@@ -47,6 +65,7 @@ impl Ui {
             views: HashMap::new(),
             report,
             body_width: 80,
+            help: false,
         }
     }
 
@@ -94,6 +113,16 @@ impl Ui {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q')) {
             self.app.quit = true;
+            return;
+        }
+        // The help overlay swallows everything; only its close keys act.
+        if self.help {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?')
+            ) {
+                self.help = false;
+            }
             return;
         }
         if self.app.dialog().is_some() {
@@ -196,6 +225,7 @@ impl Ui {
                     self.apply(req);
                 }
                 KeyCode::Char('o') => self.app.open_dialog(),
+                KeyCode::Char('?') => self.help = true,
                 _ => {}
             }
             return;
@@ -223,6 +253,7 @@ impl Ui {
             KeyCode::Char('/') => view.begin_search(),
             KeyCode::Char('n') => view.next_match(),
             KeyCode::Char('N') => view.prev_match(),
+            KeyCode::Char('?') => self.help = true,
             _ => {}
         }
     }
@@ -335,6 +366,25 @@ impl Ui {
             );
         }
 
+        // ── help overlay ──
+        if self.help {
+            let lines: Vec<&str> = HELP_TEXT.lines().collect();
+            let width = (lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16 + 4)
+                .min(frame.area().width);
+            let height = (lines.len() as u16 + 2).min(frame.area().height);
+            let popup = Rect {
+                x: frame.area().x + (frame.area().width.saturating_sub(width)) / 2,
+                y: frame.area().y + (frame.area().height.saturating_sub(height)) / 2,
+                width,
+                height,
+            };
+            frame.render_widget(Clear, popup);
+            frame.render_widget(
+                Paragraph::new(HELP_TEXT).block(Block::bordered().title(" Help ")),
+                popup,
+            );
+        }
+
         // ── footer ──
         let mode = match self.app.focus() {
             Focus::Status => "[status]",
@@ -354,7 +404,9 @@ impl Ui {
             Focus::Doc(kind) => self.views.get(&(self.app.current, kind)),
             Focus::Status => None,
         };
-        let right = if self.app.dialog().is_some() {
+        let right = if self.help {
+            HELP_HINTS.to_string()
+        } else if self.app.dialog().is_some() {
             DIALOG_HINTS.to_string()
         } else if let Some(view) = doc_view.filter(|v| v.is_search_mode()) {
             format!("/{} · {SEARCH_HINTS}", view.search_draft())
@@ -713,6 +765,44 @@ mod tests {
     }
 
     #[test]
+    fn question_mark_opens_a_help_dialog_grouped_by_mode() {
+        let mut ui = sample_ui();
+        ui.on_key(plain('?'));
+        let s = screen(&mut ui);
+        assert!(s.contains("Help"), "dialog title: {s}");
+        for group in ["browse steps", "back to status", "anywhere", "dialog"] {
+            assert!(s.contains(group), "help must mention '{group}': {s}");
+        }
+
+        // While help is open other keys are inert; Esc closes it.
+        ui.on_key(plain('j'));
+        let s = screen(&mut ui);
+        assert!(s.contains("browse steps"), "j must not act while help open: {s}");
+        ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let s = screen(&mut ui);
+        assert!(!s.contains("browse steps"), "Esc closes help: {s}");
+        assert!(s.contains("Robot Coffee Service"), "back on status: {s}");
+
+        // Works from doc mode too; q closes help without leaving the doc.
+        open_via_dialog(&mut ui, 0);
+        ui.on_key(plain('?'));
+        let s = screen(&mut ui);
+        assert!(s.contains("browse steps"), "help from doc mode: {s}");
+        ui.on_key(plain('q'));
+        assert!(!ui.quit(), "q closes help, not the app");
+        let s = screen(&mut ui);
+        assert!(!s.contains("browse steps"), "{s}");
+        assert!(s.contains("Cup Handling"), "still in the doc: {s}");
+
+        // '?' while drafting a search is literal draft text.
+        ui.on_key(plain('/'));
+        ui.on_key(plain('?'));
+        let s = screen(&mut ui);
+        assert!(s.contains("/?"), "draft echoes ?: {s}");
+        assert!(!s.contains("browse steps"), "no help during drafting: {s}");
+    }
+
+    #[test]
     fn ctrl_x_closes_and_falls_back_to_status() {
         let mut ui = sample_ui();
         open_via_dialog(&mut ui, 0);
@@ -901,7 +991,7 @@ mod tests {
         let s = screen(&mut ui);
         assert!(s.contains("01-01-PLAN.md"), "{s}");
         assert!(s.contains("Map the Office"), "phase 1 plan body: {s}");
-        assert!(s.contains("C-j/k step"), "doc hints: {s}");
+        assert!(s.contains("? help"), "doc hints: {s}");
 
         // Plain j now scrolls the document, not the step.
         ui.on_key(plain('j'));

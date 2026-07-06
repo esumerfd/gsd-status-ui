@@ -32,9 +32,11 @@ const HELP_TEXT: &str = "\
             Enter    open the step's plan
             o        open-document dialog
             q        quit
- [doc]      j/k      scroll · d/u page
+ [doc]      j/k      scroll
+            d/u      page down / up
             g/G      top / bottom
-            /        search · n/N next/prev match
+            /        search
+            n/N      next / prev match
             q/Esc    back to status
  search     type     edit query · Enter find · Esc cancel
  dialog     j/k      select · Enter open · Esc cancel
@@ -773,6 +775,10 @@ mod tests {
         for group in ["browse steps", "back to status", "anywhere", "dialog"] {
             assert!(s.contains(group), "help must mention '{group}': {s}");
         }
+        // Every key gets its own row; d/u and n/N must not hide inside
+        // another key's action text.
+        assert!(s.contains("page down / up"), "d/u needs its own row: {s}");
+        assert!(s.contains("next / prev match"), "n/N needs its own row: {s}");
 
         // While help is open other keys are inert; Esc closes it.
         ui.on_key(plain('j'));

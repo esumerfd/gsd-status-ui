@@ -1,4 +1,4 @@
-use crate::model::{DocKind, Phase, Plan, Stage, StateMeta, Step};
+use crate::model::{DocKind, Phase, Plan, Stage, StateMeta, Step, Todo};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -342,6 +342,87 @@ fn infer_stage(dir: Option<&Path>, plans: &[Plan], roadmap_checked: bool) -> Sta
     Stage::NotStarted
 }
 
+// ──────────────────────────────────────────────────────────────── todos ──
+
+/// Load pending todos from `.planning/todos/pending/*.md`, sorted by filename
+/// (date-prefixed, so chronological). A missing dir yields an empty list.
+pub(crate) fn load_todos(planning: &Path) -> Vec<Todo> {
+    let dir = planning.join("todos").join("pending");
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut todos: Vec<Todo> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "md"))
+        .filter_map(|path| parse_todo(&path))
+        .collect();
+    todos.sort_by(|a, b| a.slug.cmp(&b.slug));
+    todos
+}
+
+fn parse_todo(path: &Path) -> Option<Todo> {
+    let slug = path.file_stem()?.to_str()?.to_string();
+    let body = fs::read_to_string(path).ok()?;
+    let (front, rest) = split_frontmatter(&body);
+
+    let mut title: Option<String> = None;
+    let mut area: Option<String> = None;
+    for raw in front.lines() {
+        let line = raw.trim_end();
+        // Skip indented lines (e.g. list items under `files:`).
+        if line.starts_with("  ") || line.starts_with('\t') {
+            continue;
+        }
+        if let Some((key, value)) = split_kv(line) {
+            let value = strip_quotes(value.trim()).trim().to_string();
+            if value.is_empty() {
+                continue;
+            }
+            match key.trim() {
+                "title" => title = Some(value),
+                "area" => area = Some(value),
+                _ => {}
+            }
+        }
+    }
+
+    let title = title
+        .or_else(|| first_h1(rest))
+        .unwrap_or_else(|| title_from_slug(&slug));
+    Some(Todo {
+        title,
+        area,
+        slug,
+        path: path.to_path_buf(),
+    })
+}
+
+fn first_h1(body: &str) -> Option<String> {
+    body.lines()
+        .find_map(|l| l.strip_prefix("# ").map(|t| strip_md(t).trim().to_string()))
+        .filter(|t| !t.is_empty())
+}
+
+/// Derive a human title from a `YYYY-MM-DD-some-words` filename stem.
+fn title_from_slug(slug: &str) -> String {
+    let is_date_prefixed = {
+        let mut parts = slug.splitn(4, '-');
+        matches!(
+            (parts.next(), parts.next(), parts.next()),
+            (Some(y), Some(m), Some(d))
+                if y.len() == 4 && m.len() == 2 && d.len() == 2
+                    && y.bytes().chain(m.bytes()).chain(d.bytes()).all(|b| b.is_ascii_digit())
+        )
+    };
+    let rest = if is_date_prefixed {
+        slug.splitn(4, '-').nth(3).unwrap_or(slug)
+    } else {
+        slug
+    };
+    rest.replace('-', " ")
+}
+
 // ─────────────────────────────────────────── steps & document discovery ──
 
 /// Resolves document paths for one phase directory.
@@ -458,6 +539,28 @@ mod tests {
             assert!(p.ends_with(file), "{kind:?} -> {}", p.display());
             assert!(p.exists(), "{} should exist", p.display());
         }
+    }
+
+    #[test]
+    fn loads_pending_todos_sorted_with_title_and_fallbacks() {
+        let todos = load_todos(Path::new("sample/.planning"));
+        let titles: Vec<&str> = todos.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "Official signed build process for pr-monitor apps",
+                "Cache the decrypted secret in-process",
+                "locate mcpsecret source",
+            ]
+        );
+        assert_eq!(todos[0].area.as_deref(), Some("tooling"));
+    }
+
+    #[test]
+    fn returns_empty_when_no_todos_dir() {
+        // The phases/ dir has no todos/ subtree.
+        let todos = load_todos(Path::new("sample/.planning/phases"));
+        assert!(todos.is_empty());
     }
 
     #[test]

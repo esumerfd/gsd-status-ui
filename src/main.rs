@@ -37,10 +37,11 @@ fn main() -> ExitCode {
 
     let state = planning::load_state(&planning);
     let phases = planning::load_phases(&planning);
+    let todos = planning::load_todos(&planning);
 
     let interactive = !plain && io::stdout().is_terminal();
     if interactive {
-        match tui::run(&planning, &state, &phases) {
+        match tui::run(&planning, &state, &phases, &todos) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("gsd-status: {e}");
@@ -50,7 +51,7 @@ fn main() -> ExitCode {
     } else {
         let use_color = io::stdout().is_terminal() && env::var("NO_COLOR").is_err();
         let mut out = io::stdout().lock();
-        report::render(&mut out, &planning, &state, &phases, use_color).ok();
+        report::render(&mut out, &planning, &state, &phases, &todos, use_color).ok();
         ExitCode::SUCCESS
     }
 }
@@ -68,7 +69,9 @@ fn print_help() {
     println!("Keys (TUI) — modal: q always backs out one level (doc -> status -> exit).");
     println!("  ?         in-app help dialog listing every key by mode");
     println!("  [status]  j/k browse phase/steps · Enter open plan · o open-doc dialog · q quit");
-    println!("  [doc]     j/k/arrows scroll · d/u or PgDn/PgUp page · g/G top/bottom · q/Esc to status");
+    println!(
+        "  [doc]     j/k/arrows scroll · d/u or PgDn/PgUp page · g/G top/bottom · q/Esc to status"
+    );
     println!("            / search (type · Enter find · Esc cancel) · n/N next/prev match");
     println!("  anywhere  Ctrl-j/Ctrl-k change step · Tab / 1..9 switch tab · Ctrl-x close tab");
     println!("            Ctrl-q / Ctrl-C quit");

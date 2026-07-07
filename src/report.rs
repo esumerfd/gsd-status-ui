@@ -1,5 +1,5 @@
 use crate::color;
-use crate::model::{Phase, Stage, StateMeta};
+use crate::model::{Phase, Stage, StateMeta, Todo};
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -8,6 +8,7 @@ pub(crate) fn render(
     planning: &Path,
     state: &StateMeta,
     phases: &[Phase],
+    todos: &[Todo],
     use_color: bool,
 ) -> io::Result<()> {
     let c = |code: &'static str| if use_color { code } else { "" };
@@ -167,6 +168,37 @@ pub(crate) fn render(
         writeln!(out)?;
     }
 
+    if !todos.is_empty() {
+        writeln!(
+            out,
+            "    {bold}Todos{reset} {dim}({n}){reset}",
+            bold = c(color::BOLD),
+            n = todos.len(),
+            dim = c(color::DIM),
+            reset = c(color::RESET),
+        )?;
+        for todo in todos {
+            let area = match &todo.area {
+                Some(a) => format!(
+                    "   {dim}{a}{reset}",
+                    dim = c(color::DIM),
+                    a = a,
+                    reset = c(color::RESET)
+                ),
+                None => String::new(),
+            };
+            writeln!(
+                out,
+                "    {grey}○{reset} {title}{area}",
+                grey = c(color::GREY),
+                title = truncate(&todo.title, 55),
+                area = area,
+                reset = c(color::RESET),
+            )?;
+        }
+        writeln!(out)?;
+    }
+
     for hint in suggest_commands(phases) {
         writeln!(
             out,
@@ -178,6 +210,7 @@ pub(crate) fn render(
             reset = c(color::RESET),
         )?;
     }
+
     writeln!(out)?;
     Ok(())
 }
@@ -299,4 +332,49 @@ fn suggest_commands(phases: &[Phase]) -> Vec<Hint> {
         note: "list all GSD commands",
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn omits_todos_block_when_empty() {
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            Path::new("sample/.planning"),
+            &StateMeta::default(),
+            &[],
+            &[],
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(!out.contains("Todos"), "{out}");
+    }
+
+    #[test]
+    fn renders_todos_block_with_count() {
+        let todos = vec![Todo {
+            title: "Do the thing".into(),
+            area: Some("tooling".into()),
+            slug: "2026-07-07-do-the-thing".into(),
+            path: std::path::PathBuf::from("2026-07-07-do-the-thing.md"),
+        }];
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            Path::new("sample/.planning"),
+            &StateMeta::default(),
+            &[],
+            &todos,
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("Todos (1)"), "{out}");
+        assert!(out.contains("○ Do the thing"), "{out}");
+        assert!(out.contains("tooling"), "{out}");
+    }
 }

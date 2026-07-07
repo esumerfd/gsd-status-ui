@@ -6,7 +6,7 @@
 //! boundaries (e.g. Ctrl-k from the current phase's first step lands on the
 //! previous phase's last step). Each step carries its phase context.
 
-use crate::model::{DocKind, Phase, Step};
+use crate::model::{DocKind, Phase, Step, Todo};
 use crate::planning::{discover_steps, PhaseDocs};
 use std::path::{Path, PathBuf};
 
@@ -20,6 +20,25 @@ pub(crate) struct StepEntry {
     /// for the footer's "step 02-02 (2/3)" display.
     pub(crate) pos_in_phase: usize,
     pub(crate) phase_steps: usize,
+    /// `Some(title)` when this entry is a pending todo appended after the
+    /// phase steps rather than a phase step. Its `step.plan_path` is the
+    /// todo's markdown file, so `open_doc(Plan)` opens the todo.
+    pub(crate) todo_title: Option<String>,
+}
+
+impl StepEntry {
+    pub(crate) fn is_todo(&self) -> bool {
+        self.todo_title.is_some()
+    }
+}
+
+/// What the status body should highlight for the current selection.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Selected {
+    /// The row for this phase id (a step belongs to it).
+    Phase(String),
+    /// The Nth pending todo row (0-based, in render order).
+    Todo(usize),
 }
 
 /// What the shell must open (create a DocView for) after a state change.
@@ -62,9 +81,11 @@ pub(crate) struct App {
 
 impl App {
     pub(crate) fn new(entries: Vec<StepEntry>) -> Self {
+        // Default to the first unchecked *step*; todos never grab the cursor
+        // on startup.
         let current = entries
             .iter()
-            .position(|e| !e.step.checked)
+            .position(|e| !e.is_todo() && !e.step.checked)
             .unwrap_or(0);
         let tabsets = vec![TabSet::default(); entries.len()];
         Self {
@@ -81,7 +102,16 @@ impl App {
     /// (or no phase directory at all) still gets one unchecked placeholder
     /// entry ("Step 1"), so an unstarted phase is selectable — and becomes
     /// the default once every real step before it is checked.
+    /// Test-only convenience for building an App with no todos; production
+    /// always goes through `from_phases_and_todos`.
+    #[cfg(test)]
     pub(crate) fn from_phases(phases: &[Phase]) -> Self {
+        Self::from_phases_and_todos(phases, &[])
+    }
+
+    /// Like `from_phases`, but appends one navigable entry per pending todo
+    /// after all phase steps, so j/k walks steps then todos.
+    pub(crate) fn from_phases_and_todos(phases: &[Phase], todos: &[Todo]) -> Self {
         let mut entries = Vec::new();
         for phase in phases {
             let dir = phase.dir.as_deref();
@@ -100,6 +130,7 @@ impl App {
                     },
                     pos_in_phase: 0,
                     phase_steps: 1,
+                    todo_title: None,
                 });
                 continue;
             }
@@ -111,10 +142,40 @@ impl App {
                     step,
                     pos_in_phase: i,
                     phase_steps: count,
+                    todo_title: None,
                 });
             }
         }
+        for todo in todos {
+            entries.push(StepEntry {
+                phase_id: String::new(),
+                docs: PhaseDocs::new(Path::new("")),
+                step: Step {
+                    id: todo.slug.clone(),
+                    plan_path: todo.path.clone(),
+                    checked: false,
+                },
+                pos_in_phase: 0,
+                phase_steps: 1,
+                todo_title: Some(todo.title.clone()),
+            });
+        }
         Self::new(entries)
+    }
+
+    /// What the status body should highlight for the current selection:
+    /// the phase row for a step, or the todo row for a todo entry.
+    pub(crate) fn selection(&self) -> Option<Selected> {
+        let entry = self.entries.get(self.current)?;
+        if entry.is_todo() {
+            let ordinal = self.entries[..self.current]
+                .iter()
+                .filter(|e| e.is_todo())
+                .count();
+            Some(Selected::Todo(ordinal))
+        } else {
+            Some(Selected::Phase(entry.phase_id.clone()))
+        }
     }
 
     pub(crate) fn current_entry(&self) -> Option<&StepEntry> {
@@ -495,6 +556,50 @@ mod tests {
         assert_eq!(app.focus(), Focus::Status);
         app.focus_prev(); // wraps back
         assert_eq!(app.focus(), Focus::Doc(DocKind::Context));
+    }
+
+    fn sample_todos() -> Vec<crate::model::Todo> {
+        crate::planning::load_todos(Path::new("sample/.planning"))
+    }
+
+    #[test]
+    fn todos_are_appended_after_steps_and_default_skips_them() {
+        let app = App::from_phases_and_todos(&sample_phases(), &sample_todos());
+        // Default lands on the first unchecked real step, never a todo.
+        assert!(!app.current_entry().unwrap().is_todo());
+        assert_eq!(app.current_entry().unwrap().step.id, "02-02");
+        // 5 steps + 3 todos.
+        assert_eq!(app.entries.len(), 8);
+        assert!(app.entries[5].is_todo());
+        assert!(app.entries[7].is_todo());
+    }
+
+    #[test]
+    fn stepping_reaches_todos_and_enter_opens_the_todo_md() {
+        let mut app = App::from_phases_and_todos(&sample_phases(), &sample_todos());
+        // 02-02 (idx 2) -> 02-03 -> phase-3 placeholder -> first todo (idx 5).
+        app.change_step(1);
+        app.change_step(1);
+        app.change_step(1);
+        assert!(app.current_entry().unwrap().is_todo());
+        let req = app.open_doc(DocKind::Plan).expect("open todo md");
+        assert!(
+            req.path.ends_with("2026-07-07-signed-build.md"),
+            "{}",
+            req.path.display()
+        );
+    }
+
+    #[test]
+    fn selection_reports_phase_for_steps_and_ordinal_for_todos() {
+        let mut app = App::from_phases_and_todos(&sample_phases(), &sample_todos());
+        assert_eq!(app.selection(), Some(Selected::Phase("2".into())));
+        app.change_step(1);
+        app.change_step(1);
+        app.change_step(1); // first todo
+        assert_eq!(app.selection(), Some(Selected::Todo(0)));
+        app.change_step(1); // second todo
+        assert_eq!(app.selection(), Some(Selected::Todo(1)));
     }
 
     #[test]

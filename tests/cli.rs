@@ -35,3 +35,15 @@ fn no_tui_alias_works() {
     assert_eq!(code, 0);
     assert!(stdout.contains("Robot Coffee Service"), "{stdout}");
 }
+
+#[test]
+fn plain_report_lists_pending_todos_under_next() {
+    let (stdout, code) = run(&["sample"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Todos"), "{stdout}");
+    let title = "Official signed build process for pr-monitor apps";
+    assert!(stdout.contains(title), "{stdout}");
+    let next = stdout.find("Next").expect("Next heading present");
+    let todo = stdout.find(title).expect("todo title present");
+    assert!(todo > next, "todos must render under the Next heading");
+}

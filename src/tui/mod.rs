@@ -6,8 +6,8 @@
 pub(crate) mod ansi;
 pub(crate) mod app;
 
-use crate::model::{DocKind, Phase, StateMeta};
-use app::{App, Focus, OpenRequest};
+use crate::model::{DocKind, Phase, StateMeta, Todo};
+use app::{App, Focus, OpenRequest, Selected};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::{execute, terminal};
 use leaf_adapter::DocView;
@@ -56,8 +56,38 @@ pub(crate) struct Ui {
 /// The colored status report as ratatui text (reuses the report's ANSI colors).
 pub(crate) fn status_text(planning: &Path, state: &StateMeta, phases: &[Phase]) -> Text<'static> {
     let mut buf = Vec::new();
-    crate::report::render(&mut buf, planning, state, phases, true).ok();
+    // Todos are re-read here (not threaded in) so the periodic status refresh
+    // picks up newly captured `.planning/todos/` items without extra plumbing.
+    let todos = crate::planning::load_todos(planning);
+    crate::report::render(&mut buf, planning, state, phases, &todos, true).ok();
     ansi::ansi_to_text(&String::from_utf8_lossy(&buf))
+}
+
+fn line_string(line: &Line) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// Locate the status-body line to highlight for the current selection: the
+/// phase's own `Phase N` row, or the Nth `○` todo row.
+fn highlight_index(text: &Text, sel: &Selected) -> Option<usize> {
+    match sel {
+        Selected::Phase(id) => text.lines.iter().position(|line| {
+            let s = line_string(line);
+            // Match "Phase <id>" as a whole token so Phase 1 ≠ Phase 10, and
+            // the "Phases" heading (no trailing space) never matches.
+            s.find("Phase ")
+                .map(|p| &s[p + "Phase ".len()..])
+                .and_then(|rest| rest.split_whitespace().next())
+                == Some(id.as_str())
+        }),
+        Selected::Todo(n) => text
+            .lines
+            .iter()
+            .enumerate()
+            .filter(|(_, line)| line_string(line).trim_start().starts_with('○'))
+            .nth(*n)
+            .map(|(i, _)| i),
+    }
 }
 
 impl Ui {
@@ -279,6 +309,7 @@ impl Ui {
         // The first tab is the status panel; its label names the selected
         // phase/step so stepping (j/k, C-j/k) is visible from any tab.
         let status_title = match self.app.current_entry() {
+            Some(entry) if entry.is_todo() => "Todo".to_string(),
             Some(entry) => {
                 // Step ids repeat the phase prefix ("02-03"); the label
                 // already names the phase, so show only the step part.
@@ -316,7 +347,16 @@ impl Ui {
         // ── body ──
         match self.app.focus() {
             Focus::Status => {
-                frame.render_widget(Paragraph::new(self.report.clone()), body);
+                let mut text = self.report.clone();
+                if let Some(sel) = self.app.selection() {
+                    if let Some(idx) = highlight_index(&text, &sel) {
+                        let hl = Style::default().bg(Color::Indexed(238));
+                        for span in &mut text.lines[idx].spans {
+                            span.style = span.style.patch(hl);
+                        }
+                    }
+                }
+                frame.render_widget(Paragraph::new(text), body);
             }
             Focus::Doc(kind) => {
                 if let Some(view) = self.views.get_mut(&(self.app.current, kind)) {
@@ -438,8 +478,16 @@ impl Ui {
     }
 }
 
-pub(crate) fn run(planning: &Path, state: &StateMeta, phases: &[Phase]) -> io::Result<()> {
-    let mut ui = Ui::new(status_text(planning, state, phases), App::from_phases(phases));
+pub(crate) fn run(
+    planning: &Path,
+    state: &StateMeta,
+    phases: &[Phase],
+    todos: &[Todo],
+) -> io::Result<()> {
+    let mut ui = Ui::new(
+        status_text(planning, state, phases),
+        App::from_phases_and_todos(phases, todos),
+    );
 
     terminal::enable_raw_mode()?;
     execute!(io::stdout(), terminal::EnterAlternateScreen)?;
@@ -509,11 +557,40 @@ mod tests {
         let planning = Path::new("sample/.planning");
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
-        Ui::new(status_text(planning, &state, &phases), App::from_phases(&phases))
+        let todos = crate::planning::load_todos(planning);
+        Ui::new(
+            status_text(planning, &state, &phases),
+            App::from_phases_and_todos(&phases, &todos),
+        )
     }
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn highlight_index_finds_phase_and_todo_lines() {
+        let text = Text::from(vec![
+            Line::raw("  Phases"),
+            Line::raw("  ✓  Phase 1   Navigation Skeleton   verified"),
+            Line::raw("  ●  Phase 2   Coffee Acquisition   executing"),
+            Line::raw("  Next"),
+            Line::raw("    Todos (2)"),
+            Line::raw("    ○ Signed build   tooling"),
+            Line::raw("    ○ Cache secret   perf"),
+        ]);
+        assert_eq!(
+            highlight_index(&text, &Selected::Phase("2".into())),
+            Some(2)
+        );
+        assert_eq!(
+            highlight_index(&text, &Selected::Phase("1".into())),
+            Some(1)
+        );
+        assert_eq!(highlight_index(&text, &Selected::Todo(0)), Some(5));
+        assert_eq!(highlight_index(&text, &Selected::Todo(1)), Some(6));
+        assert_eq!(highlight_index(&text, &Selected::Phase("9".into())), None);
+        assert_eq!(highlight_index(&text, &Selected::Todo(5)), None);
     }
 
     fn plain(c: char) -> KeyEvent {

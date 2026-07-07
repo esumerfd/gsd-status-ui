@@ -16,6 +16,17 @@ pub(crate) struct StateMeta {
     pub(crate) project_title: String,
 }
 
+/// A deferred work item captured under `.planning/todos/pending/`.
+#[derive(Debug, Clone)]
+pub(crate) struct Todo {
+    pub(crate) title: String,
+    pub(crate) area: Option<String>,
+    /// Filename stem, used as a stable secondary sort key.
+    pub(crate) slug: String,
+    /// The todo's markdown file, opened when the todo is selected.
+    pub(crate) path: PathBuf,
+}
+
 #[derive(Debug)]
 pub(crate) struct Phase {
     pub(crate) id: String,

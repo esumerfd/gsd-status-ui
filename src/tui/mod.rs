@@ -5,10 +5,12 @@
 
 pub(crate) mod ansi;
 pub(crate) mod app;
+pub(crate) mod clipboard;
 
 use crate::model::{DocKind, Phase, StateMeta, Todo};
 use app::{App, Focus, OpenRequest, Selected};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::style::Print;
 use crossterm::{execute, terminal};
 use leaf_adapter::DocView;
 use ratatui::backend::CrosstermBackend;
@@ -21,7 +23,7 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-const STATUS_HINTS: &str = "j/k step · Enter plan · o open · ? help · q quit";
+const STATUS_HINTS: &str = "j/k step · Enter plan · o open · c copy todo · ? help · q quit";
 const DOC_HINTS: &str = "j/k scroll · / find · ? help · q/Esc status";
 const SEARCH_HINTS: &str = "Enter find · Esc cancel";
 const HELP_HINTS: &str = "q/Esc close";
@@ -31,6 +33,7 @@ const HELP_TEXT: &str = "\
  [status]   j/k      browse steps
             Enter    open the step's plan
             o        open-document dialog
+            c        copy selected todo's name
             q        quit
  [doc]      j/k      scroll
             d/u      page down / up
@@ -51,6 +54,12 @@ pub(crate) struct Ui {
     report: Text<'static>,
     body_width: u16,
     help: bool,
+    /// Text queued by `c` for the event loop to push to the system clipboard
+    /// (via OSC 52). Drained by `take_clipboard`.
+    clipboard: Option<String>,
+    /// True for the draw right after a copy, so the copied todo row flashes.
+    /// Reset by the next key press or idle tick.
+    copy_flash: bool,
 }
 
 /// The colored status report as ratatui text (reuses the report's ANSI colors).
@@ -98,11 +107,39 @@ impl Ui {
             report,
             body_width: 80,
             help: false,
+            clipboard: None,
+            copy_flash: false,
         }
     }
 
     pub(crate) fn quit(&self) -> bool {
         self.app.quit
+    }
+
+    /// Take any text queued by `c`, so the event loop can write it to the
+    /// terminal clipboard. Draining, so each copy fires once.
+    pub(crate) fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard.take()
+    }
+
+    /// Copy the selected todo's title to the clipboard (queued for the event
+    /// loop). On a phase step there is nothing to copy, so just hint.
+    fn copy_selection(&mut self) {
+        match self.app.current_todo_title() {
+            Some(title) => {
+                let title = title.to_string();
+                self.app.flash = Some(format!("copied: {title}"));
+                self.clipboard = Some(title);
+                self.copy_flash = true;
+            }
+            None => self.app.flash = Some("select a todo to copy (c)".into()),
+        }
+    }
+
+    /// Drop the copy flash so the copied todo row returns to normal. Called
+    /// by the event loop on the next key or idle tick.
+    pub(crate) fn clear_copy_flash(&mut self) {
+        self.copy_flash = false;
     }
 
     /// Replace the status panel body (periodic refresh).
@@ -142,6 +179,8 @@ impl Ui {
         if key.kind != KeyEventKind::Press {
             return;
         }
+        // Any key ends the previous copy's flash; a fresh `c` re-arms it below.
+        self.copy_flash = false;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if ctrl && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('q')) {
             self.app.quit = true;
@@ -257,6 +296,7 @@ impl Ui {
                     self.apply(req);
                 }
                 KeyCode::Char('o') => self.app.open_dialog(),
+                KeyCode::Char('c') => self.copy_selection(),
                 KeyCode::Char('?') => self.help = true,
                 _ => {}
             }
@@ -302,9 +342,7 @@ impl Ui {
         // ── tab bar ──
         let focused_slot = match self.app.focus() {
             Focus::Status => 0,
-            Focus::Doc(kind) => {
-                self.app.tabs().iter().position(|k| *k == kind).unwrap_or(0) + 1
-            }
+            Focus::Doc(kind) => self.app.tabs().iter().position(|k| *k == kind).unwrap_or(0) + 1,
         };
         // The first tab is the status panel; its label names the selected
         // phase/step so stepping (j/k, C-j/k) is visible from any tab.
@@ -350,7 +388,14 @@ impl Ui {
                 let mut text = self.report.clone();
                 if let Some(sel) = self.app.selection() {
                     if let Some(idx) = highlight_index(&text, &sel) {
-                        let hl = Style::default().bg(Color::Indexed(238));
+                        // A just-copied todo flashes green (the "done" accent);
+                        // otherwise the selection gets the usual grey band.
+                        let flashing = self.copy_flash && matches!(sel, Selected::Todo(_));
+                        let hl = if flashing {
+                            Style::default().bg(Color::Green).fg(Color::Black)
+                        } else {
+                            Style::default().bg(Color::Indexed(238))
+                        };
                         for span in &mut text.lines[idx].spans {
                             span.style = span.style.patch(hl);
                         }
@@ -390,7 +435,11 @@ impl Ui {
                 .iter()
                 .enumerate()
                 .map(|(i, (kind, name))| {
-                    let open_marker = if self.app.tabs().contains(kind) { "●" } else { " " };
+                    let open_marker = if self.app.tabs().contains(kind) {
+                        "●"
+                    } else {
+                        " "
+                    };
                     let style = if i == dialog.selected {
                         Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
                     } else {
@@ -531,10 +580,14 @@ fn event_loop(
         if event::poll(TICK)? {
             if let Event::Key(key) = event::read()? {
                 ui.on_key(key);
+                if let Some(text) = ui.take_clipboard() {
+                    execute!(io::stdout(), Print(clipboard::osc52_copy_sequence(&text))).ok();
+                }
             }
             continue;
         }
-        // Poll timed out: an idle tick — run the refresh checks.
+        // Poll timed out: an idle tick — clear any copy flash, then refresh.
+        ui.clear_copy_flash();
         if last_status.elapsed() >= STATUS_REFRESH {
             last_status = std::time::Instant::now();
             let state = crate::planning::load_state(planning);
@@ -622,6 +675,76 @@ mod tests {
     }
 
     #[test]
+    fn c_copies_the_selected_todo_title_to_the_clipboard() {
+        let mut ui = sample_ui();
+        // Nothing queued before pressing anything.
+        assert_eq!(ui.take_clipboard(), None);
+
+        // On a real step, c does not copy — it hints instead.
+        ui.on_key(plain('c'));
+        assert_eq!(ui.take_clipboard(), None);
+
+        // Browse to the first todo (02-02 -> 02-03 -> placeholder -> todo0).
+        ui.on_key(plain('j'));
+        ui.on_key(plain('j'));
+        ui.on_key(plain('j'));
+        ui.on_key(plain('c'));
+        assert_eq!(
+            ui.take_clipboard().as_deref(),
+            Some("Official signed build process for pr-monitor apps")
+        );
+        // take_clipboard drains: a second read is empty.
+        assert_eq!(ui.take_clipboard(), None);
+
+        let s = screen(&mut ui);
+        assert!(s.contains("copied"), "footer confirms the copy: {s}");
+    }
+
+    fn bg_green_cells(ui: &mut Ui) -> usize {
+        let backend = TestBackend::new(90, 24);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| ui.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        buf.content()
+            .iter()
+            .filter(|c| c.style().bg == Some(Color::Green))
+            .count()
+    }
+
+    #[test]
+    fn c_flashes_the_copied_todo_row_green() {
+        let mut ui = sample_ui();
+        // No green background anywhere until a copy happens.
+        assert_eq!(bg_green_cells(&mut ui), 0);
+
+        // Browse to the first todo and copy it.
+        ui.on_key(plain('j'));
+        ui.on_key(plain('j'));
+        ui.on_key(plain('j'));
+        ui.on_key(plain('c'));
+        assert!(
+            bg_green_cells(&mut ui) > 0,
+            "the copied todo row should flash green"
+        );
+
+        // The flash is transient: the next interaction clears it.
+        ui.on_key(plain('k'));
+        assert_eq!(bg_green_cells(&mut ui), 0, "flash clears on the next key");
+    }
+
+    #[test]
+    fn c_is_inert_while_a_document_is_focused() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0); // doc mode
+        ui.on_key(plain('c'));
+        assert_eq!(
+            ui.take_clipboard(),
+            None,
+            "c belongs to the viewer in doc mode"
+        );
+    }
+
+    #[test]
     fn status_tab_reuses_the_report_colors() {
         let mut ui = sample_ui();
         let backend = TestBackend::new(90, 24);
@@ -631,9 +754,16 @@ mod tests {
         let colored = buf
             .content()
             .iter()
-            .filter(|c| c.style().fg.is_some_and(|f| f != ratatui::style::Color::Reset))
+            .filter(|c| {
+                c.style()
+                    .fg
+                    .is_some_and(|f| f != ratatui::style::Color::Reset)
+            })
             .count();
-        assert!(colored > 20, "status panel should be colored, got {colored} colored cells");
+        assert!(
+            colored > 20,
+            "status panel should be colored, got {colored} colored cells"
+        );
     }
 
     #[test]
@@ -691,7 +821,10 @@ mod tests {
         ui.on_key(plain('q'));
         assert!(!ui.quit(), "first q must not quit");
         let s = screen(&mut ui);
-        assert!(s.contains("Robot Coffee Service"), "q returns to status: {s}");
+        assert!(
+            s.contains("Robot Coffee Service"),
+            "q returns to status: {s}"
+        );
         assert!(s.contains("02-02-PLAN.md"), "tab stays open: {s}");
         ui.on_key(plain('q'));
         assert!(ui.quit(), "second q (on status) exits the app");
@@ -704,7 +837,10 @@ mod tests {
         ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(!ui.quit());
         let s = screen(&mut ui);
-        assert!(s.contains("Robot Coffee Service"), "Esc returns to status: {s}");
+        assert!(
+            s.contains("Robot Coffee Service"),
+            "Esc returns to status: {s}"
+        );
     }
 
     #[test]
@@ -745,7 +881,10 @@ mod tests {
         ui.on_key(ctrl('o'));
         let s = screen(&mut ui);
         assert!(s.contains("01-01-PLAN.md"), "{s}");
-        assert!(!s.contains("01-RESEARCH.md"), "phase 1 has no research: {s}");
+        assert!(
+            !s.contains("01-RESEARCH.md"),
+            "phase 1 has no research: {s}"
+        );
     }
 
     #[test]
@@ -761,7 +900,10 @@ mod tests {
         ui.on_key(ctrl('j'));
         let s = screen(&mut ui);
         assert!(s.contains("02-03-PLAN.md"), "{s}");
-        assert!(!s.contains("02-RESEARCH.md"), "step tab sets must not mix: {s}");
+        assert!(
+            !s.contains("02-RESEARCH.md"),
+            "step tab sets must not mix: {s}"
+        );
         assert!(s.contains("Spill Recovery"), "{s}");
 
         // Open validation on this step, then go back.
@@ -798,10 +940,16 @@ mod tests {
         // Tab cycles focus: doc -> status.
         ui.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         let s = screen(&mut ui);
-        assert!(s.contains("Robot Coffee Service"), "tab should cycle to status: {s}");
+        assert!(
+            s.contains("Robot Coffee Service"),
+            "tab should cycle to status: {s}"
+        );
         ui.on_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
         let s = screen(&mut ui);
-        assert!(s.contains("Cup Handling"), "backtab should return to doc: {s}");
+        assert!(
+            s.contains("Cup Handling"),
+            "backtab should return to doc: {s}"
+        );
         // Ctrl-Down/Up change step like Ctrl-j/k.
         ui.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
         let s = screen(&mut ui);
@@ -855,12 +1003,18 @@ mod tests {
         // Every key gets its own row; d/u and n/N must not hide inside
         // another key's action text.
         assert!(s.contains("page down / up"), "d/u needs its own row: {s}");
-        assert!(s.contains("next / prev match"), "n/N needs its own row: {s}");
+        assert!(
+            s.contains("next / prev match"),
+            "n/N needs its own row: {s}"
+        );
 
         // While help is open other keys are inert; Esc closes it.
         ui.on_key(plain('j'));
         let s = screen(&mut ui);
-        assert!(s.contains("browse steps"), "j must not act while help open: {s}");
+        assert!(
+            s.contains("browse steps"),
+            "j must not act while help open: {s}"
+        );
         ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         let s = screen(&mut ui);
         assert!(!s.contains("browse steps"), "Esc closes help: {s}");
@@ -892,7 +1046,10 @@ mod tests {
         ui.on_key(ctrl('x'));
         let s = screen(&mut ui);
         assert!(!s.contains("02-02-PLAN.md"), "{s}");
-        assert!(s.contains("Robot Coffee Service"), "status body expected: {s}");
+        assert!(
+            s.contains("Robot Coffee Service"),
+            "status body expected: {s}"
+        );
     }
 
     #[test]
@@ -923,8 +1080,14 @@ mod tests {
         let mut ui = sample_ui();
         let s = screen(&mut ui);
         // The label drops the step id's phase prefix: 02-02 -> Step 02.
-        assert!(s.contains("Phase 2/Step 02 "), "tab label shows selection: {s}");
-        assert!(!s.contains("Phase 2/Step 02-02"), "no phase prefix in step: {s}");
+        assert!(
+            s.contains("Phase 2/Step 02 "),
+            "tab label shows selection: {s}"
+        );
+        assert!(
+            !s.contains("Phase 2/Step 02-02"),
+            "no phase prefix in step: {s}"
+        );
 
         // Browsing with plain k moves the label with the selection.
         ui.on_key(plain('k'));
@@ -971,7 +1134,10 @@ mod tests {
         let s = screen(&mut ui);
         assert!(!ui.quit(), "q while drafting must not quit");
         assert!(s.contains("/q1"), "draft echoed in footer: {s}");
-        assert!(s.contains("Cup Handling"), "doc still focused, not tab 1: {s}");
+        assert!(
+            s.contains("Cup Handling"),
+            "doc still focused, not tab 1: {s}"
+        );
 
         // Edit the draft to a real query and confirm: jump to the match.
         ui.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
@@ -1085,8 +1251,10 @@ mod tests {
         ui.on_key(ctrl('j'));
         let s = screen(&mut ui);
         assert!(s.contains("Phase 2 · step 02-01 (1/3)"), "{s}");
-        assert!(s.contains("02-01-PLAN.md"), "viewer stepping auto-opens plan: {s}");
+        assert!(
+            s.contains("02-01-PLAN.md"),
+            "viewer stepping auto-opens plan: {s}"
+        );
         assert!(s.contains("Locate and Operate"), "{s}");
     }
-
 }

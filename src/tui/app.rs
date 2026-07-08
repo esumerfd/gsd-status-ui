@@ -182,6 +182,12 @@ impl App {
         self.entries.get(self.current)
     }
 
+    /// The selected todo's title, or `None` when the selection is a phase
+    /// step. Backs the `c` "copy todo name" key.
+    pub(crate) fn current_todo_title(&self) -> Option<&str> {
+        self.entries.get(self.current)?.todo_title.as_deref()
+    }
+
     pub(crate) fn tabs(&self) -> &[DocKind] {
         self.tabsets
             .get(self.current)
@@ -587,6 +593,21 @@ mod tests {
             req.path.ends_with("2026-07-07-signed-build.md"),
             "{}",
             req.path.display()
+        );
+    }
+
+    #[test]
+    fn current_todo_title_is_some_only_on_a_todo() {
+        let mut app = App::from_phases_and_todos(&sample_phases(), &sample_todos());
+        // Starts on a real step.
+        assert!(app.current_todo_title().is_none());
+        // Walk to the first todo (02-02 -> 02-03 -> placeholder -> todo0).
+        app.change_step(1);
+        app.change_step(1);
+        app.change_step(1);
+        assert_eq!(
+            app.current_todo_title(),
+            Some("Official signed build process for pr-monitor apps")
         );
     }
 

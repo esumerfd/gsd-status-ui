@@ -8,6 +8,7 @@
 
 use crate::model::{DocKind, Phase, Step, Todo};
 use crate::planning::{discover_steps, PhaseDocs};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// One navigable step: a plan file plus the phase it belongs to.
@@ -112,6 +113,12 @@ impl App {
     /// Like `from_phases`, but appends one navigable entry per pending todo
     /// after all phase steps, so j/k walks steps then todos.
     pub(crate) fn from_phases_and_todos(phases: &[Phase], todos: &[Todo]) -> Self {
+        Self::new(Self::build_entries(phases, todos))
+    }
+
+    /// The flattened step-then-todo entry list. Shared by construction and by
+    /// `refresh` (the periodic reload), so both see the same ordering.
+    fn build_entries(phases: &[Phase], todos: &[Todo]) -> Vec<StepEntry> {
         let mut entries = Vec::new();
         for phase in phases {
             let dir = phase.dir.as_deref();
@@ -160,7 +167,44 @@ impl App {
                 todo_title: Some(todo.title.clone()),
             });
         }
-        Self::new(entries)
+        entries
+    }
+
+    /// Rebuild the entry list from freshly loaded phases + todos (the periodic
+    /// reload), so navigation bounds track a workspace that changed on disk —
+    /// e.g. a todo captured while the TUI is open. The current selection is
+    /// preserved by identity (or clamped into range if it vanished), and each
+    /// surviving entry keeps its open-document tab set. Returns a map from old
+    /// entry index to new index for the entries that survived, so the shell can
+    /// remap its per-entry DocViews.
+    pub(crate) fn refresh(&mut self, phases: &[Phase], todos: &[Todo]) -> HashMap<usize, usize> {
+        // `(phase_id, step.id)` is a stable identity: step ids are phase-scoped
+        // and unique, todo entries carry their (unique) slug as the step id.
+        let key = |e: &StepEntry| (e.phase_id.clone(), e.step.id.clone());
+        let selected = self.entries.get(self.current).map(&key);
+
+        let new_entries = Self::build_entries(phases, todos);
+        let new_index: HashMap<(String, String), usize> = new_entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (key(e), i))
+            .collect();
+
+        let mut new_tabsets = vec![TabSet::default(); new_entries.len()];
+        let mut remap = HashMap::new();
+        for (old_i, entry) in self.entries.iter().enumerate() {
+            if let Some(&new_i) = new_index.get(&key(entry)) {
+                new_tabsets[new_i] = self.tabsets[old_i].clone();
+                remap.insert(old_i, new_i);
+            }
+        }
+
+        self.current = selected
+            .and_then(|k| new_index.get(&k).copied())
+            .unwrap_or_else(|| self.current.min(new_entries.len().saturating_sub(1)));
+        self.entries = new_entries;
+        self.tabsets = new_tabsets;
+        remap
     }
 
     /// What the status body should highlight for the current selection:
@@ -566,6 +610,90 @@ mod tests {
 
     fn sample_todos() -> Vec<crate::model::Todo> {
         crate::planning::load_todos(Path::new("sample/.planning"))
+    }
+
+    fn todo(slug: &str, title: &str) -> crate::model::Todo {
+        crate::model::Todo {
+            title: title.into(),
+            area: None,
+            slug: slug.into(),
+            path: std::path::PathBuf::from(format!("{slug}.md")),
+        }
+    }
+
+    #[test]
+    fn refresh_appends_a_new_todo_so_nav_can_reach_it() {
+        // Start with no todos and walk to the very last entry.
+        let mut app = App::from_phases_and_todos(&sample_phases(), &[]);
+        let last = app.entries.len() - 1;
+        while app.current < last {
+            app.change_step(1);
+        }
+        assert!(app.change_step(1).is_none());
+        assert!(app.flash.as_deref().unwrap().contains("last step"));
+
+        // A timed reload picks up a freshly captured todo.
+        app.refresh(
+            &sample_phases(),
+            &[todo("2026-07-09-new-todo", "Fresh todo")],
+        );
+
+        // The down-movement bound now derives from the grown list: j descends
+        // onto the appended todo instead of clamping against the stale length.
+        assert!(app.change_step(1).is_none());
+        let entry = app.current_entry().unwrap();
+        assert!(entry.is_todo(), "cursor should reach the new todo row");
+        assert_eq!(entry.todo_title.as_deref(), Some("Fresh todo"));
+    }
+
+    #[test]
+    fn refresh_preserves_the_current_selection_by_identity() {
+        let mut app = App::from_phases_and_todos(&sample_phases(), &[]);
+        app.change_step(-1); // browse to 02-01
+        assert_eq!(app.current_entry().unwrap().step.id, "02-01");
+
+        // Reload that only appends a todo must not move the cursor off 02-01.
+        app.refresh(
+            &sample_phases(),
+            &[todo("2026-07-09-new-todo", "Fresh todo")],
+        );
+        let entry = app.current_entry().unwrap();
+        assert_eq!(entry.step.id, "02-01");
+        assert_eq!(entry.phase_id, "2");
+    }
+
+    #[test]
+    fn refresh_remaps_open_tabs_to_surviving_entries() {
+        let mut app = App::from_phases_and_todos(&sample_phases(), &[]);
+        // Open a doc on the current step (02-02), then reload with a new todo.
+        app.open_doc(DocKind::Research);
+        let before = app.current;
+        assert_eq!(app.tabs(), [DocKind::Research]);
+
+        let remap = app.refresh(
+            &sample_phases(),
+            &[todo("2026-07-09-new-todo", "Fresh todo")],
+        );
+
+        // The step kept its position and its open tab survived; the remap
+        // reports the (unchanged, here) old->new index so the shell can move
+        // its DocViews.
+        assert_eq!(remap.get(&before), Some(&app.current));
+        assert_eq!(app.tabs(), [DocKind::Research]);
+    }
+
+    #[test]
+    fn refresh_clamps_selection_when_entries_shrink() {
+        // Select the last entry, then reload a workspace with fewer entries.
+        let mut app = App::from_phases_and_todos(&sample_phases(), &[todo("t", "Gone soon")]);
+        app.current = app.entries.len() - 1;
+        assert!(app.current_entry().unwrap().is_todo());
+
+        app.refresh(&sample_phases(), &[]);
+        assert!(
+            app.current < app.entries.len(),
+            "selection must stay in range after the list shrinks"
+        );
     }
 
     #[test]

@@ -147,6 +147,20 @@ impl Ui {
         self.report = report;
     }
 
+    /// Rebuild the navigable entry list from freshly loaded phases + todos so
+    /// j/k reach rows the periodic reload added (e.g. a todo captured while the
+    /// TUI is open). Open document tabs are carried to each surviving entry's
+    /// new index; views for entries that vanished are dropped.
+    pub(crate) fn refresh_entries(&mut self, phases: &[Phase], todos: &[Todo]) {
+        let remap = self.app.refresh(phases, todos);
+        let old_views = std::mem::take(&mut self.views);
+        for ((old_idx, kind), view) in old_views {
+            if let Some(&new_idx) = remap.get(&old_idx) {
+                self.views.insert((new_idx, kind), view);
+            }
+        }
+    }
+
     /// Reload the focused document if its file changed on disk since it
     /// was opened. Scroll and any active search survive the reload.
     /// Returns true when a reload happened.
@@ -592,7 +606,12 @@ fn event_loop(
             last_status = std::time::Instant::now();
             let state = crate::planning::load_state(planning);
             let phases = crate::planning::load_phases(planning);
+            let todos = crate::planning::load_todos(planning);
             ui.set_report(status_text(planning, &state, &phases));
+            // Keep navigation in step with the refreshed panel: without this the
+            // entry list (and its j/k bound) stays frozen at launch and can't
+            // reach a todo the reload just added.
+            ui.refresh_entries(&phases, &todos);
         }
         if last_doc_check.elapsed() >= DOC_CHECK {
             last_doc_check = std::time::Instant::now();
@@ -1175,6 +1194,40 @@ mod tests {
         ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let s = screen(&mut ui);
         assert!(s.contains("no matches"), "{s}");
+    }
+
+    #[test]
+    fn refresh_entries_extends_navigation_onto_a_todo_added_after_launch() {
+        let planning = Path::new("sample/.planning");
+        let state = crate::planning::load_state(planning);
+        let phases = crate::planning::load_phases(planning);
+        // Launch with no todos on disk yet.
+        let mut ui = Ui::new(
+            status_text(planning, &state, &phases),
+            App::from_phases_and_todos(&phases, &[]),
+        );
+        // Step to the last entry (the phase-3 placeholder) — nav clamps here.
+        ui.on_key(ctrl('j')); // 02-03
+        ui.on_key(ctrl('j')); // phase-3 placeholder (last entry)
+        let s = screen(&mut ui);
+        assert!(s.contains("Phase 3"), "at the last entry: {s}");
+
+        // A periodic reload picks up a freshly captured todo.
+        let todos = vec![crate::model::Todo {
+            title: "Fresh todo".into(),
+            area: None,
+            slug: "2026-07-09-fresh".into(),
+            path: std::path::PathBuf::from("2026-07-09-fresh.md"),
+        }];
+        ui.refresh_entries(&phases, &todos);
+
+        // Ctrl-j now descends onto the new todo instead of clamping short.
+        ui.on_key(ctrl('j'));
+        let s = screen(&mut ui);
+        assert!(
+            s.contains(" Todo "),
+            "tab label shows the reached todo: {s}"
+        );
     }
 
     #[test]

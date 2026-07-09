@@ -472,15 +472,17 @@ pub(crate) fn discover_steps(phase_dir: &Path, roadmap_plans: &[Plan]) -> Vec<St
             let id = name.strip_suffix("-PLAN.md")?;
             // Step plans are NN-MM (two dash-separated numeric segments).
             let mut parts = id.split('-');
-            let is_step = parts.next().is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()))
-                && parts.next().is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()))
+            let is_step = parts
+                .next()
+                .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()))
+                && parts
+                    .next()
+                    .is_some_and(|s| s.chars().all(|c| c.is_ascii_digit()))
                 && parts.next().is_none();
             if !is_step {
                 return None;
             }
-            let checked = roadmap_plans
-                .iter()
-                .any(|p| p.name == id && p.checked);
+            let checked = roadmap_plans.iter().any(|p| p.name == id && p.checked);
             Some(Step {
                 id: id.to_string(),
                 plan_path: path.clone(),
@@ -502,9 +504,18 @@ mod tests {
 
     fn sample_plans() -> Vec<Plan> {
         vec![
-            Plan { name: "02-01".into(), checked: true },
-            Plan { name: "02-02".into(), checked: false },
-            Plan { name: "02-03".into(), checked: false },
+            Plan {
+                name: "02-01".into(),
+                checked: true,
+            },
+            Plan {
+                name: "02-02".into(),
+                checked: false,
+            },
+            Plan {
+                name: "02-03".into(),
+                checked: false,
+            },
         ]
     }
 

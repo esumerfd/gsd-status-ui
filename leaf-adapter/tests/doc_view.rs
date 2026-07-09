@@ -34,10 +34,7 @@ fn open_renders_markdown_into_a_panel() {
     let mut view = DocView::open(f.path(), 40).expect("open");
     let text = rendered_text(&mut view, 40, 10);
     assert!(text.contains("Plan 01-01"), "heading missing:\n{text}");
-    assert!(
-        text.contains("Walking skeleton"),
-        "body missing:\n{text}"
-    );
+    assert!(text.contains("Walking skeleton"), "body missing:\n{text}");
 }
 
 #[test]
@@ -54,7 +51,10 @@ fn scrolling_changes_the_visible_region() {
     let f = fixture(&body);
     let mut view = DocView::open(f.path(), 40).expect("open");
     let before = rendered_text(&mut view, 40, 5);
-    assert!(before.contains("line number 1"), "top not visible:\n{before}");
+    assert!(
+        before.contains("line number 1"),
+        "top not visible:\n{before}"
+    );
     for _ in 0..20 {
         view.scroll_down();
     }
@@ -80,7 +80,10 @@ fn page_and_edge_scrolling() {
 
     view.to_bottom();
     let bottom = rendered_text(&mut view, 40, 5);
-    assert!(bottom.contains("line number 50"), "not at bottom:\n{bottom}");
+    assert!(
+        bottom.contains("line number 50"),
+        "not at bottom:\n{bottom}"
+    );
 
     view.to_top();
     let back = rendered_text(&mut view, 40, 5);
@@ -125,7 +128,10 @@ fn confirmed_search_jumps_to_the_first_match() {
     assert_eq!(view.search_index(), 0);
     assert!(!view.is_search_mode(), "confirm leaves input mode");
     let text = rendered_text(&mut view, 40, 5);
-    assert!(text.contains("needle target 20"), "not at first match:\n{text}");
+    assert!(
+        text.contains("needle target 20"),
+        "not at first match:\n{text}"
+    );
 }
 
 #[test]
@@ -203,9 +209,16 @@ fn active_match_line_is_highlighted() {
     let highlighted = buffer
         .content()
         .iter()
-        .filter(|c| c.style().bg.is_some_and(|b| b != ratatui::style::Color::Reset))
+        .filter(|c| {
+            c.style()
+                .bg
+                .is_some_and(|b| b != ratatui::style::Color::Reset)
+        })
         .count();
-    assert!(highlighted > 0, "active match line should get a background highlight");
+    assert!(
+        highlighted > 0,
+        "active match line should get a background highlight"
+    );
 }
 
 #[test]
@@ -266,5 +279,9 @@ fn reload_reruns_the_active_search() {
     std::fs::write(f.path(), "# Doc\n\nneedle one.\n\nneedle two.\n").expect("rewrite");
     view.reload(40).expect("reload");
     assert_eq!(view.search_query(), "needle", "query survives reload");
-    assert_eq!(view.search_match_count(), 2, "matches re-run on new content");
+    assert_eq!(
+        view.search_match_count(),
+        2,
+        "matches re-run on new content"
+    );
 }

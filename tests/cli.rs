@@ -37,13 +37,19 @@ fn no_tui_alias_works() {
 }
 
 #[test]
-fn plain_report_lists_pending_todos_under_next() {
+fn plain_report_lists_pending_todos_between_phases_and_next() {
     let (stdout, code) = run(&["sample"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("Todos"), "{stdout}");
     let title = "Official signed build process for pr-monitor apps";
     assert!(stdout.contains(title), "{stdout}");
+    let todos = stdout.find("Todos").expect("Todos heading present");
     let next = stdout.find("Next").expect("Next heading present");
-    let todo = stdout.find(title).expect("todo title present");
-    assert!(todo > next, "todos must render under the Next heading");
+    let todo_title = stdout.find(title).expect("todo title present");
+    // Todos is its own section above Next; the title sits within it.
+    assert!(todos < next, "Todos section must render above Next");
+    assert!(
+        todo_title > todos && todo_title < next,
+        "todo title must render inside the Todos section (above Next)"
+    );
 }

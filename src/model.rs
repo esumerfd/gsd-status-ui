@@ -87,6 +87,13 @@ pub(crate) struct Step {
 }
 
 /// The document kinds a step's tab set can show, in canonical tab order.
+///
+/// `Roadmap` is special: it is a project-level document, not a step/phase doc.
+/// It never appears in a phase step's tab set — only on the synthetic Roadmap
+/// entry — so it is deliberately excluded from [`DocKind::ORDER`] and the `o`
+/// open-document picker. Its `phase_suffix()` is `None`, so `path_for` resolves
+/// it to the entry's `step.plan_path` (the workspace-root `ROADMAP.md`), exactly
+/// as a pending todo reuses `Plan` to open its own markdown file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum DocKind {
     Plan,
@@ -95,6 +102,7 @@ pub(crate) enum DocKind {
     Uat,
     Context,
     Discussion,
+    Roadmap,
 }
 
 impl DocKind {
@@ -108,7 +116,12 @@ impl DocKind {
     ];
 
     pub(crate) fn order_index(self) -> usize {
-        Self::ORDER.iter().position(|k| *k == self).unwrap()
+        // Roadmap is not in ORDER (it never mixes into a step's tab set); it
+        // sorts after every step doc so the ordered-insert never panics.
+        Self::ORDER
+            .iter()
+            .position(|k| *k == self)
+            .unwrap_or(usize::MAX)
     }
 
     pub(crate) fn label(self) -> &'static str {
@@ -119,13 +132,15 @@ impl DocKind {
             DocKind::Uat => "uat",
             DocKind::Context => "context",
             DocKind::Discussion => "discussion",
+            DocKind::Roadmap => "roadmap",
         }
     }
 
-    /// Phase-level file name suffix; `Plan` is step-level and has no suffix.
+    /// Phase-level file name suffix; `Plan` and `Roadmap` are resolved from the
+    /// entry's `step.plan_path`, so they have no suffix.
     pub(crate) fn phase_suffix(self) -> Option<&'static str> {
         match self {
-            DocKind::Plan => None,
+            DocKind::Plan | DocKind::Roadmap => None,
             DocKind::Research => Some("RESEARCH.md"),
             DocKind::Validation => Some("VALIDATION.md"),
             DocKind::Uat => Some("UAT.md"),

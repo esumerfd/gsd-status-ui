@@ -108,19 +108,66 @@ pub(crate) fn render(
     )?;
     writeln!(out)?;
 
-    writeln!(
-        out,
-        "  {bold}Phases{reset}",
-        bold = c(color::BOLD),
-        reset = c(color::RESET)
-    )?;
-    writeln!(
-        out,
-        "  {dim}{line}{reset}",
-        dim = c(color::DIM),
-        line = "─".repeat(63),
-        reset = c(color::RESET),
-    )?;
+    // Roadmap section — the project-level ROADMAP.md, openable from the TUI.
+    // Shown above the Phases list only when a roadmap exists (phases parse from
+    // it), so brand-new projects with no ROADMAP.md yet don't display it. The
+    // title matches the "Phases" heading; the status line mirrors a phase row:
+    // a completion bullet (green ✓ when every phase is done, else yellow ●) and
+    // "Phases x/y <state>".
+    if !phases.is_empty() {
+        let complete = completed_phases == total_phases;
+        let (icon, icon_color, state) = if complete {
+            ("✓", color::GREEN, "complete")
+        } else {
+            ("●", color::YELLOW, "in progress")
+        };
+        writeln!(
+            out,
+            "  {bold}Roadmap{reset}",
+            bold = c(color::BOLD),
+            reset = c(color::RESET),
+        )?;
+        writeln!(
+            out,
+            "  {dim}{line}{reset}",
+            dim = c(color::DIM),
+            line = "─".repeat(63),
+            reset = c(color::RESET),
+        )?;
+        writeln!(
+            out,
+            "  {ic}{icon}{reset}  {bold}Phases {cp}/{tp}{reset}  {ic}{state}{reset}",
+            ic = c(icon_color),
+            icon = icon,
+            bold = c(color::BOLD),
+            cp = completed_phases,
+            tp = total_phases,
+            state = state,
+            reset = c(color::RESET),
+        )?;
+        // Separate the Roadmap section from the Phases heading with the same
+        // one-line gap that sits above the Next block.
+        writeln!(out)?;
+    }
+
+    // Phases section — hidden entirely when there are no phases (no roadmap
+    // parsed), so a brand-new workspace shows neither Roadmap nor an empty
+    // Phases heading.
+    if !phases.is_empty() {
+        writeln!(
+            out,
+            "  {bold}Phases{reset}",
+            bold = c(color::BOLD),
+            reset = c(color::RESET)
+        )?;
+        writeln!(
+            out,
+            "  {dim}{line}{reset}",
+            dim = c(color::DIM),
+            line = "─".repeat(63),
+            reset = c(color::RESET),
+        )?;
+    }
 
     for ph in phases {
         let (icon, icon_color) = phase_icon(ph);
@@ -147,7 +194,48 @@ pub(crate) fn render(
         )?;
     }
 
-    writeln!(out)?;
+    if !phases.is_empty() {
+        writeln!(out)?;
+    }
+
+    // Todos — its own top-level section (heading + divider), between Phases and
+    // Next, styled like the other sections. Rendered only when todos exist.
+    if !todos.is_empty() {
+        writeln!(
+            out,
+            "  {bold}Todos{reset}",
+            bold = c(color::BOLD),
+            reset = c(color::RESET)
+        )?;
+        writeln!(
+            out,
+            "  {dim}{line}{reset}",
+            dim = c(color::DIM),
+            line = "─".repeat(63),
+            reset = c(color::RESET),
+        )?;
+        for todo in todos {
+            let area = match &todo.area {
+                Some(a) => format!(
+                    "   {dim}{a}{reset}",
+                    dim = c(color::DIM),
+                    a = a,
+                    reset = c(color::RESET)
+                ),
+                None => String::new(),
+            };
+            writeln!(
+                out,
+                "  {grey}○{reset}  {title}{area}",
+                grey = c(color::GREY),
+                title = truncate(&todo.title, 55),
+                area = area,
+                reset = c(color::RESET),
+            )?;
+        }
+        writeln!(out)?;
+    }
+
     writeln!(
         out,
         "  {bold}Next{reset}",
@@ -164,37 +252,6 @@ pub(crate) fn render(
     if !state.next_action.is_empty() {
         for line in state.next_action.lines() {
             writeln!(out, "  {}", line)?;
-        }
-        writeln!(out)?;
-    }
-
-    if !todos.is_empty() {
-        writeln!(
-            out,
-            "    {bold}Todos{reset} {dim}({n}){reset}",
-            bold = c(color::BOLD),
-            n = todos.len(),
-            dim = c(color::DIM),
-            reset = c(color::RESET),
-        )?;
-        for todo in todos {
-            let area = match &todo.area {
-                Some(a) => format!(
-                    "   {dim}{a}{reset}",
-                    dim = c(color::DIM),
-                    a = a,
-                    reset = c(color::RESET)
-                ),
-                None => String::new(),
-            };
-            writeln!(
-                out,
-                "    {grey}○{reset} {title}{area}",
-                grey = c(color::GREY),
-                title = truncate(&todo.title, 55),
-                area = area,
-                reset = c(color::RESET),
-            )?;
         }
         writeln!(out)?;
     }
@@ -327,16 +384,100 @@ fn suggest_commands(phases: &[Phase]) -> Vec<Hint> {
             });
         }
     }
-    out.push(Hint {
-        cmd: "/gsd-help".into(),
-        note: "list all GSD commands",
-    });
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renders_roadmap_section_above_phases_when_phases_exist() {
+        let phases = crate::planning::load_phases(Path::new("sample/.planning"));
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            Path::new("sample/.planning"),
+            &StateMeta::default(),
+            &phases,
+            &[],
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        let roadmap = out.find("Roadmap").expect("roadmap title present");
+        let phase_list = out.find("Navigation Skeleton").expect("phase list present");
+        assert!(
+            roadmap < phase_list,
+            "roadmap section must sit above the phase list:\n{out}"
+        );
+        // Status line: "Phases x/y <state>" with a not-all-complete bullet.
+        assert!(out.contains("Phases 1/3"), "roadmap shows x/y:\n{out}");
+        assert!(out.contains("in progress"), "roadmap shows state:\n{out}");
+        assert!(out.contains("●"), "in-progress bullet:\n{out}");
+    }
+
+    #[test]
+    fn roadmap_section_shows_complete_when_all_phases_verified() {
+        let phases = vec![
+            Phase {
+                id: "1".into(),
+                title: "A".into(),
+                roadmap_checked: true,
+                plans: vec![],
+                dir: None,
+                stage: Stage::Verified,
+            },
+            Phase {
+                id: "2".into(),
+                title: "B".into(),
+                roadmap_checked: true,
+                plans: vec![],
+                dir: None,
+                stage: Stage::Verified,
+            },
+        ];
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            Path::new("sample/.planning"),
+            &StateMeta::default(),
+            &phases,
+            &[],
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("Phases 2/2"), "{out}");
+        assert!(out.contains("complete"), "{out}");
+        assert!(!out.contains("in progress"), "{out}");
+        assert!(out.contains("✓"), "complete bullet:\n{out}");
+    }
+
+    #[test]
+    fn omits_roadmap_row_when_no_phases() {
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            Path::new("sample/.planning"),
+            &StateMeta::default(),
+            &[],
+            &[],
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            !out.contains("Roadmap"),
+            "no roadmap row when there are no phases:\n{out}"
+        );
+        // The Phases heading is hidden too (only the lowercase "(0/0 phases …)"
+        // progress line mentions phases).
+        assert!(
+            !out.contains("Phases"),
+            "no Phases heading when there are no phases:\n{out}"
+        );
+    }
 
     #[test]
     fn omits_todos_block_when_empty() {
@@ -355,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_todos_block_with_count() {
+    fn renders_todos_section_between_phases_and_next() {
         let todos = vec![Todo {
             title: "Do the thing".into(),
             area: Some("tooling".into()),
@@ -373,8 +514,13 @@ mod tests {
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("Todos (1)"), "{out}");
-        assert!(out.contains("○ Do the thing"), "{out}");
+        assert!(out.contains("Todos"), "{out}");
+        assert!(out.contains("○"), "{out}");
+        assert!(out.contains("Do the thing"), "{out}");
         assert!(out.contains("tooling"), "{out}");
+        // Its own section, above Next.
+        let todos_idx = out.find("Todos").expect("todos heading");
+        let next_idx = out.find("Next").expect("next heading");
+        assert!(todos_idx < next_idx, "Todos must sit above Next:\n{out}");
     }
 }

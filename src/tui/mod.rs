@@ -43,7 +43,8 @@ const HELP_TEXT: &str = "\
             q/Esc    back to status
  search     type     edit query · Enter find · Esc cancel
  dialog     j/k      select · Enter open · Esc cancel
- anywhere   Tab/1-9  switch tab · C-x close tab
+ anywhere   R        open the roadmap
+            Tab/1-9  switch tab · C-x close tab
             C-j/k    change step · C-q quit
             ?        this help";
 const DIALOG_HINTS: &str = "j/k select · Enter open · Esc cancel";
@@ -60,6 +61,10 @@ pub(crate) struct Ui {
     /// True for the draw right after a copy, so the copied todo row flashes.
     /// Reset by the next key press or idle tick.
     copy_flash: bool,
+    /// The `(entry, focus)` to return to when the current roadmap view was
+    /// opened by the global `R` peek. `None` when the roadmap was reached by
+    /// navigating to its row (Esc then behaves normally). See `open_roadmap`.
+    roadmap_return: Option<(usize, Focus)>,
 }
 
 /// The colored status report as ratatui text (reuses the report's ANSI colors).
@@ -80,6 +85,16 @@ fn line_string(line: &Line) -> String {
 /// phase's own `Phase N` row, or the Nth `○` todo row.
 fn highlight_index(text: &Text, sel: &Selected) -> Option<usize> {
     match sel {
+        // The roadmap status row "● Phases x/y <state>" (plural "Phases" + a
+        // count), distinct from the "Phases" section heading (no trailing
+        // count) and the box's lowercase "(x/y phases …)" progress line.
+        Selected::Roadmap => text.lines.iter().position(|line| {
+            line_string(line)
+                .split("Phases ")
+                .nth(1)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|ch| ch.is_ascii_digit())
+        }),
         Selected::Phase(id) => text.lines.iter().position(|line| {
             let s = line_string(line);
             // Match "Phase <id>" as a whole token so Phase 1 ≠ Phase 10, and
@@ -109,6 +124,7 @@ impl Ui {
             help: false,
             clipboard: None,
             copy_flash: false,
+            roadmap_return: None,
         }
     }
 
@@ -142,6 +158,21 @@ impl Ui {
         self.copy_flash = false;
     }
 
+    /// Open the project roadmap as a peek from any mode (the `R` key). Stashes
+    /// the current `(entry, focus)` so Esc returns there. No-op when no
+    /// `ROADMAP.md` exists (the row is hidden) or the roadmap is already
+    /// focused.
+    fn open_roadmap(&mut self) {
+        if self.app.roadmap_index().is_none()
+            || matches!(self.app.focus(), Focus::Doc(DocKind::Roadmap))
+        {
+            return;
+        }
+        self.roadmap_return = Some((self.app.current, self.app.focus()));
+        let request = self.app.open_roadmap_peek();
+        self.apply(request);
+    }
+
     /// Replace the status panel body (periodic refresh).
     pub(crate) fn set_report(&mut self, report: Text<'static>) {
         self.report = report;
@@ -151,8 +182,8 @@ impl Ui {
     /// j/k reach rows the periodic reload added (e.g. a todo captured while the
     /// TUI is open). Open document tabs are carried to each surviving entry's
     /// new index; views for entries that vanished are dropped.
-    pub(crate) fn refresh_entries(&mut self, phases: &[Phase], todos: &[Todo]) {
-        let remap = self.app.refresh(phases, todos);
+    pub(crate) fn refresh_entries(&mut self, planning: &Path, phases: &[Phase], todos: &[Todo]) {
+        let remap = self.app.refresh(planning, phases, todos);
         let old_views = std::mem::take(&mut self.views);
         for ((old_idx, kind), view) in old_views {
             if let Some(&new_idx) = remap.get(&old_idx) {
@@ -275,6 +306,12 @@ impl Ui {
                 }
             }
         }
+        // Global: R peeks the project roadmap from any mode. (A search draft
+        // returned above, so R only reaches here as a command key.)
+        if code == KeyCode::Char('R') {
+            self.open_roadmap();
+            return;
+        }
         // Shell aliases on keys no viewer binding uses.
         match code {
             KeyCode::Tab => {
@@ -304,9 +341,15 @@ impl Ui {
                     let req = self.app.change_step(-1);
                     self.apply(req);
                 }
-                // Enter doc mode on the selected step's plan.
+                // Enter doc mode: the roadmap row opens ROADMAP.md, any other
+                // row opens its plan.
                 KeyCode::Enter => {
-                    let req = self.app.open_doc(DocKind::Plan);
+                    let kind = if self.app.current_entry().is_some_and(|e| e.is_roadmap()) {
+                        DocKind::Roadmap
+                    } else {
+                        DocKind::Plan
+                    };
+                    let req = self.app.open_doc(kind);
                     self.apply(req);
                 }
                 KeyCode::Char('o') => self.app.open_dialog(),
@@ -319,8 +362,17 @@ impl Ui {
         let Focus::Doc(kind) = self.app.focus() else {
             return;
         };
-        // q/Esc back out of doc mode to the status panel; the tab stays open.
+        // q/Esc back out of doc mode. A roadmap opened by the `R` peek restores
+        // the stashed prior location instead of dropping to the status panel;
+        // every other doc (and a roadmap reached by navigating to its row)
+        // backs out to status, tab still open.
         if matches!(code, KeyCode::Char('q') | KeyCode::Esc) {
+            if matches!(kind, DocKind::Roadmap) {
+                if let Some((cur, foc)) = self.roadmap_return.take() {
+                    self.app.restore_location(cur, foc);
+                    return;
+                }
+            }
             self.app.focus_slot(1);
             return;
         }
@@ -361,6 +413,7 @@ impl Ui {
         // The first tab is the status panel; its label names the selected
         // phase/step so stepping (j/k, C-j/k) is visible from any tab.
         let status_title = match self.app.current_entry() {
+            Some(entry) if entry.is_roadmap() => "Roadmap".to_string(),
             Some(entry) if entry.is_todo() => "Todo".to_string(),
             Some(entry) => {
                 // Step ids repeat the phase prefix ("02-03"); the label
@@ -496,6 +549,7 @@ impl Ui {
             Focus::Doc(_) => "[doc]",
         };
         let position = match self.app.current_entry() {
+            Some(entry) if entry.is_roadmap() => format!("{mode} Roadmap"),
             Some(entry) => format!(
                 "{mode} Phase {} · step {} ({}/{})",
                 entry.phase_id,
@@ -549,7 +603,7 @@ pub(crate) fn run(
 ) -> io::Result<()> {
     let mut ui = Ui::new(
         status_text(planning, state, phases),
-        App::from_phases_and_todos(phases, todos),
+        App::from_phases_and_todos(planning, phases, todos),
     );
 
     terminal::enable_raw_mode()?;
@@ -610,8 +664,9 @@ fn event_loop(
             ui.set_report(status_text(planning, &state, &phases));
             // Keep navigation in step with the refreshed panel: without this the
             // entry list (and its j/k bound) stays frozen at launch and can't
-            // reach a todo the reload just added.
-            ui.refresh_entries(&phases, &todos);
+            // reach a todo the reload just added — or a ROADMAP.md that landed
+            // after launch.
+            ui.refresh_entries(planning, &phases, &todos);
         }
         if last_doc_check.elapsed() >= DOC_CHECK {
             last_doc_check = std::time::Instant::now();
@@ -632,7 +687,7 @@ mod tests {
         let todos = crate::planning::load_todos(planning);
         Ui::new(
             status_text(planning, &state, &phases),
-            App::from_phases_and_todos(&phases, &todos),
+            App::from_phases_and_todos(planning, &phases, &todos),
         )
     }
 
@@ -720,7 +775,10 @@ mod tests {
     }
 
     fn bg_green_cells(ui: &mut Ui) -> usize {
-        let backend = TestBackend::new(90, 24);
+        // Taller than the 24-row `screen()` buffer so the todo rows (which sit
+        // below the roadmap section, phases and Next block) are on-screen and
+        // their flash is observable.
+        let backend = TestBackend::new(90, 32);
         let mut term = ratatui::Terminal::new(backend).unwrap();
         term.draw(|f| ui.draw(f)).unwrap();
         let buf = term.backend().buffer().clone();
@@ -1204,7 +1262,7 @@ mod tests {
         // Launch with no todos on disk yet.
         let mut ui = Ui::new(
             status_text(planning, &state, &phases),
-            App::from_phases_and_todos(&phases, &[]),
+            App::from_phases_and_todos(planning, &phases, &[]),
         );
         // Step to the last entry (the phase-3 placeholder) — nav clamps here.
         ui.on_key(ctrl('j')); // 02-03
@@ -1219,7 +1277,7 @@ mod tests {
             slug: "2026-07-09-fresh".into(),
             path: std::path::PathBuf::from("2026-07-09-fresh.md"),
         }];
-        ui.refresh_entries(&phases, &todos);
+        ui.refresh_entries(planning, &phases, &todos);
 
         // Ctrl-j now descends onto the new todo instead of clamping short.
         ui.on_key(ctrl('j'));
@@ -1266,6 +1324,58 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_the_roadmap_row_opens_the_roadmap_tab() {
+        let mut ui = sample_ui();
+        // k up from 02-02 to the Roadmap row: 02-02 -> 02-01 -> 01-01 -> roadmap.
+        ui.on_key(plain('k'));
+        ui.on_key(plain('k'));
+        ui.on_key(plain('k'));
+        let s = screen(&mut ui);
+        assert!(s.contains("[status] Roadmap"), "on the roadmap row: {s}");
+
+        // Enter opens ROADMAP.md as a normal doc tab.
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let s = screen(&mut ui);
+        assert!(s.contains("[doc] Roadmap"), "footer shows roadmap doc: {s}");
+        assert!(s.contains("occupancy map"), "roadmap body rendered: {s}");
+    }
+
+    #[test]
+    fn r_peeks_the_roadmap_from_a_doc_and_esc_returns_to_it() {
+        let mut ui = sample_ui();
+        // Viewing the 02-02 plan.
+        open_via_dialog(&mut ui, 0);
+        let s = screen(&mut ui);
+        assert!(s.contains("Cup Handling"), "on the 02-02 plan: {s}");
+
+        // R peeks the roadmap from within the doc.
+        ui.on_key(plain('R'));
+        let s = screen(&mut ui);
+        assert!(s.contains("[doc] Roadmap"), "roadmap peek open: {s}");
+        assert!(s.contains("occupancy map"), "roadmap body: {s}");
+
+        // Esc returns to the prior doc (02-02 plan), not the status panel.
+        ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        let s = screen(&mut ui);
+        assert!(s.contains("Cup Handling"), "returned to the plan: {s}");
+        assert!(s.contains("Phase 2 · step 02-02"), "back on 02-02: {s}");
+    }
+
+    #[test]
+    fn r_is_inert_when_no_roadmap_exists() {
+        // A workspace with no ROADMAP.md: no phases, so no roadmap row/entry.
+        let planning = Path::new("sample/.planning");
+        let mut ui = Ui::new(
+            status_text(planning, &StateMeta::default(), &[]),
+            App::from_phases_and_todos(planning, &[], &[]),
+        );
+        ui.on_key(plain('R'));
+        // Nothing opened — still the status panel (no doc focus).
+        let s = screen(&mut ui);
+        assert!(!s.contains("[doc]"), "R must not open anything: {s}");
+    }
+
+    #[test]
     fn status_jk_browses_steps_and_enter_opens_the_plan() {
         let mut ui = sample_ui();
         let s = screen(&mut ui);
@@ -1284,11 +1394,18 @@ mod tests {
         assert!(s.contains("Phase 1 · step 01-01 (1/1)"), "{s}");
         assert!(s.contains("Robot Coffee Service"), "{s}");
 
+        // k again moves up onto the Roadmap row (above the first phase step).
+        ui.on_key(plain('k'));
+        let s = screen(&mut ui);
+        assert!(s.contains("[status] Roadmap"), "on the roadmap row: {s}");
+
+        // The Roadmap row is the first entry; k here clamps.
         ui.on_key(plain('k'));
         let s = screen(&mut ui);
         assert!(s.contains("already at the first step"), "{s}");
 
-        // Enter opens the selected step's plan (viewer mode).
+        // Back down onto 01-01, then Enter opens its plan (viewer mode).
+        ui.on_key(plain('j'));
         ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let s = screen(&mut ui);
         assert!(s.contains("01-01-PLAN.md"), "{s}");

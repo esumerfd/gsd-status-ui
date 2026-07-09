@@ -2,6 +2,7 @@ pub(crate) const RESET: &str = "\x1b[0m";
 pub(crate) const BOLD: &str = "\x1b[1m";
 pub(crate) const DIM: &str = "\x1b[2m";
 pub(crate) const GREEN: &str = "\x1b[32m";
+pub(crate) const BRIGHT_GREEN: &str = "\x1b[92m";
 pub(crate) const YELLOW: &str = "\x1b[33m";
 pub(crate) const BLUE: &str = "\x1b[34m";
 pub(crate) const MAGENTA: &str = "\x1b[35m";

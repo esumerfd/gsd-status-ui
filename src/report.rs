@@ -19,28 +19,25 @@ pub(crate) fn render(
         state.project_title.clone()
     };
 
+    // Top border titled by the project itself (not a generic "GSD STATUS"),
+    // padded with ─ to the box's 63-column width. The title leads the banner, so
+    // the separate title line below is gone.
+    let top = {
+        let lead = format!("╭─ {title} ");
+        let fill = 63usize.saturating_sub(lead.chars().count() + 1);
+        format!("{lead}{}╮", "─".repeat(fill))
+    };
+
     writeln!(out)?;
     writeln!(
         out,
-        "{bold}{cyan}╭─ GSD STATUS ────────────────────────────────────────────────╮{reset}",
+        "{bold}{cyan}{top}{reset}",
         bold = c(color::BOLD),
         cyan = c(color::CYAN),
+        top = top,
         reset = c(color::RESET),
     )?;
-    writeln!(
-        out,
-        "  {bold}{title}{reset}",
-        bold = c(color::BOLD),
-        title = title,
-        reset = c(color::RESET),
-    )?;
-    writeln!(
-        out,
-        "  {dim}{p}{reset}",
-        dim = c(color::DIM),
-        p = planning.display(),
-        reset = c(color::RESET),
-    )?;
+    writeln!(out, "  path: {p}", p = short_planning(planning))?;
 
     let milestone = if state.milestone.is_empty() {
         "—".to_string()
@@ -89,15 +86,15 @@ pub(crate) fn render(
 
     writeln!(
         out,
-        "  progress:  {bar} {bold}{pct:>3}%{reset}  {dim}({cp}/{tp} phases · {cpl}/{tpl} plans){reset}",
+        "  progress:  {bar} {bold}{bgreen}{pct:>3}%{reset}  ({cp}/{tp} phases · {cpl}/{tpl} plans)",
         bar = progress_bar(percent, 24, use_color),
         bold = c(color::BOLD),
+        bgreen = c(color::BRIGHT_GREEN),
         pct = percent,
         cp = completed_phases,
         tp = total_phases,
         cpl = completed_plans,
         tpl = total_plans,
-        dim = c(color::DIM),
         reset = c(color::RESET),
     )?;
     writeln!(
@@ -287,8 +284,9 @@ fn progress_bar(pct: u32, width: usize, use_color: bool) -> String {
     let empty = width - filled;
     if use_color {
         format!(
-            "{}{}{}{}{}",
-            color::GREEN,
+            "{}{}{}{}{}{}",
+            color::BOLD,
+            color::BRIGHT_GREEN,
             "█".repeat(filled),
             color::GREY,
             "░".repeat(empty),
@@ -296,6 +294,23 @@ fn progress_bar(pct: u32, width: usize, use_color: bool) -> String {
         )
     } else {
         format!("[{}{}]", "#".repeat(filled), "-".repeat(empty))
+    }
+}
+
+/// Compact workspace location for the banner: the directory that contains
+/// `.planning` plus the `.planning` segment — e.g. "sample/.planning".
+fn short_planning(p: &Path) -> String {
+    let leaf = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(".planning");
+    match p
+        .parent()
+        .and_then(|par| par.file_name())
+        .and_then(|n| n.to_str())
+    {
+        Some(parent) => format!("{parent}/{leaf}"),
+        None => leaf.to_string(),
     }
 }
 
@@ -390,6 +405,52 @@ fn suggest_commands(phases: &[Phase]) -> Vec<Hint> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn banner_title_is_the_project_name() {
+        let state = StateMeta {
+            project_title: "Robot Coffee Service".into(),
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            Path::new("sample/.planning"),
+            &state,
+            &[],
+            &[],
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("╭─ Robot Coffee Service ─"),
+            "project name should title the banner border:\n{out}"
+        );
+        assert!(!out.contains("GSD STATUS"), "generic title dropped:\n{out}");
+    }
+
+    #[test]
+    fn short_planning_shows_parent_dir_and_planning() {
+        assert_eq!(
+            short_planning(Path::new("sample/.planning")),
+            "sample/.planning"
+        );
+        assert_eq!(
+            short_planning(Path::new("/a/b/gsd-status-ui/work/.planning")),
+            "work/.planning"
+        );
+        assert_eq!(short_planning(Path::new(".planning")), ".planning");
+    }
+
+    #[test]
+    fn progress_bar_uses_a_bright_bold_fill_when_colored() {
+        let bar = progress_bar(50, 10, true);
+        assert!(bar.contains(color::BRIGHT_GREEN), "bright fill: {bar:?}");
+        assert!(bar.contains(color::BOLD), "bold fill: {bar:?}");
+        // No color escapes at all when color is off.
+        assert_eq!(progress_bar(50, 10, false), "[#####-----]");
+    }
 
     #[test]
     fn renders_roadmap_section_above_phases_when_phases_exist() {

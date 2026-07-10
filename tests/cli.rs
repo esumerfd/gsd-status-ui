@@ -12,6 +12,39 @@ fn run(args: &[&str]) -> (String, i32) {
     )
 }
 
+/// Run the binary and capture (stderr, exit code) — for error-path assertions.
+fn run_stderr(args: &[&str]) -> (String, i32) {
+    let out = Command::new(env!("CARGO_BIN_EXE_gsd-status"))
+        .args(args)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("run binary");
+    (
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+#[test]
+fn no_planning_directory_prints_actionable_error() {
+    // A directory with no .planning/ in it or any ancestor.
+    let tmp = std::env::temp_dir().join(format!("gsd-status-no-planning-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp).expect("create temp dir");
+
+    let (stderr, code) = run_stderr(&[tmp.to_str().unwrap()]);
+    assert_eq!(code, 2, "missing .planning/ exits 2; stderr={stderr}");
+    assert!(
+        stderr.contains("not a GSD directory"),
+        "error should name the situation: {stderr}"
+    );
+    assert!(
+        stderr.contains("/gsd-core:new-project"),
+        "error should point to the fix: {stderr}"
+    );
+
+    std::fs::remove_dir_all(&tmp).ok();
+}
+
 #[test]
 fn plain_report_renders_sample_workspace() {
     let (stdout, code) = run(&["sample"]);

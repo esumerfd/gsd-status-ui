@@ -28,7 +28,8 @@ fn main() -> ExitCode {
         Some(p) => p,
         None => {
             eprintln!(
-                "gsd-status: no .planning/ directory found from {}",
+                "gsd-status: not a GSD directory (no .planning/ found from {}).\n\
+                 Run /gsd-core:new-project to start.",
                 start.display()
             );
             return ExitCode::from(2);

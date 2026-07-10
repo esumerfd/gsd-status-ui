@@ -372,6 +372,143 @@ impl App {
         None
     }
 
+    /// Section ordinal for grouping entries: Roadmap(0), Phases(1), Todos(2).
+    /// Entries are built in this order, so each section is contiguous.
+    fn section_key(e: &StepEntry) -> u8 {
+        if e.is_roadmap() {
+            0
+        } else if e.is_todo() {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// Start index of each contiguous section present, in entry order.
+    fn section_bounds(&self) -> Vec<usize> {
+        let mut starts = Vec::new();
+        let mut last: Option<u8> = None;
+        for (i, e) in self.entries.iter().enumerate() {
+            let k = Self::section_key(e);
+            if last != Some(k) {
+                starts.push(i);
+                last = Some(k);
+            }
+        }
+        starts
+    }
+
+    /// First index of each phase (distinct consecutive `phase_id` among phase
+    /// steps; roadmap/todo rows are not phases).
+    fn phase_starts(&self) -> Vec<usize> {
+        let mut starts = Vec::new();
+        let mut last: Option<&str> = None;
+        for (i, e) in self.entries.iter().enumerate() {
+            if e.is_roadmap() || e.is_todo() {
+                last = None;
+                continue;
+            }
+            let pid = e.phase_id.as_str();
+            if last != Some(pid) {
+                starts.push(i);
+                last = Some(pid);
+            }
+        }
+        starts
+    }
+
+    /// Move the selection to `idx` in browsing mode (Status focus).
+    fn set_browsing(&mut self, idx: usize) {
+        self.current = idx;
+        if let Some(set) = self.tabsets.get_mut(idx) {
+            set.focused = 0;
+        }
+    }
+
+    /// `g` / `G` — jump the selection to the first / last entry.
+    pub(crate) fn select_first(&mut self) {
+        self.flash = None;
+        if !self.entries.is_empty() {
+            self.set_browsing(0);
+        }
+    }
+
+    pub(crate) fn select_last(&mut self) {
+        self.flash = None;
+        if !self.entries.is_empty() {
+            self.set_browsing(self.entries.len() - 1);
+        }
+    }
+
+    /// `d` / `u` — jump to the next / previous section (Roadmap / Phases /
+    /// Todos). Going up first snaps to the top of the current section, then to
+    /// the previous section's top.
+    pub(crate) fn select_section(&mut self, delta: i32) {
+        self.flash = None;
+        if self.entries.is_empty() {
+            return;
+        }
+        let starts = self.section_bounds();
+        if delta > 0 {
+            match starts.iter().copied().find(|&s| s > self.current) {
+                Some(next) => self.set_browsing(next),
+                None => self.flash = Some("already at the last section".into()),
+            }
+        } else {
+            let cur_start = starts
+                .iter()
+                .copied()
+                .rev()
+                .find(|&s| s <= self.current)
+                .unwrap_or(0);
+            if self.current > cur_start {
+                self.set_browsing(cur_start);
+            } else {
+                match starts.iter().copied().rev().find(|&s| s < cur_start) {
+                    Some(prev) => self.set_browsing(prev),
+                    None => self.flash = Some("already at the first section".into()),
+                }
+            }
+        }
+    }
+
+    /// `J` / `K` — jump to the next / previous phase's first step. Steps within
+    /// a phase are skipped; a roadmap/todo row anchors to the adjacent phase.
+    pub(crate) fn select_phase(&mut self, delta: i32) {
+        self.flash = None;
+        // Roadmap and Todos rows have no phases, so J/K there behave like j/k
+        // (move one row) rather than jumping into the Phases section.
+        let on_phase = self
+            .entries
+            .get(self.current)
+            .is_some_and(|e| !e.is_roadmap() && !e.is_todo());
+        if !on_phase {
+            self.change_step(delta);
+            return;
+        }
+        let starts = self.phase_starts();
+        let anchor = starts
+            .iter()
+            .copied()
+            .rev()
+            .find(|&s| s <= self.current)
+            .unwrap_or(self.current);
+        let target = if delta > 0 {
+            starts.iter().copied().find(|&s| s > anchor)
+        } else {
+            starts.iter().copied().rev().find(|&s| s < anchor)
+        };
+        match target {
+            Some(t) => self.set_browsing(t),
+            // No next/prev phase: keep flowing in the same direction (down into
+            // Todos, up onto the Roadmap) so the user needn't release Shift at
+            // the section boundary.
+            None => {
+                self.change_step(delta);
+            }
+        }
+    }
+
     pub(crate) fn dialog(&self) -> Option<&OpenDialog> {
         self.dialog.as_ref()
     }
@@ -1005,6 +1142,95 @@ mod tests {
         app.restore_location(ret.0, ret.1);
         assert_eq!(app.current, start);
         assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+    }
+
+    #[test]
+    fn select_first_and_last_jump_to_the_ends() {
+        let mut app = sample_app(); // entries: roadmap, 01-01, 02-01, 02-02, 02-03, ph3
+        app.select_last();
+        assert_eq!(app.current, app.entries.len() - 1);
+        assert_eq!(app.current_entry().unwrap().phase_id, "3");
+        assert_eq!(app.focus(), Focus::Status);
+        app.select_first();
+        assert_eq!(app.current, 0);
+        assert!(app.current_entry().unwrap().is_roadmap());
+    }
+
+    #[test]
+    fn select_section_walks_roadmap_phases_todos() {
+        let mut app =
+            App::from_phases_and_todos(sample_planning(), &sample_phases(), &sample_todos());
+        app.select_first(); // Roadmap
+        assert!(app.current_entry().unwrap().is_roadmap());
+
+        app.select_section(1); // -> Phases (first step)
+        assert_eq!(app.current_entry().unwrap().step.id, "01-01");
+        app.select_section(1); // -> Todos (first todo)
+        assert!(app.current_entry().unwrap().is_todo());
+        app.select_section(1); // last section: stay + flash
+        assert!(app.current_entry().unwrap().is_todo());
+        assert!(app.flash.as_deref().unwrap().contains("last section"));
+
+        // From mid-Phases, up snaps to the top of Phases, then to Roadmap.
+        app.current = 3; // 02-02, mid Phases
+        app.select_section(-1);
+        assert_eq!(app.current_entry().unwrap().step.id, "01-01");
+        app.select_section(-1);
+        assert!(app.current_entry().unwrap().is_roadmap());
+        app.select_section(-1);
+        assert!(app.flash.as_deref().unwrap().contains("first section"));
+    }
+
+    #[test]
+    fn select_phase_jumps_phase_to_phase() {
+        let mut app = sample_app(); // default 02-02 (phase 2)
+        app.select_phase(1); // -> phase 3 (its placeholder)
+        assert_eq!(app.current_entry().unwrap().phase_id, "3");
+        app.select_phase(-1); // -> phase 2 first step (02-01)
+        assert_eq!(app.current_entry().unwrap().step.id, "02-01");
+        assert_eq!(app.current_entry().unwrap().phase_id, "2");
+        app.select_phase(-1); // -> phase 1 (01-01)
+        assert_eq!(app.current_entry().unwrap().phase_id, "1");
+        // Past the first phase, K flows one row up onto the Roadmap (no todos
+        // here means J past the last phase would clamp like j at the end).
+        app.select_phase(-1);
+        assert!(app.current_entry().unwrap().is_roadmap());
+    }
+
+    #[test]
+    fn select_phase_falls_back_to_single_step_off_the_phases_section() {
+        let mut app =
+            App::from_phases_and_todos(sample_planning(), &sample_phases(), &sample_todos());
+        // entries: roadmap(0), 01-01(1)…02-03(4), ph3(5), todo0(6), todo1(7), todo2(8)
+
+        // In Todos, K moves one row up (todo → todo), not into the Phases section.
+        app.current = 7; // todo1
+        app.select_phase(-1);
+        assert_eq!(app.current, 6);
+        assert!(app.current_entry().unwrap().is_todo());
+
+        // J on a todo moves one row down.
+        app.select_phase(1);
+        assert_eq!(app.current, 7);
+        assert!(app.current_entry().unwrap().is_todo());
+
+        // On the Roadmap row, K clamps like k at the top (no phase jump).
+        app.select_first();
+        app.select_phase(-1);
+        assert!(app.current_entry().unwrap().is_roadmap());
+        assert!(app.flash.as_deref().unwrap().contains("first step"));
+
+        // From the last phase, J flows down into the Todos section…
+        app.current = 5; // phase 3 placeholder (the last phase)
+        app.select_phase(1);
+        assert_eq!(app.current, 6);
+        assert!(app.current_entry().unwrap().is_todo());
+
+        // …and from the first phase, K flows up onto the Roadmap row.
+        app.current = 1; // 01-01 (first phase)
+        app.select_phase(-1);
+        assert_eq!(app.current, 0);
+        assert!(app.current_entry().unwrap().is_roadmap());
     }
 
     #[test]

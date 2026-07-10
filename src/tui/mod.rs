@@ -30,7 +30,10 @@ const HELP_HINTS: &str = "q/Esc close";
 
 /// The ? overlay: every key by the mode it applies in.
 const HELP_TEXT: &str = "\
- [status]   j/k      browse steps
+ [status]   j/k      browse rows
+            g/G      first / last row
+            d/u      next / prev section
+            J/K      next / prev phase
             Enter    open the step's plan
             o        open-document dialog
             c        copy selected todo's name
@@ -354,6 +357,13 @@ impl Ui {
                 }
                 KeyCode::Char('o') => self.app.open_dialog(),
                 KeyCode::Char('c') => self.copy_selection(),
+                // Chunked navigation: first/last, section jumps, phase jumps.
+                KeyCode::Char('g') | KeyCode::Home => self.app.select_first(),
+                KeyCode::Char('G') | KeyCode::End => self.app.select_last(),
+                KeyCode::Char('d') | KeyCode::PageDown => self.app.select_section(1),
+                KeyCode::Char('u') | KeyCode::PageUp => self.app.select_section(-1),
+                KeyCode::Char('J') => self.app.select_phase(1),
+                KeyCode::Char('K') => self.app.select_phase(-1),
                 KeyCode::Char('?') => self.help = true,
                 _ => {}
             }
@@ -1074,7 +1084,7 @@ mod tests {
         ui.on_key(plain('?'));
         let s = screen(&mut ui);
         assert!(s.contains("Help"), "dialog title: {s}");
-        for group in ["browse steps", "back to status", "anywhere", "dialog"] {
+        for group in ["browse rows", "back to status", "anywhere", "dialog"] {
             assert!(s.contains(group), "help must mention '{group}': {s}");
         }
         // Every key gets its own row; d/u and n/N must not hide inside
@@ -1089,23 +1099,23 @@ mod tests {
         ui.on_key(plain('j'));
         let s = screen(&mut ui);
         assert!(
-            s.contains("browse steps"),
+            s.contains("browse rows"),
             "j must not act while help open: {s}"
         );
         ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         let s = screen(&mut ui);
-        assert!(!s.contains("browse steps"), "Esc closes help: {s}");
+        assert!(!s.contains("browse rows"), "Esc closes help: {s}");
         assert!(s.contains("Robot Coffee Service"), "back on status: {s}");
 
         // Works from doc mode too; q closes help without leaving the doc.
         open_via_dialog(&mut ui, 0);
         ui.on_key(plain('?'));
         let s = screen(&mut ui);
-        assert!(s.contains("browse steps"), "help from doc mode: {s}");
+        assert!(s.contains("browse rows"), "help from doc mode: {s}");
         ui.on_key(plain('q'));
         assert!(!ui.quit(), "q closes help, not the app");
         let s = screen(&mut ui);
-        assert!(!s.contains("browse steps"), "{s}");
+        assert!(!s.contains("browse rows"), "{s}");
         assert!(s.contains("Cup Handling"), "still in the doc: {s}");
 
         // '?' while drafting a search is literal draft text.
@@ -1113,7 +1123,7 @@ mod tests {
         ui.on_key(plain('?'));
         let s = screen(&mut ui);
         assert!(s.contains("/?"), "draft echoes ?: {s}");
-        assert!(!s.contains("browse steps"), "no help during drafting: {s}");
+        assert!(!s.contains("browse rows"), "no help during drafting: {s}");
     }
 
     #[test]
@@ -1373,6 +1383,35 @@ mod tests {
         // Nothing opened — still the status panel (no doc focus).
         let s = screen(&mut ui);
         assert!(!s.contains("[doc]"), "R must not open anything: {s}");
+    }
+
+    #[test]
+    fn status_chunk_nav_keys_move_the_selection() {
+        let mut ui = sample_ui(); // has todos; default selection is 02-02
+                                  // G -> last entry (a todo).
+        ui.on_key(plain('G'));
+        assert!(
+            screen(&mut ui).contains(" Todo "),
+            "G jumps to the last row"
+        );
+        // g -> first entry (the roadmap row).
+        ui.on_key(plain('g'));
+        assert!(
+            screen(&mut ui).contains("[status] Roadmap"),
+            "g jumps to the first row"
+        );
+        // J from the roadmap row -> phase 1's first step.
+        ui.on_key(plain('J'));
+        assert!(
+            screen(&mut ui).contains("Phase 1 · step 01-01"),
+            "J jumps to the next phase"
+        );
+        // d -> next section (Todos) from within Phases.
+        ui.on_key(plain('d'));
+        assert!(
+            screen(&mut ui).contains(" Todo "),
+            "d jumps to the next section"
+        );
     }
 
     #[test]

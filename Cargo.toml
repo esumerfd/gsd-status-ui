@@ -18,6 +18,9 @@ leaf-adapter = { path = "leaf-adapter" }
 ratatui = "0.30"
 crossterm = "0.29"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 lto = true
 strip = true

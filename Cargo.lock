@@ -607,6 +607,7 @@ dependencies = [
  "crossterm",
  "leaf-adapter",
  "ratatui",
+ "tempfile",
 ]
 
 [[package]]

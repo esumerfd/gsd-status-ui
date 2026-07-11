@@ -20,11 +20,9 @@ pub(crate) fn find_planning_dir(start: &Path) -> Option<PathBuf> {
 
 pub(crate) fn load_state(planning: &Path) -> StateMeta {
     let mut meta = StateMeta::default();
-    let path = planning.join("STATE.md");
-    let body = match fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return meta,
-    };
+    // STATE.md may not exist yet (e.g. a freshly scaffolded project still in the
+    // research phase). Treat it as empty so the PROJECT.md title below is still read.
+    let body = fs::read_to_string(planning.join("STATE.md")).unwrap_or_default();
 
     let (front, rest) = split_frontmatter(&body);
     parse_frontmatter(front, &mut meta);
@@ -517,6 +515,22 @@ mod tests {
                 checked: false,
             },
         ]
+    }
+
+    #[test]
+    fn load_state_reads_project_title_when_state_md_absent() {
+        // A freshly scaffolded project (research phase) has PROJECT.md but no
+        // STATE.md yet. The banner title must still come from PROJECT.md.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("PROJECT.md"),
+            "# Anthropic Cost\n\nA Rust tooling suite.\n",
+        )
+        .unwrap();
+
+        let meta = load_state(dir.path());
+
+        assert_eq!(meta.project_title, "Anthropic Cost");
     }
 
     #[test]

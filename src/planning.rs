@@ -670,6 +670,31 @@ mod tests {
     }
 
     #[test]
+    fn hides_completed_shows_failed_keeps_in_progress() {
+        let tasks = load_quick_tasks(Path::new("sample/.planning"));
+
+        let in_progress = tasks
+            .iter()
+            .find(|t| t.id == "260709-aa1")
+            .expect("260709-aa1 (in progress) present");
+        assert_eq!(in_progress.status, QuickTaskStatus::InProgress);
+
+        let failed = tasks
+            .iter()
+            .find(|t| t.id == "260710-bb2")
+            .expect("260710-bb2 (failed) present");
+        assert_eq!(
+            failed.status,
+            QuickTaskStatus::Failed("verification failed".to_string())
+        );
+
+        assert!(
+            !tasks.iter().any(|t| t.id == "260708-cc3"),
+            "260708-cc3 (completed) must be hidden"
+        );
+    }
+
+    #[test]
     fn returns_empty_when_no_todos_dir() {
         // The phases/ dir has no todos/ subtree.
         let todos = load_todos(Path::new("sample/.planning/phases"));

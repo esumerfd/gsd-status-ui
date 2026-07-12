@@ -86,6 +86,19 @@ fn plain_report_lists_in_progress_quick_task_between_phases_and_todos() {
 }
 
 #[test]
+fn plain_report_shows_failed_status_raw_and_hides_completed() {
+    let (stdout, code) = run(&["sample"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Fix export crash"), "{stdout}");
+    assert!(stdout.contains("verification failed"), "{stdout}");
+    assert!(stdout.contains("✗"), "{stdout}");
+    assert!(
+        !stdout.contains("Tidy the README"),
+        "completed task must be hidden: {stdout}"
+    );
+}
+
+#[test]
 fn plain_report_lists_pending_todos_between_phases_and_next() {
     let (stdout, code) = run(&["sample"]);
     assert_eq!(code, 0);

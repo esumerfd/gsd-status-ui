@@ -8,3 +8,4 @@ pub(crate) const BLUE: &str = "\x1b[34m";
 pub(crate) const MAGENTA: &str = "\x1b[35m";
 pub(crate) const CYAN: &str = "\x1b[36m";
 pub(crate) const GREY: &str = "\x1b[90m";
+pub(crate) const RED: &str = "\x1b[31m";

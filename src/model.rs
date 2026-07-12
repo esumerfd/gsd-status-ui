@@ -27,6 +27,45 @@ pub(crate) struct Todo {
     pub(crate) path: PathBuf,
 }
 
+/// A quick task captured under `.planning/quick/{id}-{slug}/`.
+#[derive(Debug, Clone)]
+pub(crate) struct QuickTask {
+    /// Leading `NNNNNN-xxx` directory-name token (e.g. `260709-aa1`).
+    pub(crate) id: String,
+    pub(crate) title: String,
+    /// The quick-task directory, analogous to `Todo::path`.
+    pub(crate) dir: PathBuf,
+    pub(crate) status: QuickTaskStatus,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum QuickTaskStatus {
+    InProgress,
+    /// Raw `Status` string captured from a matching STATE.md row (D-04).
+    Failed(String),
+}
+
+impl QuickTaskStatus {
+    pub(crate) fn icon(&self) -> &'static str {
+        match self {
+            QuickTaskStatus::InProgress => "●",
+            QuickTaskStatus::Failed(_) => "✗",
+        }
+    }
+    pub(crate) fn label(&self) -> String {
+        match self {
+            QuickTaskStatus::InProgress => "in progress".to_string(),
+            QuickTaskStatus::Failed(s) => s.clone(),
+        }
+    }
+    pub(crate) fn color(&self) -> &'static str {
+        match self {
+            QuickTaskStatus::InProgress => color::YELLOW,
+            QuickTaskStatus::Failed(_) => color::RED,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Phase {
     pub(crate) id: String,

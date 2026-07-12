@@ -1,4 +1,4 @@
-use crate::model::{DocKind, Phase, Plan, Stage, StateMeta, Step, Todo};
+use crate::model::{DocKind, Phase, Plan, QuickTask, QuickTaskStatus, Stage, StateMeta, Step, Todo};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -421,6 +421,84 @@ fn title_from_slug(slug: &str) -> String {
     rest.replace('-', " ")
 }
 
+// ────────────────────────────────────────────────────────── quick tasks ──
+
+/// Load quick tasks from `.planning/quick/{id}-{slug}/` directories, sorted by
+/// id. A missing `quick/` dir yields an empty list. Every discovered task is
+/// treated as in-progress here — cross-referencing STATE.md's "Quick Tasks
+/// Completed" table to hide completed ones is Plan 02's job.
+pub(crate) fn load_quick_tasks(planning: &Path) -> Vec<QuickTask> {
+    let dir = planning.join("quick");
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut tasks: Vec<QuickTask> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .filter_map(|path| parse_quick_task(&path))
+        .collect();
+    tasks.sort_by(|a, b| a.id.cmp(&b.id));
+    tasks
+}
+
+fn parse_quick_task(dir: &Path) -> Option<QuickTask> {
+    let name = dir.file_name()?.to_str()?.to_string();
+    let mut parts = name.splitn(3, '-');
+    let id = match (parts.next(), parts.next()) {
+        (Some(a), Some(b)) => format!("{a}-{b}"),
+        _ => name.clone(),
+    };
+
+    let plan_path = {
+        let preferred = dir.join(format!("{id}-PLAN.md"));
+        if preferred.is_file() {
+            Some(preferred)
+        } else {
+            fs::read_dir(dir).ok().and_then(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .find(|p| {
+                        p.file_name()
+                            .and_then(|n| n.to_str())
+                            .is_some_and(|n| n.ends_with("-PLAN.md"))
+                    })
+            })
+        }
+    };
+
+    let mut title: Option<String> = None;
+    if let Some(path) = &plan_path {
+        if let Ok(body) = fs::read_to_string(path) {
+            let (front, rest) = split_frontmatter(&body);
+            for raw in front.lines() {
+                let line = raw.trim_end();
+                if line.starts_with("  ") || line.starts_with('\t') {
+                    continue;
+                }
+                if let Some((key, value)) = split_kv(line) {
+                    let value = strip_quotes(value.trim()).trim().to_string();
+                    if !value.is_empty() && key.trim() == "title" {
+                        title = Some(value);
+                    }
+                }
+            }
+            if title.is_none() {
+                title = first_h1(rest);
+            }
+        }
+    }
+    let title = title.unwrap_or_else(|| title_from_slug(&name));
+
+    Some(QuickTask {
+        id,
+        title,
+        dir: dir.to_path_buf(),
+        status: QuickTaskStatus::InProgress,
+    })
+}
+
 // ─────────────────────────────────────────── steps & document discovery ──
 
 /// Resolves document paths for one phase directory.
@@ -579,6 +657,17 @@ mod tests {
             ]
         );
         assert_eq!(todos[0].area.as_deref(), Some("tooling"));
+    }
+
+    #[test]
+    fn loads_untracked_quick_task_as_in_progress() {
+        let tasks = load_quick_tasks(Path::new("sample/.planning"));
+        let task = tasks
+            .iter()
+            .find(|t| t.id == "260709-aa1")
+            .expect("260709-aa1 present");
+        assert_eq!(task.title, "Add dark-mode toggle");
+        assert_eq!(task.status, QuickTaskStatus::InProgress);
     }
 
     #[test]

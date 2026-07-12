@@ -76,7 +76,9 @@ pub(crate) fn status_text(planning: &Path, state: &StateMeta, phases: &[Phase]) 
     // Todos are re-read here (not threaded in) so the periodic status refresh
     // picks up newly captured `.planning/todos/` items without extra plumbing.
     let todos = crate::planning::load_todos(planning);
-    crate::report::render(&mut buf, planning, state, phases, &todos, true).ok();
+    // Quick tasks are not yet threaded into the TUI (Phase 2 scope); pass an
+    // empty slice so TUI output is unchanged this phase.
+    crate::report::render(&mut buf, planning, state, phases, &[], &todos, true).ok();
     ansi::ansi_to_text(&String::from_utf8_lossy(&buf))
 }
 

@@ -1,4 +1,6 @@
-use crate::model::{DocKind, Phase, Plan, QuickTask, QuickTaskStatus, Stage, StateMeta, Step, Todo};
+use crate::model::{
+    DocKind, Phase, Plan, QuickTask, QuickTaskStatus, Stage, StateMeta, Step, Todo,
+};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -456,14 +458,11 @@ fn parse_quick_task(dir: &Path) -> Option<QuickTask> {
             Some(preferred)
         } else {
             fs::read_dir(dir).ok().and_then(|entries| {
-                entries
-                    .filter_map(|e| e.ok())
-                    .map(|e| e.path())
-                    .find(|p| {
-                        p.file_name()
-                            .and_then(|n| n.to_str())
-                            .is_some_and(|n| n.ends_with("-PLAN.md"))
-                    })
+                entries.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| {
+                    p.file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.ends_with("-PLAN.md"))
+                })
             })
         }
     };

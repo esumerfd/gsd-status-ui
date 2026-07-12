@@ -1,5 +1,5 @@
 use crate::color;
-use crate::model::{Phase, Stage, StateMeta, Todo};
+use crate::model::{Phase, QuickTask, Stage, StateMeta, Todo};
 use std::io::{self, Write};
 use std::path::Path;
 
@@ -8,6 +8,7 @@ pub(crate) fn render(
     planning: &Path,
     state: &StateMeta,
     phases: &[Phase],
+    quick_tasks: &[QuickTask],
     todos: &[Todo],
     use_color: bool,
 ) -> io::Result<()> {
@@ -192,6 +193,38 @@ pub(crate) fn render(
     }
 
     if !phases.is_empty() {
+        writeln!(out)?;
+    }
+
+    // Tasks — quick tasks (`.planning/quick/`), between Phases and Todos.
+    // Rendered only when active tasks exist; unlike Todos' icon-only rows,
+    // each row shows icon + title + a text label (D-06/D-07), pulled only
+    // from QuickTaskStatus's own methods (no ad-hoc string matching here).
+    if !quick_tasks.is_empty() {
+        writeln!(
+            out,
+            "  {bold}Tasks{reset}",
+            bold = c(color::BOLD),
+            reset = c(color::RESET)
+        )?;
+        writeln!(
+            out,
+            "  {dim}{line}{reset}",
+            dim = c(color::DIM),
+            line = "─".repeat(63),
+            reset = c(color::RESET),
+        )?;
+        for task in quick_tasks {
+            writeln!(
+                out,
+                "  {sc}{icon}{reset}  {title}   {sc}{label}{reset}",
+                sc = c(task.status.color()),
+                icon = task.status.icon(),
+                title = truncate(&task.title, 55),
+                label = task.status.label(),
+                reset = c(color::RESET),
+            )?;
+        }
         writeln!(out)?;
     }
 
@@ -419,6 +452,7 @@ mod tests {
             &state,
             &[],
             &[],
+            &[],
             false,
         )
         .unwrap();
@@ -461,6 +495,7 @@ mod tests {
             Path::new("sample/.planning"),
             &StateMeta::default(),
             &phases,
+            &[],
             &[],
             false,
         )
@@ -505,6 +540,7 @@ mod tests {
             &StateMeta::default(),
             &phases,
             &[],
+            &[],
             false,
         )
         .unwrap();
@@ -522,6 +558,7 @@ mod tests {
             &mut buf,
             Path::new("sample/.planning"),
             &StateMeta::default(),
+            &[],
             &[],
             &[],
             false,
@@ -549,6 +586,7 @@ mod tests {
             &StateMeta::default(),
             &[],
             &[],
+            &[],
             false,
         )
         .unwrap();
@@ -562,9 +600,7 @@ mod tests {
         let quick_tasks = vec![crate::model::QuickTask {
             id: "260709-aa1".into(),
             title: "Add dark-mode toggle".into(),
-            dir: std::path::PathBuf::from(
-                "sample/.planning/quick/260709-aa1-add-dark-mode-toggle",
-            ),
+            dir: std::path::PathBuf::from("sample/.planning/quick/260709-aa1-add-dark-mode-toggle"),
             status: crate::model::QuickTaskStatus::InProgress,
         }];
         let todos = vec![Todo {
@@ -627,6 +663,7 @@ mod tests {
             &mut buf,
             Path::new("sample/.planning"),
             &StateMeta::default(),
+            &[],
             &[],
             &todos,
             false,

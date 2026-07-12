@@ -39,6 +39,7 @@ fn main() -> ExitCode {
     let state = planning::load_state(&planning);
     let phases = planning::load_phases(&planning);
     let todos = planning::load_todos(&planning);
+    let quick_tasks = planning::load_quick_tasks(&planning);
 
     let interactive = !plain && io::stdout().is_terminal();
     if interactive {
@@ -52,7 +53,16 @@ fn main() -> ExitCode {
     } else {
         let use_color = io::stdout().is_terminal() && env::var("NO_COLOR").is_err();
         let mut out = io::stdout().lock();
-        report::render(&mut out, &planning, &state, &phases, &todos, use_color).ok();
+        report::render(
+            &mut out,
+            &planning,
+            &state,
+            &phases,
+            &quick_tasks,
+            &todos,
+            use_color,
+        )
+        .ok();
         ExitCode::SUCCESS
     }
 }

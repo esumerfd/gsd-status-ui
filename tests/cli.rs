@@ -70,6 +70,22 @@ fn no_tui_alias_works() {
 }
 
 #[test]
+fn plain_report_lists_in_progress_quick_task_between_phases_and_todos() {
+    let (stdout, code) = run(&["sample"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("Tasks"), "{stdout}");
+    assert!(stdout.contains("Add dark-mode toggle"), "{stdout}");
+    assert!(stdout.contains("in progress"), "{stdout}");
+    let phases = stdout.find("Phases").expect("Phases heading present");
+    let tasks = stdout.find("Tasks").expect("Tasks heading present");
+    let todos = stdout.find("Todos").expect("Todos heading present");
+    assert!(
+        tasks > phases && tasks < todos,
+        "Tasks section must render between Phases and Todos:\n{stdout}"
+    );
+}
+
+#[test]
 fn plain_report_lists_pending_todos_between_phases_and_next() {
     let (stdout, code) = run(&["sample"]);
     assert_eq!(code, 0);

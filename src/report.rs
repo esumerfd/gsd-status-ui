@@ -557,6 +557,64 @@ mod tests {
     }
 
     #[test]
+    fn renders_tasks_section_between_phases_and_todos() {
+        let phases = crate::planning::load_phases(Path::new("sample/.planning"));
+        let quick_tasks = vec![crate::model::QuickTask {
+            id: "260709-aa1".into(),
+            title: "Add dark-mode toggle".into(),
+            dir: std::path::PathBuf::from(
+                "sample/.planning/quick/260709-aa1-add-dark-mode-toggle",
+            ),
+            status: crate::model::QuickTaskStatus::InProgress,
+        }];
+        let todos = vec![Todo {
+            title: "Do the thing".into(),
+            area: Some("tooling".into()),
+            slug: "2026-07-07-do-the-thing".into(),
+            path: std::path::PathBuf::from("2026-07-07-do-the-thing.md"),
+        }];
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            Path::new("sample/.planning"),
+            &StateMeta::default(),
+            &phases,
+            &quick_tasks,
+            &todos,
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("Tasks"), "{out}");
+        assert!(out.contains("Add dark-mode toggle"), "{out}");
+        assert!(out.contains("in progress"), "{out}");
+        let phases_idx = out.find("Phases").expect("phases heading");
+        let tasks_idx = out.find("Tasks").expect("tasks heading");
+        let todos_idx = out.find("Todos").expect("todos heading");
+        assert!(
+            tasks_idx > phases_idx && tasks_idx < todos_idx,
+            "Tasks must sit between Phases and Todos:\n{out}"
+        );
+    }
+
+    #[test]
+    fn omits_tasks_block_when_empty() {
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            Path::new("sample/.planning"),
+            &StateMeta::default(),
+            &[],
+            &[],
+            &[],
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(!out.contains("Tasks"), "{out}");
+    }
+
+    #[test]
     fn renders_todos_section_between_phases_and_next() {
         let todos = vec![Todo {
             title: "Do the thing".into(),

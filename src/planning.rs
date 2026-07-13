@@ -426,22 +426,165 @@ fn title_from_slug(slug: &str) -> String {
 // ────────────────────────────────────────────────────────── quick tasks ──
 
 /// Load quick tasks from `.planning/quick/{id}-{slug}/` directories, sorted by
-/// id. A missing `quick/` dir yields an empty list. Every discovered task is
-/// treated as in-progress here — cross-referencing STATE.md's "Quick Tasks
-/// Completed" table to hide completed ones is Plan 02's job.
+/// id. A missing `quick/` dir yields an empty list. Each task's visibility and
+/// status is decided by cross-referencing STATE.md's "Quick Tasks Completed"
+/// table (see `parse_quick_completions`): no matching row keeps the task
+/// in-progress (D-03a); a matching row with a passing/blank Status hides the
+/// task (D-02); a matching row with a non-passing Status keeps the task
+/// visible as `Failed(raw_status)` (D-03b/D-04).
 pub(crate) fn load_quick_tasks(planning: &Path) -> Vec<QuickTask> {
     let dir = planning.join("quick");
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
     };
+    let completions = parse_quick_completions(planning);
     let mut tasks: Vec<QuickTask> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.is_dir())
         .filter_map(|path| parse_quick_task(&path))
+        .filter_map(|mut task| {
+            let dir_name = task.dir.file_name().and_then(|n| n.to_str());
+            // Match primarily by exact id equality; fall back (D-05) to
+            // treating a row as matching when the task's directory name is
+            // contained in that row's Directory/Path cell, in case a
+            // project's id column can't be relied on but the directory
+            // reference still is.
+            let status = completions.get(&task.id).or_else(|| {
+                dir_name.and_then(|d| {
+                    completions
+                        .values()
+                        .find(|(_, directory)| directory.contains(d))
+                })
+            });
+            match status {
+                None => {
+                    task.status = QuickTaskStatus::InProgress;
+                    Some(task)
+                }
+                Some((Some(raw), _)) if !is_passing_status(raw) => {
+                    task.status = QuickTaskStatus::Failed(raw.clone());
+                    Some(task)
+                }
+                Some(_) => None, // hidden: blank status or passing status (D-02)
+            }
+        })
         .collect();
     tasks.sort_by(|a, b| a.id.cmp(&b.id));
     tasks
+}
+
+/// Parse STATE.md's "Quick Tasks Completed" table into a map of task id ->
+/// (raw Status if present and non-empty, Directory/Path cell text). Tolerant
+/// of the heading appearing at any `#` level (D-05) and of column names/order
+/// diverging from the canonical spec — columns are resolved by fuzzy header
+/// name (falling back to position for the id column). A missing heading or
+/// table yields an empty map; never panics on ragged/malformed rows.
+fn parse_quick_completions(planning: &Path) -> HashMap<String, (Option<String>, String)> {
+    let mut map = HashMap::new();
+    let body = fs::read_to_string(planning.join("STATE.md")).unwrap_or_default();
+
+    let mut lines = body.lines();
+    let mut found_heading = false;
+    for line in lines.by_ref() {
+        let is_heading = line.trim_start().starts_with('#');
+        if is_heading {
+            let heading_text = line.trim_start_matches('#').trim();
+            if heading_text.eq_ignore_ascii_case("Quick Tasks Completed") {
+                found_heading = true;
+                break;
+            }
+        }
+    }
+    if !found_heading {
+        return map;
+    }
+
+    let table_rows: Vec<&str> = lines
+        .by_ref()
+        .skip_while(|l| l.trim().is_empty())
+        .take_while(|l| l.trim_start().starts_with('|'))
+        .collect();
+    if table_rows.is_empty() {
+        return map;
+    }
+
+    let header_cells = split_table_row(table_rows[0]);
+    let id_col = header_cells
+        .iter()
+        .position(|c| {
+            let c = c.trim().to_lowercase();
+            c == "#" || c == "id"
+        })
+        .unwrap_or(0);
+    let status_col = header_cells
+        .iter()
+        .position(|c| c.trim().to_lowercase().contains("status"));
+    let directory_col = header_cells.iter().position(|c| {
+        let c = c.trim().to_lowercase();
+        c.contains("directory") || c.contains("path")
+    });
+
+    // Row 1 is the header; row 2 (if present and all-dashes) is the
+    // separator — skip it defensively without assuming it's always there.
+    let data_rows = table_rows.iter().skip(1).filter(|row| {
+        let cells = split_table_row(row);
+        !cells
+            .iter()
+            .all(|c| !c.trim().is_empty() && c.trim().chars().all(|ch| ch == '-' || ch == ':'))
+    });
+
+    for row in data_rows {
+        let cells = split_table_row(row);
+        let Some(id_cell) = cells.get(id_col) else {
+            continue;
+        };
+        let id = id_cell.trim().to_string();
+        if id.is_empty() {
+            continue;
+        }
+        let status = status_col
+            .and_then(|i| cells.get(i))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let directory = directory_col
+            .and_then(|i| cells.get(i))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default();
+        map.insert(id, (status, directory));
+    }
+
+    map
+}
+
+/// Split a markdown table row on `|`, trimming each cell. Tolerates leading
+/// and trailing `|` (e.g. `| a | b |`) and rows without them (`a | b`).
+fn split_table_row(row: &str) -> Vec<String> {
+    row.trim()
+        .trim_start_matches('|')
+        .trim_end_matches('|')
+        .split('|')
+        .map(|c| c.trim().to_string())
+        .collect()
+}
+
+/// Minimal allowlist of Status values that count as "passing" (D-02) — this
+/// deliberately does not try to interpret the failing value's meaning (D-04);
+/// it only gates the hide/show decision.
+fn is_passing_status(s: &str) -> bool {
+    matches!(
+        s.trim().to_lowercase().as_str(),
+        "pass"
+            | "passed"
+            | "passing"
+            | "success"
+            | "succeeded"
+            | "ok"
+            | "done"
+            | "complete"
+            | "completed"
+            | "verified"
+    )
 }
 
 fn parse_quick_task(dir: &Path) -> Option<QuickTask> {

@@ -23,4 +23,5 @@ Run `/gsd-execute-phase 2` to resume.
 | # | Description | Date | Commit | Status | Directory |
 |---|--------------|------|--------|--------|-----------|
 | 260710-bb2 | Fix export crash | 2026-07-10 | a1b2c3d | verification failed | ./quick/260710-bb2-fix-export-crash/ |
+| 260712-ee5 | Retry failed uploads | 2026-07-12 | c3d4e5f | verification failed | ./quick/260712-ee5-retry-failed-uploads/ |
 | 260708-cc3 | Tidy the README | 2026-07-08 | e4f5a6b |  | ./quick/260708-cc3-tidy-readme/ |

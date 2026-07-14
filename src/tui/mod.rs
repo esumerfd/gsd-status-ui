@@ -863,6 +863,81 @@ mod tests {
         out
     }
 
+    /// Like `screen`, but with extra rows so content below the fold (the
+    /// Tasks/Todos sections, which sit lower in the report body) is visible.
+    fn screen_tall(ui: &mut Ui, height: u16) -> String {
+        let backend = TestBackend::new(90, height);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| ui.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut out = String::new();
+        for y in 0..height {
+            for x in 0..90 {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn initial_screen_shows_a_tasks_section_between_phases_and_todos() {
+        let mut ui = sample_ui();
+        let s = screen_tall(&mut ui, 40);
+        assert!(s.contains("Tasks"), "{s}");
+        assert!(s.contains("Add search history"), "{s}");
+        assert!(s.contains("Retry failed uploads"), "{s}");
+        let phases_idx = s.find("Phases").expect("phases heading");
+        let tasks_idx = s.find("Tasks").expect("tasks heading");
+        let todos_idx = s.find("Todos").expect("todos heading");
+        assert!(
+            tasks_idx > phases_idx && tasks_idx < todos_idx,
+            "Tasks must sit between Phases and Todos: {s}"
+        );
+    }
+
+    #[test]
+    fn ctrl_j_walks_from_the_last_phase_onto_the_first_task_row() {
+        let mut ui = sample_ui();
+        ui.on_key(ctrl('j')); // 02-03
+        ui.on_key(ctrl('j')); // phase-3 placeholder (last phase)
+        ui.on_key(ctrl('j')); // first Task row
+        let s = screen(&mut ui);
+        assert!(s.contains(" Task "), "tab label shows the reached task: {s}");
+    }
+
+    #[test]
+    fn select_section_walks_through_the_tasks_section() {
+        let mut ui = sample_ui(); // default mid-Phases (02-02)
+        ui.on_key(plain('d')); // -> Tasks section (first task)
+        let s = screen(&mut ui);
+        assert!(s.contains(" Task "), "d should reach the Tasks section: {s}");
+        ui.on_key(plain('d')); // -> Todos section (first todo)
+        let s = screen(&mut ui);
+        assert!(
+            s.contains(" Todo "),
+            "d again should reach the Todos section: {s}"
+        );
+    }
+
+    #[test]
+    fn select_phase_moves_single_rows_within_the_tasks_section() {
+        let mut ui = sample_ui();
+        ui.on_key(ctrl('j')); // 02-03
+        ui.on_key(ctrl('j')); // phase-3 placeholder (last phase)
+        ui.on_key(plain('J')); // no next phase: flows down into the first Task row
+        let s = screen(&mut ui);
+        assert!(s.contains(" Task "), "J flows from the last phase into Tasks: {s}");
+
+        // J/K within Tasks moves one row (task -> task), not into Phases.
+        ui.on_key(plain('J'));
+        let s = screen(&mut ui);
+        assert!(s.contains(" Task "), "J within Tasks stays in Tasks: {s}");
+        ui.on_key(plain('K'));
+        let s = screen(&mut ui);
+        assert!(s.contains(" Task "), "K within Tasks stays in Tasks: {s}");
+    }
+
     #[test]
     fn c_copies_the_selected_todo_title_to_the_clipboard() {
         let mut ui = sample_ui();

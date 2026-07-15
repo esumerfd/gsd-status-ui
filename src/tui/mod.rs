@@ -207,17 +207,18 @@ impl Ui {
         self.clipboard.take()
     }
 
-    /// Copy the selected todo's title to the clipboard (queued for the event
-    /// loop). On a phase step there is nothing to copy, so just hint.
+    /// Copy the selected todo's or quick task's title to the clipboard
+    /// (queued for the event loop). On a phase step there is nothing to
+    /// copy, so just hint.
     fn copy_selection(&mut self) {
-        match self.app.current_todo_title() {
+        match self.app.current_copyable_title() {
             Some(title) => {
                 let title = title.to_string();
                 self.app.flash = Some(format!("copied: {title}"));
                 self.clipboard = Some(title);
                 self.copy_flash = true;
             }
-            None => self.app.flash = Some("select a todo to copy (c)".into()),
+            None => self.app.flash = Some("select a todo or task to copy (c)".into()),
         }
     }
 
@@ -1062,6 +1063,46 @@ mod tests {
         assert!(
             bg_green_cells(&mut ui) > 0,
             "the copied todo row should flash green"
+        );
+
+        // The flash is transient: the next interaction clears it.
+        ui.on_key(plain('k'));
+        assert_eq!(bg_green_cells(&mut ui), 0, "flash clears on the next key");
+    }
+
+    #[test]
+    fn c_copies_the_selected_quick_tasks_title_to_the_clipboard() {
+        let mut ui = sample_ui();
+        // On a real step, c does not copy — it hints instead.
+        ui.on_key(plain('c'));
+        assert_eq!(ui.take_clipboard(), None);
+
+        // Browse to the first task row (02-02 -> 02-03 -> placeholder -> task0).
+        ui.on_key(plain('j'));
+        ui.on_key(plain('j'));
+        ui.on_key(plain('j'));
+        ui.on_key(plain('c'));
+        assert_eq!(ui.take_clipboard().as_deref(), Some("Add dark-mode toggle"));
+        // take_clipboard drains: a second read is empty.
+        assert_eq!(ui.take_clipboard(), None);
+
+        let s = screen(&mut ui);
+        assert!(s.contains("copied"), "footer confirms the copy: {s}");
+    }
+
+    #[test]
+    fn c_flashes_the_copied_task_row_green() {
+        let mut ui = sample_ui();
+        assert_eq!(bg_green_cells(&mut ui), 0);
+
+        // Browse to the first task row and copy it.
+        ui.on_key(plain('j'));
+        ui.on_key(plain('j'));
+        ui.on_key(plain('j'));
+        ui.on_key(plain('c'));
+        assert!(
+            bg_green_cells(&mut ui) > 0,
+            "the copied task row should flash green"
         );
 
         // The flash is transient: the next interaction clears it.

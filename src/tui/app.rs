@@ -339,10 +339,15 @@ impl App {
         self.entries.get(self.current)
     }
 
-    /// The selected todo's title, or `None` when the selection is a phase
-    /// step. Backs the `c` "copy todo name" key.
-    pub(crate) fn current_todo_title(&self) -> Option<&str> {
-        self.entries.get(self.current)?.todo_title.as_deref()
+    /// The selected todo's or quick task's title, or `None` when the
+    /// selection is a phase step or the roadmap row. Backs the `c` "copy
+    /// name" key for both todos and tasks.
+    pub(crate) fn current_copyable_title(&self) -> Option<&str> {
+        let entry = self.entries.get(self.current)?;
+        entry
+            .todo_title
+            .as_deref()
+            .or(entry.quick_task_title.as_deref())
     }
 
     pub(crate) fn tabs(&self) -> &[usize] {
@@ -1108,17 +1113,26 @@ mod tests {
     }
 
     #[test]
-    fn current_todo_title_is_some_only_on_a_todo() {
-        let mut app =
-            App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &sample_todos());
+    fn current_copyable_title_is_some_only_on_a_todo_or_task() {
+        let mut app = App::from_phases_and_todos(
+            sample_planning(),
+            &sample_phases(),
+            &sample_quick_tasks(),
+            &sample_todos(),
+        );
         // Starts on a real step.
-        assert!(app.current_todo_title().is_none());
-        // Walk to the first todo (02-02 -> 02-03 -> placeholder -> todo0).
+        assert!(app.current_copyable_title().is_none());
+        // Walk to the first task row (02-02 -> 02-03 -> placeholder -> task0).
         app.change_step(1);
         app.change_step(1);
         app.change_step(1);
+        assert_eq!(app.current_copyable_title(), Some("Add dark-mode toggle"));
+        // Walk past the 4 tasks onto the first todo.
+        for _ in 0..4 {
+            app.change_step(1);
+        }
         assert_eq!(
-            app.current_todo_title(),
+            app.current_copyable_title(),
             Some("Official signed build process for pr-monitor apps")
         );
     }

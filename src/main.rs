@@ -43,7 +43,7 @@ fn main() -> ExitCode {
 
     let interactive = !plain && io::stdout().is_terminal();
     if interactive {
-        match tui::run(&planning, &state, &phases, &todos) {
+        match tui::run(&planning, &state, &phases, &quick_tasks, &todos) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("gsd-status: {e}");

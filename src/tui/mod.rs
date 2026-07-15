@@ -7,7 +7,7 @@ pub(crate) mod ansi;
 pub(crate) mod app;
 pub(crate) mod clipboard;
 
-use crate::model::{Phase, StateMeta, Todo};
+use crate::model::{Phase, QuickTask, StateMeta, Todo};
 use app::{App, Focus, OpenRequest, Selected};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::Print;
@@ -131,6 +131,29 @@ fn highlight_index(text: &Text, sel: &Selected) -> Option<usize> {
                 .and_then(|rest| rest.split_whitespace().next())
                 == Some(id.as_str())
         }),
+        // Scoped to the lines between the "Tasks" heading (+ its divider) and
+        // the section's trailing blank line, so a Task selection never
+        // mis-indexes against a Phase row that also begins with ● (D-01's
+        // ordinal window: report.rs renders Tasks as heading, divider, one
+        // icon-prefixed row per active task, blank line).
+        Selected::Task(n) => {
+            let tasks_start = text
+                .lines
+                .iter()
+                .position(|line| line_string(line).trim() == "Tasks")?;
+            text.lines
+                .iter()
+                .enumerate()
+                .skip(tasks_start + 2) // heading, then its divider
+                .take_while(|(_, line)| !line_string(line).trim().is_empty())
+                .filter(|(_, line)| {
+                    let s = line_string(line);
+                    let s = s.trim_start();
+                    s.starts_with('●') || s.starts_with('✗')
+                })
+                .nth(*n)
+                .map(|(i, _)| i)
+        }
         Selected::Todo(n) => text
             .lines
             .iter()
@@ -163,9 +186,10 @@ impl Ui {
     pub(crate) fn reload_from_disk(&mut self, planning: &Path) {
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
+        let quick_tasks = crate::planning::load_quick_tasks(planning, self.show_completed);
         let todos = crate::planning::load_todos(planning, self.show_completed);
         self.set_report(status_text(planning, &state, &phases, self.show_completed));
-        self.refresh_entries(planning, &phases, &todos);
+        self.refresh_entries(planning, &phases, &quick_tasks, &todos);
     }
 
     /// Drain the `H`-set reload request (see `needs_reload`).
@@ -227,8 +251,14 @@ impl Ui {
     /// j/k reach rows the periodic reload added (e.g. a todo captured while the
     /// TUI is open). Open document tabs are carried to each surviving entry's
     /// new index; views for entries that vanished are dropped.
-    pub(crate) fn refresh_entries(&mut self, planning: &Path, phases: &[Phase], todos: &[Todo]) {
-        let remap = self.app.refresh(planning, phases, todos);
+    pub(crate) fn refresh_entries(
+        &mut self,
+        planning: &Path,
+        phases: &[Phase],
+        quick_tasks: &[QuickTask],
+        todos: &[Todo],
+    ) {
+        let remap = self.app.refresh(planning, phases, quick_tasks, todos);
         let old_views = std::mem::take(&mut self.views);
         for ((old_idx, doc), view) in old_views {
             if let Some(&new_idx) = remap.get(&old_idx) {
@@ -473,6 +503,7 @@ impl Ui {
         // phase/step so stepping (j/k, C-j/k) is visible from any tab.
         let status_title = match self.app.current_entry() {
             Some(entry) if entry.is_roadmap() => "Roadmap".to_string(),
+            Some(entry) if entry.is_task() => "Task".to_string(),
             Some(entry) if entry.is_todo() => "Todo".to_string(),
             Some(entry) => {
                 // Step ids repeat the phase prefix ("02-03"); the label
@@ -521,7 +552,8 @@ impl Ui {
                     if let Some(idx) = highlight_index(&text, &sel) {
                         // A just-copied todo flashes green (the "done" accent);
                         // otherwise the selection gets the usual grey band.
-                        let flashing = self.copy_flash && matches!(sel, Selected::Todo(_));
+                        let flashing =
+                            self.copy_flash && matches!(sel, Selected::Todo(_) | Selected::Task(_));
                         let hl = if flashing {
                             Style::default().bg(Color::Green).fg(Color::Black)
                         } else {
@@ -663,11 +695,12 @@ pub(crate) fn run(
     planning: &Path,
     state: &StateMeta,
     phases: &[Phase],
+    quick_tasks: &[QuickTask],
     todos: &[Todo],
 ) -> io::Result<()> {
     let mut ui = Ui::new(
         status_text(planning, state, phases, false),
-        App::from_phases_and_todos(planning, phases, todos),
+        App::from_phases_and_todos(planning, phases, quick_tasks, todos),
     );
 
     terminal::enable_raw_mode()?;
@@ -728,8 +761,8 @@ fn event_loop(
             last_status = std::time::Instant::now();
             // Keep navigation in step with the refreshed panel: without this the
             // entry list (and its j/k bound) stays frozen at launch and can't
-            // reach a todo the reload just added — or a ROADMAP.md that landed
-            // after launch.
+            // reach a todo/task the reload just added — or a ROADMAP.md that
+            // landed after launch.
             ui.reload_from_disk(planning);
         }
         if last_doc_check.elapsed() >= DOC_CHECK {
@@ -748,10 +781,11 @@ mod tests {
         let planning = Path::new("sample/.planning");
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
+        let quick_tasks = crate::planning::load_quick_tasks(planning, false);
         let todos = crate::planning::load_todos(planning, false);
         Ui::new(
             status_text(planning, &state, &phases, false),
-            App::from_phases_and_todos(planning, &phases, &todos),
+            App::from_phases_and_todos(planning, &phases, &quick_tasks, &todos),
         )
     }
 
@@ -782,6 +816,32 @@ mod tests {
         assert_eq!(highlight_index(&text, &Selected::Todo(1)), Some(6));
         assert_eq!(highlight_index(&text, &Selected::Phase("9".into())), None);
         assert_eq!(highlight_index(&text, &Selected::Todo(5)), None);
+    }
+
+    #[test]
+    fn highlight_index_scopes_task_selection_to_the_tasks_section() {
+        // A Phase row also starts with ●, so the Task arm must not accidentally
+        // match it — only rows between the "Tasks" heading (+ divider) and the
+        // section's trailing blank line count.
+        let text = Text::from(vec![
+            Line::raw("  Phases"),
+            Line::raw("  ✓  Phase 1   Navigation Skeleton   verified"),
+            Line::raw("  ●  Phase 2   Coffee Acquisition   executing"),
+            Line::raw(""),
+            Line::raw("  Tasks"),
+            Line::raw("  ─────────"),
+            Line::raw("  ●  Add search history   in progress"),
+            Line::raw("  ✗  Retry failed uploads   verification failed"),
+            Line::raw(""),
+            Line::raw("  Todos"),
+            Line::raw("  ─────────"),
+            Line::raw("    ○ Signed build   tooling"),
+        ]);
+        assert_eq!(highlight_index(&text, &Selected::Task(0)), Some(6));
+        assert_eq!(highlight_index(&text, &Selected::Task(1)), Some(7));
+        assert_eq!(highlight_index(&text, &Selected::Task(2)), None);
+        // Must never resolve to a Phase row that also begins with ●.
+        assert_ne!(highlight_index(&text, &Selected::Task(0)), Some(2));
     }
 
     fn plain(c: char) -> KeyEvent {
@@ -903,7 +963,10 @@ mod tests {
         ui.on_key(ctrl('j')); // phase-3 placeholder (last phase)
         ui.on_key(ctrl('j')); // first Task row
         let s = screen(&mut ui);
-        assert!(s.contains(" Task "), "tab label shows the reached task: {s}");
+        assert!(
+            s.contains(" Task "),
+            "tab label shows the reached task: {s}"
+        );
     }
 
     #[test]
@@ -911,7 +974,10 @@ mod tests {
         let mut ui = sample_ui(); // default mid-Phases (02-02)
         ui.on_key(plain('d')); // -> Tasks section (first task)
         let s = screen(&mut ui);
-        assert!(s.contains(" Task "), "d should reach the Tasks section: {s}");
+        assert!(
+            s.contains(" Task "),
+            "d should reach the Tasks section: {s}"
+        );
         ui.on_key(plain('d')); // -> Todos section (first todo)
         let s = screen(&mut ui);
         assert!(
@@ -927,7 +993,10 @@ mod tests {
         ui.on_key(ctrl('j')); // phase-3 placeholder (last phase)
         ui.on_key(plain('J')); // no next phase: flows down into the first Task row
         let s = screen(&mut ui);
-        assert!(s.contains(" Task "), "J flows from the last phase into Tasks: {s}");
+        assert!(
+            s.contains(" Task "),
+            "J flows from the last phase into Tasks: {s}"
+        );
 
         // J/K within Tasks moves one row (task -> task), not into Phases.
         ui.on_key(plain('J'));
@@ -948,10 +1017,11 @@ mod tests {
         ui.on_key(plain('c'));
         assert_eq!(ui.take_clipboard(), None);
 
-        // Browse to the first todo (02-02 -> 02-03 -> placeholder -> todo0).
-        ui.on_key(plain('j'));
-        ui.on_key(plain('j'));
-        ui.on_key(plain('j'));
+        // Browse to the first todo (02-02 -> 02-03 -> placeholder -> 4 task
+        // rows -> todo0).
+        for _ in 0..7 {
+            ui.on_key(plain('j'));
+        }
         ui.on_key(plain('c'));
         assert_eq!(
             ui.take_clipboard().as_deref(),
@@ -984,10 +1054,10 @@ mod tests {
         // No green background anywhere until a copy happens.
         assert_eq!(bg_green_cells(&mut ui), 0);
 
-        // Browse to the first todo and copy it.
-        ui.on_key(plain('j'));
-        ui.on_key(plain('j'));
-        ui.on_key(plain('j'));
+        // Browse to the first todo (past the 4 task rows) and copy it.
+        for _ in 0..7 {
+            ui.on_key(plain('j'));
+        }
         ui.on_key(plain('c'));
         assert!(
             bg_green_cells(&mut ui) > 0,
@@ -1449,10 +1519,10 @@ mod tests {
         let planning = Path::new("sample/.planning");
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
-        // Launch with no todos on disk yet.
+        // Launch with no tasks or todos on disk yet.
         let mut ui = Ui::new(
             status_text(planning, &state, &phases, false),
-            App::from_phases_and_todos(planning, &phases, &[]),
+            App::from_phases_and_todos(planning, &phases, &[], &[]),
         );
         // Step to the last entry (the phase-3 placeholder) — nav clamps here.
         ui.on_key(ctrl('j')); // 02-03
@@ -1468,7 +1538,7 @@ mod tests {
             path: std::path::PathBuf::from("2026-07-09-fresh.md"),
             completed: false,
         }];
-        ui.refresh_entries(planning, &phases, &todos);
+        ui.refresh_entries(planning, &phases, &[], &todos);
 
         // Ctrl-j now descends onto the new todo instead of clamping short.
         ui.on_key(ctrl('j'));
@@ -1558,7 +1628,7 @@ mod tests {
         let planning = Path::new("sample/.planning");
         let mut ui = Ui::new(
             status_text(planning, &StateMeta::default(), &[], false),
-            App::from_phases_and_todos(planning, &[], &[]),
+            App::from_phases_and_todos(planning, &[], &[], &[]),
         );
         ui.on_key(plain('R'));
         // Nothing opened — still the status panel (no doc focus).
@@ -1587,10 +1657,10 @@ mod tests {
             screen(&mut ui).contains("Phase 1 · step 01-01"),
             "J jumps to the next phase"
         );
-        // d -> next section (Todos) from within Phases.
+        // d -> next section (Tasks) from within Phases.
         ui.on_key(plain('d'));
         assert!(
-            screen(&mut ui).contains(" Todo "),
+            screen(&mut ui).contains(" Task "),
             "d jumps to the next section"
         );
     }

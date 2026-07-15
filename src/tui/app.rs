@@ -6,7 +6,7 @@
 //! boundaries (e.g. Ctrl-k from the current phase's first step lands on the
 //! previous phase's last step). Each step carries its phase context.
 
-use crate::model::{Document, Phase, Step, Todo};
+use crate::model::{Document, Phase, QuickTask, Step, Todo};
 use crate::planning::{discover_documents, discover_steps, PhaseDocs};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -29,6 +29,12 @@ pub(crate) struct StepEntry {
     /// phase steps rather than a phase step. Its document 0 is the todo's
     /// markdown file, so `open_doc(0)` opens the todo.
     pub(crate) todo_title: Option<String>,
+    /// `Some(title)` when this entry is an active quick task, appended after
+    /// the phase steps and before the todos. Its `step.plan_path` is the
+    /// task's `-PLAN.md` file, mirroring how a todo reuses its own markdown
+    /// file — document-opening for tasks beyond that stays out of scope for
+    /// Phase 2.
+    pub(crate) quick_task_title: Option<String>,
     /// True for the single synthetic entry that fronts the list when a
     /// project-level `ROADMAP.md` exists. Its document 0 is that file, so
     /// `open_doc(0)` opens the roadmap — mirroring how a todo reuses index 0.
@@ -38,6 +44,10 @@ pub(crate) struct StepEntry {
 impl StepEntry {
     pub(crate) fn is_todo(&self) -> bool {
         self.todo_title.is_some()
+    }
+
+    pub(crate) fn is_task(&self) -> bool {
+        self.quick_task_title.is_some()
     }
 
     pub(crate) fn is_roadmap(&self) -> bool {
@@ -52,6 +62,8 @@ pub(crate) enum Selected {
     Roadmap,
     /// The row for this phase id (a step belongs to it).
     Phase(String),
+    /// The Nth active quick-task row (0-based, in render order).
+    Task(usize),
     /// The Nth pending todo row (0-based, in render order).
     Todo(usize),
 }
@@ -104,7 +116,7 @@ impl App {
         // never grab the cursor on startup.
         let current = entries
             .iter()
-            .position(|e| !e.is_todo() && !e.is_roadmap() && !e.step.checked)
+            .position(|e| !e.is_todo() && !e.is_roadmap() && !e.is_task() && !e.step.checked)
             .unwrap_or(0);
         let tabsets = vec![TabSet::default(); entries.len()];
         Self {
@@ -121,25 +133,37 @@ impl App {
     /// (or no phase directory at all) still gets one unchecked placeholder
     /// entry ("Step 1"), so an unstarted phase is selectable — and becomes
     /// the default once every real step before it is checked.
-    /// Test-only convenience for building an App with no todos; production
-    /// always goes through `from_phases_and_todos`.
+    /// Test-only convenience for building an App with no todos or tasks;
+    /// production always goes through `from_phases_and_todos`.
     #[cfg(test)]
     pub(crate) fn from_phases(planning: &Path, phases: &[Phase]) -> Self {
-        Self::from_phases_and_todos(planning, phases, &[])
+        Self::from_phases_and_todos(planning, phases, &[], &[])
     }
 
-    /// Like `from_phases`, but appends one navigable entry per pending todo
-    /// after all phase steps, so j/k walks steps then todos. `planning` locates
-    /// the workspace-root `ROADMAP.md` for the leading Roadmap entry.
-    pub(crate) fn from_phases_and_todos(planning: &Path, phases: &[Phase], todos: &[Todo]) -> Self {
-        Self::new(Self::build_entries(planning, phases, todos))
+    /// Like `from_phases`, but appends one navigable entry per active quick
+    /// task, then one per pending todo, after all phase steps, so j/k walks
+    /// steps, then tasks, then todos. `planning` locates the workspace-root
+    /// `ROADMAP.md` for the leading Roadmap entry.
+    pub(crate) fn from_phases_and_todos(
+        planning: &Path,
+        phases: &[Phase],
+        quick_tasks: &[QuickTask],
+        todos: &[Todo],
+    ) -> Self {
+        Self::new(Self::build_entries(planning, phases, quick_tasks, todos))
     }
 
-    /// The flattened roadmap-then-steps-then-todos entry list. Shared by
-    /// construction and by `refresh` (the periodic reload), so both see the
-    /// same ordering. A leading Roadmap entry fronts the list whenever phases
-    /// exist (i.e. a `ROADMAP.md` parsed), mirroring the report's row.
-    fn build_entries(planning: &Path, phases: &[Phase], todos: &[Todo]) -> Vec<StepEntry> {
+    /// The flattened roadmap-then-steps-then-tasks-then-todos entry list.
+    /// Shared by construction and by `refresh` (the periodic reload), so both
+    /// see the same ordering. A leading Roadmap entry fronts the list
+    /// whenever phases exist (i.e. a `ROADMAP.md` parsed), mirroring the
+    /// report's row.
+    fn build_entries(
+        planning: &Path,
+        phases: &[Phase],
+        quick_tasks: &[QuickTask],
+        todos: &[Todo],
+    ) -> Vec<StepEntry> {
         let mut entries = Vec::new();
         if !phases.is_empty() {
             let roadmap_path = planning.join("ROADMAP.md");
@@ -157,6 +181,7 @@ impl App {
                 pos_in_phase: 0,
                 phase_steps: 1,
                 todo_title: None,
+                quick_task_title: None,
                 roadmap: true,
             });
         }
@@ -182,6 +207,7 @@ impl App {
                     pos_in_phase: 0,
                     phase_steps: 1,
                     todo_title: None,
+                    quick_task_title: None,
                     roadmap: false,
                 });
                 continue;
@@ -198,9 +224,26 @@ impl App {
                     pos_in_phase: i,
                     phase_steps: count,
                     todo_title: None,
+                    quick_task_title: None,
                     roadmap: false,
                 });
             }
+        }
+        for task in quick_tasks {
+            entries.push(StepEntry {
+                phase_id: String::new(),
+                step: Step {
+                    id: task.id.clone(),
+                    plan_path: task.dir.join(format!("{}-PLAN.md", task.id)),
+                    checked: false,
+                },
+                documents: Vec::new(),
+                pos_in_phase: 0,
+                phase_steps: 1,
+                todo_title: None,
+                quick_task_title: Some(task.title.clone()),
+                roadmap: false,
+            });
         }
         for todo in todos {
             entries.push(StepEntry {
@@ -217,6 +260,7 @@ impl App {
                 pos_in_phase: 0,
                 phase_steps: 1,
                 todo_title: Some(todo.title.clone()),
+                quick_task_title: None,
                 roadmap: false,
             });
         }
@@ -234,15 +278,17 @@ impl App {
         &mut self,
         planning: &Path,
         phases: &[Phase],
+        quick_tasks: &[QuickTask],
         todos: &[Todo],
     ) -> HashMap<usize, usize> {
         // `(phase_id, step.id)` is a stable identity: step ids are phase-scoped
-        // and unique, todo entries carry their (unique) slug as the step id, and
-        // the single Roadmap entry is the unique `("", "")`.
+        // and unique, todo entries carry their (unique) slug as the step id,
+        // quick-task entries carry their (unique) id as the step id, and the
+        // single Roadmap entry is the unique `("", "")`.
         let key = |e: &StepEntry| (e.phase_id.clone(), e.step.id.clone());
         let selected = self.entries.get(self.current).map(&key);
 
-        let new_entries = Self::build_entries(planning, phases, todos);
+        let new_entries = Self::build_entries(planning, phases, quick_tasks, todos);
         let new_index: HashMap<(String, String), usize> = new_entries
             .iter()
             .enumerate()
@@ -272,6 +318,12 @@ impl App {
         let entry = self.entries.get(self.current)?;
         if entry.is_roadmap() {
             Some(Selected::Roadmap)
+        } else if entry.is_task() {
+            let ordinal = self.entries[..self.current]
+                .iter()
+                .filter(|e| e.is_task())
+                .count();
+            Some(Selected::Task(ordinal))
         } else if entry.is_todo() {
             let ordinal = self.entries[..self.current]
                 .iter()
@@ -401,13 +453,16 @@ impl App {
         None
     }
 
-    /// Section ordinal for grouping entries: Roadmap(0), Phases(1), Todos(2).
-    /// Entries are built in this order, so each section is contiguous.
+    /// Section ordinal for grouping entries: Roadmap(0), Phases(1), Tasks(2),
+    /// Todos(3). Entries are built in this order, so each section is
+    /// contiguous.
     fn section_key(e: &StepEntry) -> u8 {
         if e.is_roadmap() {
             0
-        } else if e.is_todo() {
+        } else if e.is_task() {
             2
+        } else if e.is_todo() {
+            3
         } else {
             1
         }
@@ -433,7 +488,7 @@ impl App {
         let mut starts = Vec::new();
         let mut last: Option<&str> = None;
         for (i, e) in self.entries.iter().enumerate() {
-            if e.is_roadmap() || e.is_todo() {
+            if e.is_roadmap() || e.is_todo() || e.is_task() {
                 last = None;
                 continue;
             }
@@ -505,12 +560,12 @@ impl App {
     /// a phase are skipped; a roadmap/todo row anchors to the adjacent phase.
     pub(crate) fn select_phase(&mut self, delta: i32) {
         self.flash = None;
-        // Roadmap and Todos rows have no phases, so J/K there behave like j/k
-        // (move one row) rather than jumping into the Phases section.
+        // Roadmap, Tasks, and Todos rows have no phases, so J/K there behave
+        // like j/k (move one row) rather than jumping into the Phases section.
         let on_phase = self
             .entries
             .get(self.current)
-            .is_some_and(|e| !e.is_roadmap() && !e.is_todo());
+            .is_some_and(|e| !e.is_roadmap() && !e.is_todo() && !e.is_task());
         if !on_phase {
             self.change_step(delta);
             return;
@@ -908,10 +963,35 @@ mod tests {
         }
     }
 
+    fn sample_quick_tasks() -> Vec<QuickTask> {
+        crate::planning::load_quick_tasks(sample_planning(), false)
+    }
+
+    #[test]
+    fn quick_tasks_are_inserted_between_phase_steps_and_todos() {
+        let app = App::from_phases_and_todos(
+            sample_planning(),
+            &sample_phases(),
+            &sample_quick_tasks(),
+            &sample_todos(),
+        );
+        // 1 roadmap + 5 steps + 4 active tasks + 3 todos.
+        assert_eq!(app.entries.len(), 13);
+        let last_phase_idx = 5; // the phase-3 placeholder
+        let first_todo_idx = 10;
+        for e in &app.entries[(last_phase_idx + 1)..first_todo_idx] {
+            assert!(e.is_task(), "expected a task row: {e:?}");
+            assert!(!e.is_todo());
+        }
+        assert!(!app.entries[last_phase_idx].is_task());
+        assert!(app.entries[first_todo_idx].is_todo());
+        assert!(!app.entries[first_todo_idx].is_task());
+    }
+
     #[test]
     fn refresh_appends_a_new_todo_so_nav_can_reach_it() {
         // Start with no todos and walk to the very last entry.
-        let mut app = App::from_phases_and_todos(sample_planning(), &sample_phases(), &[]);
+        let mut app = App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &[]);
         let last = app.entries.len() - 1;
         while app.current < last {
             app.change_step(1);
@@ -923,6 +1003,7 @@ mod tests {
         app.refresh(
             sample_planning(),
             &sample_phases(),
+            &[],
             &[todo("2026-07-09-new-todo", "Fresh todo")],
         );
 
@@ -936,7 +1017,7 @@ mod tests {
 
     #[test]
     fn refresh_preserves_the_current_selection_by_identity() {
-        let mut app = App::from_phases_and_todos(sample_planning(), &sample_phases(), &[]);
+        let mut app = App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &[]);
         app.change_step(-1); // browse to 02-01
         assert_eq!(app.current_entry().unwrap().step.id, "02-01");
 
@@ -944,6 +1025,7 @@ mod tests {
         app.refresh(
             sample_planning(),
             &sample_phases(),
+            &[],
             &[todo("2026-07-09-new-todo", "Fresh todo")],
         );
         let entry = app.current_entry().unwrap();
@@ -953,7 +1035,7 @@ mod tests {
 
     #[test]
     fn refresh_remaps_open_tabs_to_surviving_entries() {
-        let mut app = App::from_phases_and_todos(sample_planning(), &sample_phases(), &[]);
+        let mut app = App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &[]);
         // Open a doc on the current step (02-02), then reload with a new todo.
         app.open_doc(app.doc_id(app.current, "research"));
         let before = app.current;
@@ -962,6 +1044,7 @@ mod tests {
         let remap = app.refresh(
             sample_planning(),
             &sample_phases(),
+            &[],
             &[todo("2026-07-09-new-todo", "Fresh todo")],
         );
 
@@ -978,12 +1061,13 @@ mod tests {
         let mut app = App::from_phases_and_todos(
             sample_planning(),
             &sample_phases(),
+            &[],
             &[todo("t", "Gone soon")],
         );
         app.current = app.entries.len() - 1;
         assert!(app.current_entry().unwrap().is_todo());
 
-        app.refresh(sample_planning(), &sample_phases(), &[]);
+        app.refresh(sample_planning(), &sample_phases(), &[], &[]);
         assert!(
             app.current < app.entries.len(),
             "selection must stay in range after the list shrinks"
@@ -992,7 +1076,8 @@ mod tests {
 
     #[test]
     fn todos_are_appended_after_steps_and_default_skips_them() {
-        let app = App::from_phases_and_todos(sample_planning(), &sample_phases(), &sample_todos());
+        let app =
+            App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &sample_todos());
         // Default lands on the first unchecked real step, never the Roadmap
         // row or a todo.
         assert!(!app.current_entry().unwrap().is_todo());
@@ -1008,7 +1093,7 @@ mod tests {
     #[test]
     fn stepping_reaches_todos_and_enter_opens_the_todo_md() {
         let mut app =
-            App::from_phases_and_todos(sample_planning(), &sample_phases(), &sample_todos());
+            App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &sample_todos());
         // 02-02 (idx 2) -> 02-03 -> phase-3 placeholder -> first todo (idx 5).
         app.change_step(1);
         app.change_step(1);
@@ -1025,7 +1110,7 @@ mod tests {
     #[test]
     fn current_todo_title_is_some_only_on_a_todo() {
         let mut app =
-            App::from_phases_and_todos(sample_planning(), &sample_phases(), &sample_todos());
+            App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &sample_todos());
         // Starts on a real step.
         assert!(app.current_todo_title().is_none());
         // Walk to the first todo (02-02 -> 02-03 -> placeholder -> todo0).
@@ -1041,7 +1126,7 @@ mod tests {
     #[test]
     fn selection_reports_phase_for_steps_and_ordinal_for_todos() {
         let mut app =
-            App::from_phases_and_todos(sample_planning(), &sample_phases(), &sample_todos());
+            App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &sample_todos());
         assert_eq!(app.selection(), Some(Selected::Phase("2".into())));
         app.change_step(1);
         app.change_step(1);
@@ -1247,7 +1332,7 @@ mod tests {
     #[test]
     fn select_section_walks_roadmap_phases_todos() {
         let mut app =
-            App::from_phases_and_todos(sample_planning(), &sample_phases(), &sample_todos());
+            App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &sample_todos());
         app.select_first(); // Roadmap
         assert!(app.current_entry().unwrap().is_roadmap());
 
@@ -1288,7 +1373,7 @@ mod tests {
     #[test]
     fn select_phase_falls_back_to_single_step_off_the_phases_section() {
         let mut app =
-            App::from_phases_and_todos(sample_planning(), &sample_phases(), &sample_todos());
+            App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &sample_todos());
         // entries: roadmap(0), 01-01(1)…02-03(4), ph3(5), todo0(6), todo1(7), todo2(8)
 
         // In Todos, K moves one row up (todo → todo), not into the Phases section.
@@ -1323,7 +1408,7 @@ mod tests {
 
     #[test]
     fn no_roadmap_entry_when_there_are_no_phases() {
-        let app = App::from_phases_and_todos(sample_planning(), &[], &[]);
+        let app = App::from_phases_and_todos(sample_planning(), &[], &[], &[]);
         assert_eq!(app.roadmap_index(), None);
         assert!(app.entries.first().is_none_or(|e| !e.is_roadmap()));
     }

@@ -112,7 +112,7 @@ mod tests {
         let planning = std::path::Path::new("sample/.planning");
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
-        let todos = crate::planning::load_todos(planning);
+        let todos = crate::planning::load_todos(planning, false);
         let mut buf = Vec::new();
         crate::report::render(&mut buf, planning, &state, &phases, &[], &todos, true).unwrap();
         let text = ansi_to_text(&String::from_utf8_lossy(&buf));

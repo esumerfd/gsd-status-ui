@@ -895,7 +895,7 @@ mod tests {
     }
 
     fn sample_todos() -> Vec<crate::model::Todo> {
-        crate::planning::load_todos(Path::new("sample/.planning"))
+        crate::planning::load_todos(Path::new("sample/.planning"), false)
     }
 
     fn todo(slug: &str, title: &str) -> crate::model::Todo {
@@ -904,6 +904,7 @@ mod tests {
             area: None,
             slug: slug.into(),
             path: std::path::PathBuf::from(format!("{slug}.md")),
+            completed: false,
         }
     }
 

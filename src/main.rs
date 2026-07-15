@@ -38,8 +38,8 @@ fn main() -> ExitCode {
 
     let state = planning::load_state(&planning);
     let phases = planning::load_phases(&planning);
-    let todos = planning::load_todos(&planning);
-    let quick_tasks = planning::load_quick_tasks(&planning);
+    let todos = planning::load_todos(&planning, false);
+    let quick_tasks = planning::load_quick_tasks(&planning, false);
 
     let interactive = !plain && io::stdout().is_terminal();
     if interactive {
@@ -85,6 +85,6 @@ fn print_help() {
     );
     println!("            / search (type · Enter find · Esc cancel) · n/N next/prev match");
     println!("  anywhere  Ctrl-j/Ctrl-k change step · Tab / 1..9 switch tab · Ctrl-x close tab");
-    println!("            Ctrl-q / Ctrl-C quit");
+    println!("            R peek roadmap · H show/hide completed work · Ctrl-q / Ctrl-C quit");
     println!("  dialog    j/k select · Enter open · Esc cancel");
 }

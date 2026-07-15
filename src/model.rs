@@ -16,7 +16,8 @@ pub(crate) struct StateMeta {
     pub(crate) project_title: String,
 }
 
-/// A deferred work item captured under `.planning/todos/pending/`.
+/// A deferred work item captured under `.planning/todos/pending/` (or, once
+/// resolved, `.planning/todos/completed/`).
 #[derive(Debug, Clone)]
 pub(crate) struct Todo {
     pub(crate) title: String,
@@ -25,6 +26,9 @@ pub(crate) struct Todo {
     pub(crate) slug: String,
     /// The todo's markdown file, opened when the todo is selected.
     pub(crate) path: PathBuf,
+    /// True when loaded from `todos/completed/` — only surfaced when the
+    /// "show completed" toggle is on.
+    pub(crate) completed: bool,
 }
 
 /// A quick task captured under `.planning/quick/{id}-{slug}/`.
@@ -43,6 +47,9 @@ pub(crate) enum QuickTaskStatus {
     InProgress,
     /// Raw `Status` string captured from a matching STATE.md row (D-04).
     Failed(String),
+    /// A finished task (passing/blank STATE.md status). Hidden by default;
+    /// only surfaced when the "show completed" toggle is on.
+    Completed,
 }
 
 impl QuickTaskStatus {
@@ -50,18 +57,21 @@ impl QuickTaskStatus {
         match self {
             QuickTaskStatus::InProgress => "●",
             QuickTaskStatus::Failed(_) => "✗",
+            QuickTaskStatus::Completed => "✓",
         }
     }
     pub(crate) fn label(&self) -> String {
         match self {
             QuickTaskStatus::InProgress => "in progress".to_string(),
             QuickTaskStatus::Failed(s) => s.clone(),
+            QuickTaskStatus::Completed => "completed".to_string(),
         }
     }
     pub(crate) fn color(&self) -> &'static str {
         match self {
             QuickTaskStatus::InProgress => color::YELLOW,
             QuickTaskStatus::Failed(_) => color::RED,
+            QuickTaskStatus::Completed => color::GREEN,
         }
     }
 }

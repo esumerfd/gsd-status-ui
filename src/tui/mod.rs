@@ -47,6 +47,7 @@ const HELP_TEXT: &str = "\
  search     type     edit query · Enter find · Esc cancel
  dialog     j/k      select · Enter open · Esc cancel
  anywhere   R        open the roadmap
+            H        show / hide completed work
             Tab/1-9  switch tab · C-x close tab
             C-j/k    change step · C-q quit
             ?        this help";
@@ -69,17 +70,37 @@ pub(crate) struct Ui {
     /// opened by the global `R` peek. `None` when the roadmap was reached by
     /// navigating to its row (Esc then behaves normally). See `open_roadmap`.
     roadmap_return: Option<(usize, Focus)>,
+    /// When true, finished work (completed quick tasks and completed todos) is
+    /// included. Toggled by `H`; default hidden.
+    show_completed: bool,
+    /// Set by `H` so the event loop re-reads `.planning/` with the new
+    /// `show_completed` value. Drained by `take_needs_reload`.
+    needs_reload: bool,
 }
 
 /// The colored status report as ratatui text (reuses the report's ANSI colors).
-pub(crate) fn status_text(planning: &Path, state: &StateMeta, phases: &[Phase]) -> Text<'static> {
+pub(crate) fn status_text(
+    planning: &Path,
+    state: &StateMeta,
+    phases: &[Phase],
+    show_completed: bool,
+) -> Text<'static> {
     let mut buf = Vec::new();
-    // Todos are re-read here (not threaded in) so the periodic status refresh
-    // picks up newly captured `.planning/todos/` items without extra plumbing.
-    let todos = crate::planning::load_todos(planning);
-    // Quick tasks are not yet threaded into the TUI (Phase 2 scope); pass an
-    // empty slice so TUI output is unchanged this phase.
-    crate::report::render(&mut buf, planning, state, phases, &[], &todos, true).ok();
+    // Todos and quick tasks are re-read here (not threaded in) so the periodic
+    // status refresh picks up newly captured `.planning/` items without extra
+    // plumbing. `show_completed` decides whether finished work is included.
+    let todos = crate::planning::load_todos(planning, show_completed);
+    let quick_tasks = crate::planning::load_quick_tasks(planning, show_completed);
+    crate::report::render(
+        &mut buf,
+        planning,
+        state,
+        phases,
+        &quick_tasks,
+        &todos,
+        true,
+    )
+    .ok();
     ansi::ansi_to_text(&String::from_utf8_lossy(&buf))
 }
 
@@ -131,7 +152,25 @@ impl Ui {
             clipboard: None,
             copy_flash: false,
             roadmap_return: None,
+            show_completed: false,
+            needs_reload: false,
         }
+    }
+
+    /// Re-read `.planning/` and rebuild both the status panel and the navigable
+    /// entry list, honoring the current `show_completed` toggle. Shared by the
+    /// periodic refresh and the on-demand `H` toggle.
+    pub(crate) fn reload_from_disk(&mut self, planning: &Path) {
+        let state = crate::planning::load_state(planning);
+        let phases = crate::planning::load_phases(planning);
+        let todos = crate::planning::load_todos(planning, self.show_completed);
+        self.set_report(status_text(planning, &state, &phases, self.show_completed));
+        self.refresh_entries(planning, &phases, &todos);
+    }
+
+    /// Drain the `H`-set reload request (see `needs_reload`).
+    pub(crate) fn take_needs_reload(&mut self) -> bool {
+        std::mem::take(&mut self.needs_reload)
     }
 
     pub(crate) fn quit(&self) -> bool {
@@ -316,6 +355,18 @@ impl Ui {
         // returned above, so R only reaches here as a command key.)
         if code == KeyCode::Char('R') {
             self.open_roadmap();
+            return;
+        }
+        // Global: H toggles whether finished work (completed tasks and todos)
+        // is shown. The event loop performs the reload once this returns.
+        if code == KeyCode::Char('H') {
+            self.show_completed = !self.show_completed;
+            self.needs_reload = true;
+            self.app.flash = Some(if self.show_completed {
+                "showing completed work".into()
+            } else {
+                "hiding completed work".into()
+            });
             return;
         }
         // Shell aliases on keys no viewer binding uses.
@@ -615,7 +666,7 @@ pub(crate) fn run(
     todos: &[Todo],
 ) -> io::Result<()> {
     let mut ui = Ui::new(
-        status_text(planning, state, phases),
+        status_text(planning, state, phases, false),
         App::from_phases_and_todos(planning, phases, todos),
     );
 
@@ -661,6 +712,10 @@ fn event_loop(
         if event::poll(TICK)? {
             if let Event::Key(key) = event::read()? {
                 ui.on_key(key);
+                // H (and future reload triggers) re-read .planning/ on demand.
+                if ui.take_needs_reload() {
+                    ui.reload_from_disk(planning);
+                }
                 if let Some(text) = ui.take_clipboard() {
                     execute!(io::stdout(), Print(clipboard::osc52_copy_sequence(&text))).ok();
                 }
@@ -671,15 +726,11 @@ fn event_loop(
         ui.clear_copy_flash();
         if last_status.elapsed() >= STATUS_REFRESH {
             last_status = std::time::Instant::now();
-            let state = crate::planning::load_state(planning);
-            let phases = crate::planning::load_phases(planning);
-            let todos = crate::planning::load_todos(planning);
-            ui.set_report(status_text(planning, &state, &phases));
             // Keep navigation in step with the refreshed panel: without this the
             // entry list (and its j/k bound) stays frozen at launch and can't
             // reach a todo the reload just added — or a ROADMAP.md that landed
             // after launch.
-            ui.refresh_entries(planning, &phases, &todos);
+            ui.reload_from_disk(planning);
         }
         if last_doc_check.elapsed() >= DOC_CHECK {
             last_doc_check = std::time::Instant::now();
@@ -697,9 +748,9 @@ mod tests {
         let planning = Path::new("sample/.planning");
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
-        let todos = crate::planning::load_todos(planning);
+        let todos = crate::planning::load_todos(planning, false);
         Ui::new(
-            status_text(planning, &state, &phases),
+            status_text(planning, &state, &phases, false),
             App::from_phases_and_todos(planning, &phases, &todos),
         )
     }
@@ -735,6 +786,57 @@ mod tests {
 
     fn plain(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    /// The status panel body as plain text (unclipped, unlike `screen`).
+    fn report_string(ui: &Ui) -> String {
+        ui.report
+            .lines
+            .iter()
+            .map(line_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn capital_h_toggles_completed_work_visibility() {
+        let planning = Path::new("sample/.planning");
+        let mut ui = sample_ui();
+
+        // Default: finished work is hidden.
+        assert!(!ui.show_completed);
+        let before = report_string(&ui);
+        assert!(
+            !before.contains("Remove debug logging"),
+            "completed todo hidden by default:\n{before}"
+        );
+        assert!(
+            !before.contains("Tidy the README"),
+            "completed task hidden by default:\n{before}"
+        );
+
+        // H requests a reload that includes completed work.
+        ui.on_key(plain('H'));
+        assert!(ui.show_completed);
+        assert!(ui.take_needs_reload(), "H must request a reload");
+        ui.reload_from_disk(planning);
+
+        let after = report_string(&ui);
+        assert!(
+            after.contains("Remove debug logging"),
+            "completed todo shown after H:\n{after}"
+        );
+        assert!(
+            after.contains("Tidy the README"),
+            "completed task shown after H:\n{after}"
+        );
+
+        // H again hides it (default state restored).
+        ui.on_key(plain('H'));
+        assert!(!ui.show_completed);
+        assert!(ui.take_needs_reload());
+        ui.reload_from_disk(planning);
+        assert!(!report_string(&ui).contains("Remove debug logging"));
     }
 
     /// Ctrl-o, move the selection down `moves` times, Enter.
@@ -1274,7 +1376,7 @@ mod tests {
         let phases = crate::planning::load_phases(planning);
         // Launch with no todos on disk yet.
         let mut ui = Ui::new(
-            status_text(planning, &state, &phases),
+            status_text(planning, &state, &phases, false),
             App::from_phases_and_todos(planning, &phases, &[]),
         );
         // Step to the last entry (the phase-3 placeholder) — nav clamps here.
@@ -1289,6 +1391,7 @@ mod tests {
             area: None,
             slug: "2026-07-09-fresh".into(),
             path: std::path::PathBuf::from("2026-07-09-fresh.md"),
+            completed: false,
         }];
         ui.refresh_entries(planning, &phases, &todos);
 
@@ -1379,7 +1482,7 @@ mod tests {
         // A workspace with no ROADMAP.md: no phases, so no roadmap row/entry.
         let planning = Path::new("sample/.planning");
         let mut ui = Ui::new(
-            status_text(planning, &StateMeta::default(), &[]),
+            status_text(planning, &StateMeta::default(), &[], false),
             App::from_phases_and_todos(planning, &[], &[]),
         );
         ui.on_key(plain('R'));

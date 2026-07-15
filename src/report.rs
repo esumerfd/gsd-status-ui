@@ -70,32 +70,21 @@ pub(crate) fn render(
 
     let total_phases = state.total_phases.max(phases.len() as u32);
     let completed_phases = phases.iter().filter(|p| p.stage == Stage::Verified).count() as u32;
-    let total_plans: u32 = phases
-        .iter()
-        .map(|p| p.plans.len() as u32)
-        .sum::<u32>()
-        .max(state.total_plans);
-    let completed_plans: u32 = phases
-        .iter()
-        .map(|p| p.plans.iter().filter(|pl| pl.checked).count() as u32)
-        .sum();
     let percent = if total_phases == 0 {
         0
     } else {
         (completed_phases * 100) / total_phases
     };
 
+    // The phase/plan tallies live in the Roadmap and phase rows below, so the
+    // banner shows only the headline percentage — no duplicated counts here.
     writeln!(
         out,
-        "  progress:  {bar} {bold}{bgreen}{pct:>3}%{reset}  ({cp}/{tp} phases · {cpl}/{tpl} plans)",
+        "  progress:  {bar} {bold}{bgreen}{pct:>3}%{reset}",
         bar = progress_bar(percent, 24, use_color),
         bold = c(color::BOLD),
         bgreen = c(color::BRIGHT_GREEN),
         pct = percent,
-        cp = completed_phases,
-        tp = total_phases,
-        cpl = completed_plans,
-        tpl = total_plans,
         reset = c(color::RESET),
     )?;
     writeln!(
@@ -254,12 +243,24 @@ pub(crate) fn render(
                 ),
                 None => String::new(),
             };
+            // Keep the ○ bullet for every todo row (the selection highlight
+            // counts rows by it); completed todos earn a trailing "done" tag.
+            let done = if todo.completed {
+                format!(
+                    "   {g}done{reset}",
+                    g = c(color::GREEN),
+                    reset = c(color::RESET)
+                )
+            } else {
+                String::new()
+            };
             writeln!(
                 out,
-                "  {grey}○{reset}  {title}{area}",
+                "  {grey}○{reset}  {title}{area}{done}",
                 grey = c(color::GREY),
                 title = truncate(&todo.title, 55),
                 area = area,
+                done = done,
                 reset = c(color::RESET),
             )?;
         }
@@ -569,8 +570,8 @@ mod tests {
             !out.contains("Roadmap"),
             "no roadmap row when there are no phases:\n{out}"
         );
-        // The Phases heading is hidden too (only the lowercase "(0/0 phases …)"
-        // progress line mentions phases).
+        // The Phases heading and Roadmap row are hidden too, so no capitalized
+        // "Phases" appears anywhere.
         assert!(
             !out.contains("Phases"),
             "no Phases heading when there are no phases:\n{out}"
@@ -608,6 +609,7 @@ mod tests {
             area: Some("tooling".into()),
             slug: "2026-07-07-do-the-thing".into(),
             path: std::path::PathBuf::from("2026-07-07-do-the-thing.md"),
+            completed: false,
         }];
         let mut buf = Vec::new();
         render(
@@ -657,6 +659,7 @@ mod tests {
             area: Some("tooling".into()),
             slug: "2026-07-07-do-the-thing".into(),
             path: std::path::PathBuf::from("2026-07-07-do-the-thing.md"),
+            completed: false,
         }];
         let mut buf = Vec::new();
         render(

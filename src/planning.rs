@@ -344,24 +344,37 @@ fn infer_stage(dir: Option<&Path>, plans: &[Plan], roadmap_checked: bool) -> Sta
 
 // ──────────────────────────────────────────────────────────────── todos ──
 
-/// Load pending todos from `.planning/todos/pending/*.md`, sorted by filename
-/// (date-prefixed, so chronological). A missing dir yields an empty list.
-pub(crate) fn load_todos(planning: &Path) -> Vec<Todo> {
-    let dir = planning.join("todos").join("pending");
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return Vec::new();
-    };
-    let mut todos: Vec<Todo> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "md"))
-        .filter_map(|path| parse_todo(&path))
-        .collect();
-    todos.sort_by(|a, b| a.slug.cmp(&b.slug));
+/// Load todos, sorted pending-first then by filename (date-prefixed, so
+/// chronological). Pending todos come from `.planning/todos/pending/`; when
+/// `show_completed` is set, resolved todos from `.planning/todos/completed/`
+/// are appended (marked `completed`). Missing dirs yield an empty group.
+pub(crate) fn load_todos(planning: &Path, show_completed: bool) -> Vec<Todo> {
+    let base = planning.join("todos");
+    let mut todos = read_todo_dir(&base.join("pending"), false);
+    if show_completed {
+        todos.extend(read_todo_dir(&base.join("completed"), true));
+    }
+    todos.sort_by(|a, b| {
+        a.completed
+            .cmp(&b.completed)
+            .then_with(|| a.slug.cmp(&b.slug))
+    });
     todos
 }
 
-fn parse_todo(path: &Path) -> Option<Todo> {
+fn read_todo_dir(dir: &Path, completed: bool) -> Vec<Todo> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "md"))
+        .filter_map(|path| parse_todo(&path, completed))
+        .collect()
+}
+
+fn parse_todo(path: &Path, completed: bool) -> Option<Todo> {
     let slug = path.file_stem()?.to_str()?.to_string();
     let body = fs::read_to_string(path).ok()?;
     let (front, rest) = split_frontmatter(&body);
@@ -395,6 +408,7 @@ fn parse_todo(path: &Path) -> Option<Todo> {
         area,
         slug,
         path: path.to_path_buf(),
+        completed,
     })
 }
 
@@ -429,10 +443,11 @@ fn title_from_slug(slug: &str) -> String {
 /// id. A missing `quick/` dir yields an empty list. Each task's visibility and
 /// status is decided by cross-referencing STATE.md's "Quick Tasks Completed"
 /// table (see `parse_quick_completions`): no matching row keeps the task
-/// in-progress (D-03a); a matching row with a passing/blank Status hides the
-/// task (D-02); a matching row with a non-passing Status keeps the task
-/// visible as `Failed(raw_status)` (D-03b/D-04).
-pub(crate) fn load_quick_tasks(planning: &Path) -> Vec<QuickTask> {
+/// in-progress (D-03a); a matching row with a non-passing Status keeps the task
+/// visible as `Failed(raw_status)` (D-03b/D-04); a matching row with a
+/// passing/blank Status is a finished task — hidden by default (D-02), or shown
+/// as `Completed` when `show_completed` is set.
+pub(crate) fn load_quick_tasks(planning: &Path, show_completed: bool) -> Vec<QuickTask> {
     let dir = planning.join("quick");
     let Ok(entries) = fs::read_dir(&dir) else {
         return Vec::new();
@@ -466,7 +481,13 @@ pub(crate) fn load_quick_tasks(planning: &Path) -> Vec<QuickTask> {
                     task.status = QuickTaskStatus::Failed(raw.clone());
                     Some(task)
                 }
-                Some(_) => None, // hidden: blank status or passing status (D-02)
+                // Finished (blank or passing status): hidden unless the toggle
+                // asks for completed work (D-02).
+                Some(_) if show_completed => {
+                    task.status = QuickTaskStatus::Completed;
+                    Some(task)
+                }
+                Some(_) => None,
             }
         })
         .collect();
@@ -830,7 +851,7 @@ mod tests {
 
     #[test]
     fn loads_pending_todos_sorted_with_title_and_fallbacks() {
-        let todos = load_todos(Path::new("sample/.planning"));
+        let todos = load_todos(Path::new("sample/.planning"), false);
         let titles: Vec<&str> = todos.iter().map(|t| t.title.as_str()).collect();
         assert_eq!(
             titles,
@@ -841,11 +862,35 @@ mod tests {
             ]
         );
         assert_eq!(todos[0].area.as_deref(), Some("tooling"));
+        assert!(todos.iter().all(|t| !t.completed));
+    }
+
+    #[test]
+    fn hides_completed_todos_unless_asked() {
+        // Default (show_completed=false) never surfaces todos/completed/.
+        let hidden = load_todos(Path::new("sample/.planning"), false);
+        assert!(
+            !hidden.iter().any(|t| t.completed),
+            "completed todos must stay hidden by default"
+        );
+
+        // With show_completed, resolved todos append after the pending ones and
+        // carry the completed marker.
+        let shown = load_todos(Path::new("sample/.planning"), true);
+        let completed: Vec<&str> = shown
+            .iter()
+            .filter(|t| t.completed)
+            .map(|t| t.title.as_str())
+            .collect();
+        assert_eq!(completed, ["Remove debug logging from the brew loop"]);
+        // Pending sort before completed.
+        let first_completed = shown.iter().position(|t| t.completed).unwrap();
+        assert!(shown[..first_completed].iter().all(|t| !t.completed));
     }
 
     #[test]
     fn loads_untracked_quick_task_as_in_progress() {
-        let tasks = load_quick_tasks(Path::new("sample/.planning"));
+        let tasks = load_quick_tasks(Path::new("sample/.planning"), false);
         let task = tasks
             .iter()
             .find(|t| t.id == "260709-aa1")
@@ -856,7 +901,7 @@ mod tests {
 
     #[test]
     fn hides_completed_shows_failed_keeps_in_progress() {
-        let tasks = load_quick_tasks(Path::new("sample/.planning"));
+        let tasks = load_quick_tasks(Path::new("sample/.planning"), false);
 
         let in_progress = tasks
             .iter()
@@ -875,14 +920,27 @@ mod tests {
 
         assert!(
             !tasks.iter().any(|t| t.id == "260708-cc3"),
-            "260708-cc3 (completed) must be hidden"
+            "260708-cc3 (completed) must be hidden by default"
         );
+    }
+
+    #[test]
+    fn shows_completed_quick_task_when_asked() {
+        let tasks = load_quick_tasks(Path::new("sample/.planning"), true);
+        let completed = tasks
+            .iter()
+            .find(|t| t.id == "260708-cc3")
+            .expect("260708-cc3 (completed) present when show_completed");
+        assert_eq!(completed.status, QuickTaskStatus::Completed);
+        // In-progress and failed tasks still show alongside it.
+        assert!(tasks.iter().any(|t| t.id == "260709-aa1"));
+        assert!(tasks.iter().any(|t| t.id == "260710-bb2"));
     }
 
     #[test]
     fn returns_empty_when_no_todos_dir() {
         // The phases/ dir has no todos/ subtree.
-        let todos = load_todos(Path::new("sample/.planning/phases"));
+        let todos = load_todos(Path::new("sample/.planning/phases"), true);
         assert!(todos.is_empty());
     }
 

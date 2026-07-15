@@ -7,7 +7,7 @@ pub(crate) mod ansi;
 pub(crate) mod app;
 pub(crate) mod clipboard;
 
-use crate::model::{DocKind, Phase, StateMeta, Todo};
+use crate::model::{Phase, StateMeta, Todo};
 use app::{App, Focus, OpenRequest, Selected};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::Print;
@@ -54,7 +54,8 @@ const DIALOG_HINTS: &str = "j/k select · Enter open · Esc cancel";
 
 pub(crate) struct Ui {
     app: App,
-    views: HashMap<(usize, DocKind), DocView>,
+    /// DocViews keyed by `(step index, document index)`.
+    views: HashMap<(usize, usize), DocView>,
     report: Text<'static>,
     body_width: u16,
     help: bool,
@@ -168,9 +169,9 @@ impl Ui {
     /// `ROADMAP.md` exists (the row is hidden) or the roadmap is already
     /// focused.
     fn open_roadmap(&mut self) {
-        if self.app.roadmap_index().is_none()
-            || matches!(self.app.focus(), Focus::Doc(DocKind::Roadmap))
-        {
+        let roadmap_focused = self.app.current_entry().is_some_and(|e| e.is_roadmap())
+            && matches!(self.app.focus(), Focus::Doc(_));
+        if self.app.roadmap_index().is_none() || roadmap_focused {
             return;
         }
         self.roadmap_return = Some((self.app.current, self.app.focus()));
@@ -190,9 +191,9 @@ impl Ui {
     pub(crate) fn refresh_entries(&mut self, planning: &Path, phases: &[Phase], todos: &[Todo]) {
         let remap = self.app.refresh(planning, phases, todos);
         let old_views = std::mem::take(&mut self.views);
-        for ((old_idx, kind), view) in old_views {
+        for ((old_idx, doc), view) in old_views {
             if let Some(&new_idx) = remap.get(&old_idx) {
-                self.views.insert((new_idx, kind), view);
+                self.views.insert((new_idx, doc), view);
             }
         }
     }
@@ -201,10 +202,10 @@ impl Ui {
     /// was opened. Scroll and any active search survive the reload.
     /// Returns true when a reload happened.
     pub(crate) fn reload_stale_doc(&mut self) -> bool {
-        let Focus::Doc(kind) = self.app.focus() else {
+        let Focus::Doc(doc) = self.app.focus() else {
             return false;
         };
-        let Some(view) = self.views.get_mut(&(self.app.current, kind)) else {
+        let Some(view) = self.views.get_mut(&(self.app.current, doc)) else {
             return false;
         };
         if !view.is_stale() {
@@ -219,9 +220,9 @@ impl Ui {
         let Some(req) = request else { return };
         match DocView::open(&req.path, self.body_width.max(20)) {
             Ok(view) => {
-                self.views.insert((req.step, req.kind), view);
+                self.views.insert((req.step, req.doc), view);
             }
-            Err(e) => self.app.remove_tab(req.step, req.kind, e.to_string()),
+            Err(e) => self.app.remove_tab(req.step, req.doc, e.to_string()),
         }
     }
 
@@ -297,8 +298,8 @@ impl Ui {
     fn on_unmodified_key(&mut self, code: KeyCode) {
         // While drafting a search, every unmodified key belongs to the
         // draft — including q, digits, and Tab-adjacent keys.
-        if let Focus::Doc(kind) = self.app.focus() {
-            if let Some(view) = self.views.get_mut(&(self.app.current, kind)) {
+        if let Focus::Doc(doc) = self.app.focus() {
+            if let Some(view) = self.views.get_mut(&(self.app.current, doc)) {
                 if view.is_search_mode() {
                     match code {
                         KeyCode::Esc => view.cancel_search(),
@@ -346,15 +347,10 @@ impl Ui {
                     let req = self.app.change_step(-1);
                     self.apply(req);
                 }
-                // Enter doc mode: the roadmap row opens ROADMAP.md, any other
-                // row opens its plan.
+                // Enter doc mode: document 0 is the entry's primary file — the
+                // roadmap's ROADMAP.md, or any other row's plan.
                 KeyCode::Enter => {
-                    let kind = if self.app.current_entry().is_some_and(|e| e.is_roadmap()) {
-                        DocKind::Roadmap
-                    } else {
-                        DocKind::Plan
-                    };
-                    let req = self.app.open_doc(kind);
+                    let req = self.app.open_doc(0);
                     self.apply(req);
                 }
                 KeyCode::Char('o') => self.app.open_dialog(),
@@ -371,7 +367,7 @@ impl Ui {
             }
             return;
         }
-        let Focus::Doc(kind) = self.app.focus() else {
+        let Focus::Doc(doc) = self.app.focus() else {
             return;
         };
         // q/Esc back out of doc mode. A roadmap opened by the `R` peek restores
@@ -379,7 +375,7 @@ impl Ui {
         // every other doc (and a roadmap reached by navigating to its row)
         // backs out to status, tab still open.
         if matches!(code, KeyCode::Char('q') | KeyCode::Esc) {
-            if matches!(kind, DocKind::Roadmap) {
+            if self.app.current_entry().is_some_and(|e| e.is_roadmap()) {
                 if let Some((cur, foc)) = self.roadmap_return.take() {
                     self.app.restore_location(cur, foc);
                     return;
@@ -388,7 +384,7 @@ impl Ui {
             self.app.focus_slot(1);
             return;
         }
-        let Some(view) = self.views.get_mut(&(self.app.current, kind)) else {
+        let Some(view) = self.views.get_mut(&(self.app.current, doc)) else {
             return;
         };
         match code {
@@ -420,7 +416,7 @@ impl Ui {
         // ── tab bar ──
         let focused_slot = match self.app.focus() {
             Focus::Status => 0,
-            Focus::Doc(kind) => self.app.tabs().iter().position(|k| *k == kind).unwrap_or(0) + 1,
+            Focus::Doc(doc) => self.app.tabs().iter().position(|d| *d == doc).unwrap_or(0) + 1,
         };
         // The first tab is the status panel; its label names the selected
         // phase/step so stepping (j/k, C-j/k) is visible from any tab.
@@ -436,12 +432,17 @@ impl Ui {
             None => "Status".to_string(),
         };
         let mut titles: Vec<String> = vec![status_title];
-        for kind in self.app.tabs() {
+        for &doc in self.app.tabs() {
             let title = self
                 .views
-                .get(&(self.app.current, *kind))
+                .get(&(self.app.current, doc))
                 .map(|v| v.title().to_string())
-                .unwrap_or_else(|| kind.label().to_string());
+                .or_else(|| {
+                    self.app
+                        .document(self.app.current, doc)
+                        .map(|d| d.label.clone())
+                })
+                .unwrap_or_default();
             titles.push(title);
         }
         let mut spans: Vec<Span> = Vec::new();
@@ -482,8 +483,8 @@ impl Ui {
                 }
                 frame.render_widget(Paragraph::new(text), body);
             }
-            Focus::Doc(kind) => {
-                if let Some(view) = self.views.get_mut(&(self.app.current, kind)) {
+            Focus::Doc(doc) => {
+                if let Some(view) = self.views.get_mut(&(self.app.current, doc)) {
                     view.render(frame, body);
                 } else {
                     frame.render_widget(Paragraph::new("(no view — press C-x to close)"), body);
@@ -513,8 +514,8 @@ impl Ui {
                 .items
                 .iter()
                 .enumerate()
-                .map(|(i, (kind, name))| {
-                    let open_marker = if self.app.tabs().contains(kind) {
+                .map(|(i, (doc, name))| {
+                    let open_marker = if self.app.tabs().contains(doc) {
                         "●"
                     } else {
                         " "
@@ -572,7 +573,7 @@ impl Ui {
             None => format!("{mode} no steps"),
         };
         let doc_view = match self.app.focus() {
-            Focus::Doc(kind) => self.views.get(&(self.app.current, kind)),
+            Focus::Doc(doc) => self.views.get(&(self.app.current, doc)),
             Focus::Status => None,
         };
         let right = if self.help {
@@ -1316,9 +1317,9 @@ mod tests {
         std::fs::write(&tmp, "# Temp\n\nfirst version\n").expect("write");
 
         let mut ui = sample_ui();
-        open_via_dialog(&mut ui, 0); // doc mode on the 02-02 plan
+        open_via_dialog(&mut ui, 0); // doc mode on the 02-02 plan (document 0)
         ui.views.insert(
-            (ui.app.current, DocKind::Plan),
+            (ui.app.current, 0),
             DocView::open(&tmp, 80).expect("open temp doc"),
         );
         let s = screen(&mut ui);

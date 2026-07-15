@@ -125,14 +125,11 @@ pub(crate) struct Step {
     pub(crate) checked: bool,
 }
 
-/// The document kinds a step's tab set can show, in canonical tab order.
-///
-/// `Roadmap` is special: it is a project-level document, not a step/phase doc.
-/// It never appears in a phase step's tab set — only on the synthetic Roadmap
-/// entry — so it is deliberately excluded from [`DocKind::ORDER`] and the `o`
-/// open-document picker. Its `phase_suffix()` is `None`, so `path_for` resolves
-/// it to the entry's `step.plan_path` (the workspace-root `ROADMAP.md`), exactly
-/// as a pending todo reuses `Plan` to open its own markdown file.
+/// The canonical document kinds, in tab order. Used as a *classifier* over
+/// discovered filenames (see [`DocKind::classify`]) — no longer the identity of
+/// a tab. `Plan` heads the order (the step's own plan always opens first); the
+/// rest are phase-level docs. The project-level roadmap and any file that
+/// doesn't classify are handled outside this enum, by the discovery layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum DocKind {
     Plan,
@@ -141,7 +138,6 @@ pub(crate) enum DocKind {
     Uat,
     Context,
     Discussion,
-    Roadmap,
 }
 
 impl DocKind {
@@ -154,9 +150,9 @@ impl DocKind {
         DocKind::Discussion,
     ];
 
+    /// Position in canonical tab order. Every variant is in [`ORDER`], so the
+    /// fallback is unreachable and only guards against future additions.
     pub(crate) fn order_index(self) -> usize {
-        // Roadmap is not in ORDER (it never mixes into a step's tab set); it
-        // sorts after every step doc so the ordered-insert never panics.
         Self::ORDER
             .iter()
             .position(|k| *k == self)
@@ -171,20 +167,143 @@ impl DocKind {
             DocKind::Uat => "uat",
             DocKind::Context => "context",
             DocKind::Discussion => "discussion",
-            DocKind::Roadmap => "roadmap",
         }
     }
 
-    /// Phase-level file name suffix; `Plan` and `Roadmap` are resolved from the
-    /// entry's `step.plan_path`, so they have no suffix.
-    pub(crate) fn phase_suffix(self) -> Option<&'static str> {
-        match self {
-            DocKind::Plan | DocKind::Roadmap => None,
-            DocKind::Research => Some("RESEARCH.md"),
-            DocKind::Validation => Some("VALIDATION.md"),
-            DocKind::Uat => Some("UAT.md"),
-            DocKind::Context => Some("CONTEXT.md"),
-            DocKind::Discussion => Some("DISCUSSION-LOG.md"),
+    /// Phase-level kinds that a discovered filename can be fuzzily classified
+    /// into, in canonical tab order. `Plan` (resolved from the step's own
+    /// plan path) and `Roadmap` (project-level) are deliberately excluded.
+    const CLASSIFIABLE: [(DocKind, &'static str); 5] = [
+        (DocKind::Research, "RESEARCH"),
+        (DocKind::Validation, "VALIDATION"),
+        (DocKind::Uat, "UAT"),
+        (DocKind::Context, "CONTEXT"),
+        (DocKind::Discussion, "DISCUSSION"),
+    ];
+
+    /// Fuzzily classify a phase-level document's kind token — the filename with
+    /// the phase prefix and `.md` extension stripped (e.g. `"VERIFICATION"`,
+    /// `"DISCUSSION-LOG"`, `"RESERCH"`) — into a known [`DocKind`], or `None`
+    /// when nothing fits well enough.
+    ///
+    /// This is the "fuzzy match on the name to ensure best fit" step: a known
+    /// doc keeps its canonical tab slot even if its filename varies slightly,
+    /// while a genuinely unknown doc (e.g. `VERIFICATION`, `SECURITY`) returns
+    /// `None` so the caller can append it after the known docs. The threshold
+    /// is deliberately high enough that near-but-distinct names — most notably
+    /// `VERIFICATION` vs `VALIDATION` — do not collide.
+    pub(crate) fn classify(token: &str) -> Option<DocKind> {
+        let norm = normalize_kind_token(token);
+        if norm.is_empty() {
+            return None;
         }
+        let mut best: Option<(DocKind, f64)> = None;
+        for (kind, keyword) in Self::CLASSIFIABLE {
+            let score = token_match_score(&norm, keyword);
+            if score >= CLASSIFY_THRESHOLD && best.is_none_or(|(_, b)| score > b) {
+                best = Some((kind, score));
+            }
+        }
+        best.map(|(kind, _)| kind)
+    }
+}
+
+/// Minimum similarity for [`DocKind::classify`] to accept a match. Chosen so
+/// single-character typos still classify (`RESERCH` → Research, ratio ≈ 0.88)
+/// while distinct names stay unmatched (`VERIFICATION` vs `VALIDATION` ≈ 0.42).
+const CLASSIFY_THRESHOLD: f64 = 0.72;
+
+/// Uppercase the token and drop everything but ASCII letters, so digits,
+/// dashes, and case never affect classification (`"Discussion-Log"` →
+/// `"DISCUSSIONLOG"`).
+fn normalize_kind_token(token: &str) -> String {
+    token
+        .chars()
+        .filter(|c| c.is_ascii_alphabetic())
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// Similarity of a normalized token against a canonical keyword in `[0.0, 1.0]`.
+/// Containment (only for keywords of 4+ letters, so short ones like `UAT` don't
+/// over-match) scores high; otherwise a Levenshtein ratio is used.
+fn token_match_score(norm: &str, keyword: &str) -> f64 {
+    if norm == keyword {
+        return 1.0;
+    }
+    if keyword.len() >= 4 && (norm.contains(keyword) || keyword.contains(norm)) {
+        return 0.95;
+    }
+    let dist = levenshtein(norm, keyword);
+    let max = norm.len().max(keyword.len());
+    if max == 0 {
+        return 0.0;
+    }
+    1.0 - (dist as f64 / max as f64)
+}
+
+/// Classic Levenshtein edit distance over ASCII bytes (tokens are normalized to
+/// A–Z, so byte length equals char length).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, &ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, &cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// A single openable document within a step's tab set: a concrete file plus the
+/// label its tab shows when no view title is available yet. Discovery resolves
+/// these from the actual files on disk (see `planning::discover_documents`), so
+/// any file can back a tab — not just the fixed [`DocKind`] set.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Document {
+    pub(crate) path: PathBuf,
+    pub(crate) label: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_matches_exact_canonical_tokens() {
+        assert_eq!(DocKind::classify("RESEARCH"), Some(DocKind::Research));
+        assert_eq!(DocKind::classify("VALIDATION"), Some(DocKind::Validation));
+        assert_eq!(DocKind::classify("UAT"), Some(DocKind::Uat));
+        assert_eq!(DocKind::classify("CONTEXT"), Some(DocKind::Context));
+    }
+
+    #[test]
+    fn classify_is_case_and_separator_insensitive() {
+        // Real GSD discussion doc is "DISCUSSION-LOG"; the dash and the trailing
+        // LOG must not stop it from landing in the Discussion slot.
+        assert_eq!(
+            DocKind::classify("DISCUSSION-LOG"),
+            Some(DocKind::Discussion)
+        );
+        assert_eq!(DocKind::classify("research"), Some(DocKind::Research));
+    }
+
+    #[test]
+    fn classify_tolerates_single_char_typos() {
+        assert_eq!(DocKind::classify("RESERCH"), Some(DocKind::Research));
+    }
+
+    #[test]
+    fn classify_rejects_distinct_unknown_docs() {
+        // The reported bug: VERIFICATION must NOT be mistaken for VALIDATION —
+        // it is unknown and belongs at the end of the tab set.
+        assert_eq!(DocKind::classify("VERIFICATION"), None);
+        assert_eq!(DocKind::classify("SECURITY"), None);
+        assert_eq!(DocKind::classify(""), None);
     }
 }

@@ -1,5 +1,5 @@
 use crate::model::{
-    DocKind, Phase, Plan, QuickTask, QuickTaskStatus, Stage, StateMeta, Step, Todo,
+    DocKind, Document, Phase, Plan, QuickTask, QuickTaskStatus, Stage, StateMeta, Step, Todo,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -643,11 +643,10 @@ fn parse_quick_task(dir: &Path) -> Option<QuickTask> {
 
 // ─────────────────────────────────────────── steps & document discovery ──
 
-/// Resolves document paths for one phase directory.
+/// The leading alphanumeric prefix of a phase directory name, e.g. `"02"` for
+/// `02-coffee-acquisition`. Used to match a phase's own docs during discovery.
 #[derive(Debug, Clone)]
 pub(crate) struct PhaseDocs {
-    pub(crate) dir: PathBuf,
-    /// Leading alphanumeric prefix of the dir name, e.g. "02".
     pub(crate) prefix: String,
 }
 
@@ -662,17 +661,7 @@ impl PhaseDocs {
                     .collect::<String>()
             })
             .unwrap_or_default();
-        Self {
-            dir: dir.to_path_buf(),
-            prefix,
-        }
-    }
-
-    pub(crate) fn path_for(&self, kind: DocKind, step: &Step) -> PathBuf {
-        match kind.phase_suffix() {
-            None => step.plan_path.clone(),
-            Some(suffix) => self.dir.join(format!("{}-{}", self.prefix, suffix)),
-        }
+        Self { prefix }
     }
 }
 
@@ -710,6 +699,77 @@ pub(crate) fn discover_steps(phase_dir: &Path, roadmap_plans: &[Plan]) -> Vec<St
         .collect();
     steps.sort_by(|a, b| a.id.cmp(&b.id));
     steps
+}
+
+/// Discover every document a step can open, in tab order: the step's own plan
+/// first, then the phase-level docs in canonical order (fuzzy-matched by name
+/// so a known kind keeps its slot), then any unmatched phase-level file sorted
+/// alphabetically. `prefix` is the phase's leading token (e.g. `"02"`).
+///
+/// A phase step's tab set is its own `NN-MM-PLAN.md` plus the phase-level
+/// `NN-<word>.md` docs — never other steps' plans/summaries, nor its own
+/// summary (those have a numeric second segment). Only existing files are
+/// returned, so callers can treat the result as directly openable.
+pub(crate) fn discover_documents(phase_dir: &Path, prefix: &str, step: &Step) -> Vec<Document> {
+    // Rank above every canonical ORDER slot; unmatched docs sort here, after
+    // the known kinds, broken by name for determinism.
+    const UNMATCHED_RANK: u32 = DocKind::ORDER.len() as u32;
+
+    // (rank, tiebreak, document) — sorted at the end into tab order.
+    let mut ranked: Vec<(u32, String, Document)> = Vec::new();
+
+    if step.plan_path.is_file() {
+        ranked.push((
+            0,
+            String::new(),
+            Document {
+                path: step.plan_path.clone(),
+                label: DocKind::Plan.label().to_string(),
+            },
+        ));
+    }
+
+    let phase_marker = format!("{prefix}-");
+    if let Ok(entries) = fs::read_dir(phase_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(stem) = name.strip_suffix(".md") else {
+                continue;
+            };
+            // Only this phase's docs (share the phase prefix).
+            let Some(rest) = stem.strip_prefix(&phase_marker) else {
+                continue;
+            };
+            // Skip step-scoped files (`NN-MM-…`): a numeric first segment after
+            // the prefix means it belongs to a specific step, not the phase.
+            let first_segment = rest.split('-').next().unwrap_or("");
+            if !first_segment.is_empty() && first_segment.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            let (rank, tiebreak, label) = match DocKind::classify(rest) {
+                Some(kind) => (
+                    kind.order_index() as u32,
+                    String::new(),
+                    kind.label().to_string(),
+                ),
+                None => (
+                    UNMATCHED_RANK,
+                    rest.to_ascii_uppercase(),
+                    rest.to_lowercase(),
+                ),
+            };
+            ranked.push((rank, tiebreak, Document { path, label }));
+        }
+    }
+
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    ranked.into_iter().map(|(_, _, doc)| doc).collect()
 }
 
 #[cfg(test)]
@@ -763,27 +823,9 @@ mod tests {
     }
 
     #[test]
-    fn resolves_step_and_phase_doc_paths() {
+    fn phase_docs_derives_the_leading_prefix() {
         let docs = PhaseDocs::new(&sample_phase_dir());
         assert_eq!(docs.prefix, "02");
-        let steps = discover_steps(&sample_phase_dir(), &sample_plans());
-        let step = &steps[1];
-
-        let plan = docs.path_for(DocKind::Plan, step);
-        assert!(plan.ends_with("02-02-PLAN.md"));
-        assert!(plan.exists());
-
-        for (kind, file) in [
-            (DocKind::Research, "02-RESEARCH.md"),
-            (DocKind::Validation, "02-VALIDATION.md"),
-            (DocKind::Uat, "02-UAT.md"),
-            (DocKind::Context, "02-CONTEXT.md"),
-            (DocKind::Discussion, "02-DISCUSSION-LOG.md"),
-        ] {
-            let p = docs.path_for(kind, step);
-            assert!(p.ends_with(file), "{kind:?} -> {}", p.display());
-            assert!(p.exists(), "{} should exist", p.display());
-        }
     }
 
     #[test]
@@ -854,5 +896,61 @@ mod tests {
         );
         let ids: Vec<&str> = steps.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["01-01"]);
+    }
+
+    #[test]
+    fn discover_documents_orders_plan_first_then_canonical_kinds() {
+        let dir = sample_phase_dir();
+        let step = &discover_steps(&dir, &sample_plans())[0]; // 02-01
+        let docs = discover_documents(&dir, "02", step);
+
+        let labels: Vec<&str> = docs.iter().map(|d| d.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "plan",
+                "research",
+                "validation",
+                "uat",
+                "context",
+                "discussion"
+            ]
+        );
+        assert!(docs[0].path.ends_with("02-01-PLAN.md"));
+        assert!(docs[1].path.ends_with("02-RESEARCH.md"));
+    }
+
+    #[test]
+    fn discover_documents_appends_unmatched_files_at_the_end() {
+        // The reported bug: 01-VERIFICATION.md is not a known kind, yet must be
+        // openable — after the plan, in a trailing tab.
+        let dir = PathBuf::from("sample/.planning/phases/01-navigation-skeleton");
+        let step = &discover_steps(&dir, &[])[0]; // 01-01
+        let docs = discover_documents(&dir, "01", step);
+
+        let labels: Vec<&str> = docs.iter().map(|d| d.label.as_str()).collect();
+        assert_eq!(labels, ["plan", "verification"]);
+        assert!(docs[1].path.ends_with("01-VERIFICATION.md"));
+    }
+
+    #[test]
+    fn discover_documents_excludes_sibling_step_files() {
+        // A step's tab set is its own plan plus phase-level docs — never other
+        // steps' PLAN/SUMMARY files, nor its own SUMMARY.
+        let dir = sample_phase_dir();
+        let step = &discover_steps(&dir, &sample_plans())[0]; // 02-01
+        let docs = discover_documents(&dir, "02", step);
+
+        for d in &docs {
+            let name = d.path.file_name().unwrap().to_string_lossy();
+            assert!(
+                !name.contains("SUMMARY"),
+                "SUMMARY files must be excluded: {name}"
+            );
+            assert!(
+                !name.ends_with("02-02-PLAN.md") && !name.ends_with("02-03-PLAN.md"),
+                "sibling step plans must be excluded: {name}"
+            );
+        }
     }
 }

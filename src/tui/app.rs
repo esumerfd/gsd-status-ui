@@ -6,29 +6,32 @@
 //! boundaries (e.g. Ctrl-k from the current phase's first step lands on the
 //! previous phase's last step). Each step carries its phase context.
 
-use crate::model::{DocKind, Phase, Step, Todo};
-use crate::planning::{discover_steps, PhaseDocs};
+use crate::model::{Document, Phase, Step, Todo};
+use crate::planning::{discover_documents, discover_steps, PhaseDocs};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// One navigable step: a plan file plus the phase it belongs to.
+/// One navigable step: its openable documents plus the phase it belongs to.
 #[derive(Debug, Clone)]
 pub(crate) struct StepEntry {
     pub(crate) phase_id: String,
-    pub(crate) docs: PhaseDocs,
     pub(crate) step: Step,
+    /// Every document this entry can open, in canonical tab order: the plan
+    /// (or the roadmap/todo file) first at index 0, then phase-level docs.
+    /// A tab is identified by its index into this list, so any file can back a
+    /// tab — not just a fixed enum of kinds.
+    pub(crate) documents: Vec<Document>,
     /// 0-based position within its phase, and the phase's step count —
     /// for the footer's "step 02-02 (2/3)" display.
     pub(crate) pos_in_phase: usize,
     pub(crate) phase_steps: usize,
     /// `Some(title)` when this entry is a pending todo appended after the
-    /// phase steps rather than a phase step. Its `step.plan_path` is the
-    /// todo's markdown file, so `open_doc(Plan)` opens the todo.
+    /// phase steps rather than a phase step. Its document 0 is the todo's
+    /// markdown file, so `open_doc(0)` opens the todo.
     pub(crate) todo_title: Option<String>,
     /// True for the single synthetic entry that fronts the list when a
-    /// project-level `ROADMAP.md` exists. Its `step.plan_path` is that file, so
-    /// `open_doc(Roadmap)` opens the roadmap — mirroring how a todo reuses its
-    /// `step.plan_path`.
+    /// project-level `ROADMAP.md` exists. Its document 0 is that file, so
+    /// `open_doc(0)` opens the roadmap — mirroring how a todo reuses index 0.
     roadmap: bool,
 }
 
@@ -54,30 +57,34 @@ pub(crate) enum Selected {
 }
 
 /// What the shell must open (create a DocView for) after a state change.
+/// `doc` is the index into the current entry's `documents`.
 #[derive(Debug, PartialEq)]
 pub(crate) struct OpenRequest {
     pub(crate) step: usize,
-    pub(crate) kind: DocKind,
+    pub(crate) doc: usize,
     pub(crate) path: PathBuf,
 }
 
+/// A tab is identified by the document index within its step entry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Focus {
     Status,
-    Doc(DocKind),
+    Doc(usize),
 }
 
 /// The Ctrl-o "open document" picker: the current step's existing documents
-/// in canonical tab order.
+/// in canonical tab order. Each item is `(document index, file name)`.
 #[derive(Debug)]
 pub(crate) struct OpenDialog {
-    pub(crate) items: Vec<(DocKind, String)>,
+    pub(crate) items: Vec<(usize, String)>,
     pub(crate) selected: usize,
 }
 
 #[derive(Debug, Clone, Default)]
 struct TabSet {
-    tabs: Vec<DocKind>,
+    /// Open document indices (into the entry's `documents`), kept ascending so
+    /// tabs stay in canonical order.
+    tabs: Vec<usize>,
     /// 0 = Status tab, 1..=tabs.len() = document tabs.
     focused: usize,
 }
@@ -135,14 +142,18 @@ impl App {
     fn build_entries(planning: &Path, phases: &[Phase], todos: &[Todo]) -> Vec<StepEntry> {
         let mut entries = Vec::new();
         if !phases.is_empty() {
+            let roadmap_path = planning.join("ROADMAP.md");
             entries.push(StepEntry {
                 phase_id: String::new(),
-                docs: PhaseDocs::new(Path::new("")),
                 step: Step {
                     id: String::new(),
-                    plan_path: planning.join("ROADMAP.md"),
+                    plan_path: roadmap_path.clone(),
                     checked: false,
                 },
+                documents: vec![Document {
+                    path: roadmap_path,
+                    label: "roadmap".into(),
+                }],
                 pos_in_phase: 0,
                 phase_steps: 1,
                 todo_title: None,
@@ -151,19 +162,23 @@ impl App {
         }
         for phase in phases {
             let dir = phase.dir.as_deref();
-            let docs = PhaseDocs::new(dir.unwrap_or_else(|| Path::new("")));
+            let prefix = PhaseDocs::new(dir.unwrap_or_else(|| Path::new(""))).prefix;
             let steps = dir
                 .map(|d| discover_steps(d, &phase.plans))
                 .unwrap_or_default();
             if steps.is_empty() {
+                let step = Step {
+                    id: "1".into(),
+                    plan_path: PathBuf::new(),
+                    checked: false,
+                };
+                let documents = dir
+                    .map(|d| discover_documents(d, &prefix, &step))
+                    .unwrap_or_default();
                 entries.push(StepEntry {
                     phase_id: phase.id.clone(),
-                    docs,
-                    step: Step {
-                        id: "1".into(),
-                        plan_path: PathBuf::new(),
-                        checked: false,
-                    },
+                    step,
+                    documents,
                     pos_in_phase: 0,
                     phase_steps: 1,
                     todo_title: None,
@@ -173,10 +188,13 @@ impl App {
             }
             let count = steps.len();
             for (i, step) in steps.into_iter().enumerate() {
+                let documents = dir
+                    .map(|d| discover_documents(d, &prefix, &step))
+                    .unwrap_or_default();
                 entries.push(StepEntry {
                     phase_id: phase.id.clone(),
-                    docs: docs.clone(),
                     step,
+                    documents,
                     pos_in_phase: i,
                     phase_steps: count,
                     todo_title: None,
@@ -187,12 +205,15 @@ impl App {
         for todo in todos {
             entries.push(StepEntry {
                 phase_id: String::new(),
-                docs: PhaseDocs::new(Path::new("")),
                 step: Step {
                     id: todo.slug.clone(),
                     plan_path: todo.path.clone(),
                     checked: false,
                 },
+                documents: vec![Document {
+                    path: todo.path.clone(),
+                    label: "plan".into(),
+                }],
                 pos_in_phase: 0,
                 phase_steps: 1,
                 todo_title: Some(todo.title.clone()),
@@ -272,7 +293,7 @@ impl App {
         self.entries.get(self.current)?.todo_title.as_deref()
     }
 
-    pub(crate) fn tabs(&self) -> &[DocKind] {
+    pub(crate) fn tabs(&self) -> &[usize] {
         self.tabsets
             .get(self.current)
             .map(|t| t.tabs.as_slice())
@@ -290,20 +311,32 @@ impl App {
         }
     }
 
-    /// Open (or focus) a document tab for the current step. Returns an
-    /// OpenRequest when a new tab was added; the shell must then create the
-    /// DocView (and call `remove_tab` if that fails).
-    pub(crate) fn open_doc(&mut self, kind: DocKind) -> Option<OpenRequest> {
+    /// The document backing a `(step, doc index)` pair, if any. Used by the
+    /// shell to label tabs and resolve paths.
+    pub(crate) fn document(&self, step: usize, doc: usize) -> Option<&Document> {
+        self.entries.get(step)?.documents.get(doc)
+    }
+
+    /// Open (or focus) the document at index `doc` for the current step.
+    /// Returns an OpenRequest when a new tab was added; the shell must then
+    /// create the DocView (and call `remove_tab` if that fails). Document
+    /// indices are canonical order, so inserting them ascending keeps the tab
+    /// row ordered: plan first, known kinds next, unmatched files last.
+    pub(crate) fn open_doc(&mut self, doc: usize) -> Option<OpenRequest> {
         self.flash = None;
         let Some(entry) = self.entries.get(self.current) else {
             self.flash = Some("no active phase step".into());
             return None;
         };
-        let path = entry.docs.path_for(kind, &entry.step);
+        let Some(document) = entry.documents.get(doc) else {
+            self.flash = Some("no document for this step".into());
+            return None;
+        };
+        let path = document.path.clone();
         if !path.exists() {
             self.flash = Some(format!(
                 "no {} document ({})",
-                kind.label(),
+                document.label,
                 path.file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default()
@@ -312,20 +345,20 @@ impl App {
         }
         let step_idx = self.current;
         let set = &mut self.tabsets[step_idx];
-        if let Some(pos) = set.tabs.iter().position(|k| *k == kind) {
+        if let Some(pos) = set.tabs.iter().position(|d| *d == doc) {
             set.focused = pos + 1;
             return None;
         }
         let insert_at = set
             .tabs
             .iter()
-            .position(|k| k.order_index() > kind.order_index())
+            .position(|d| *d > doc)
             .unwrap_or(set.tabs.len());
-        set.tabs.insert(insert_at, kind);
+        set.tabs.insert(insert_at, doc);
         set.focused = insert_at + 1;
         Some(OpenRequest {
             step: step_idx,
-            kind,
+            doc,
             path,
         })
     }
@@ -358,12 +391,8 @@ impl App {
             return None;
         }
         if self.tabs().is_empty() {
-            let kind = if self.entries[self.current].is_roadmap() {
-                DocKind::Roadmap
-            } else {
-                DocKind::Plan
-            };
-            return self.open_doc(kind);
+            // Document 0 is the entry's primary file (plan / roadmap / todo).
+            return self.open_doc(0);
         }
         let set = &mut self.tabsets[self.current];
         if set.focused == 0 {
@@ -524,7 +553,7 @@ impl App {
     pub(crate) fn open_roadmap_peek(&mut self) -> Option<OpenRequest> {
         let idx = self.roadmap_index()?;
         self.current = idx;
-        self.open_doc(DocKind::Roadmap)
+        self.open_doc(0)
     }
 
     /// Restore a `(current, focus)` pair captured before an `R` peek: move the
@@ -536,10 +565,10 @@ impl App {
         self.current = current;
         let slot = match focus {
             Focus::Status => 0,
-            Focus::Doc(kind) => self.tabsets[current]
+            Focus::Doc(doc) => self.tabsets[current]
                 .tabs
                 .iter()
-                .position(|k| *k == kind)
+                .position(|d| *d == doc)
                 .map(|p| p + 1)
                 .unwrap_or(0),
         };
@@ -557,15 +586,16 @@ impl App {
             self.flash = Some("press Enter or R to open the roadmap".into());
             return;
         }
-        let items: Vec<(DocKind, String)> = DocKind::ORDER
+        let items: Vec<(usize, String)> = entry
+            .documents
             .iter()
-            .filter_map(|kind| {
-                let path = entry.docs.path_for(*kind, &entry.step);
-                if !path.exists() {
+            .enumerate()
+            .filter_map(|(doc, document)| {
+                if !document.path.exists() {
                     return None;
                 }
-                let name = path.file_name()?.to_string_lossy().into_owned();
-                Some((*kind, name))
+                let name = document.path.file_name()?.to_string_lossy().into_owned();
+                Some((doc, name))
             })
             .collect();
         if items.is_empty() {
@@ -590,27 +620,27 @@ impl App {
     /// Some(request) means the shell must create the DocView.
     pub(crate) fn dialog_select(&mut self) -> Option<OpenRequest> {
         let dialog = self.dialog.take()?;
-        let (kind, _) = dialog.items.get(dialog.selected)?;
-        self.open_doc(*kind)
+        let (doc, _) = dialog.items.get(dialog.selected)?;
+        self.open_doc(*doc)
     }
 
-    /// Close the focused document tab. Returns the (step, kind) whose view
+    /// Close the focused document tab. Returns the (step, doc index) whose view
     /// the shell should drop. Closing the Status tab is a no-op.
-    pub(crate) fn close_current(&mut self) -> Option<(usize, DocKind)> {
+    pub(crate) fn close_current(&mut self) -> Option<(usize, usize)> {
         let step_idx = self.current;
         let set = self.tabsets.get_mut(step_idx)?;
         if set.focused == 0 {
             return None;
         }
-        let kind = set.tabs.remove(set.focused - 1);
+        let doc = set.tabs.remove(set.focused - 1);
         set.focused = set.focused.min(set.tabs.len());
-        Some((step_idx, kind))
+        Some((step_idx, doc))
     }
 
     /// Called by the shell when creating a DocView failed after open_doc.
-    pub(crate) fn remove_tab(&mut self, step: usize, kind: DocKind, reason: String) {
+    pub(crate) fn remove_tab(&mut self, step: usize, doc: usize, reason: String) {
         if let Some(set) = self.tabsets.get_mut(step) {
-            if let Some(pos) = set.tabs.iter().position(|k| *k == kind) {
+            if let Some(pos) = set.tabs.iter().position(|d| *d == doc) {
                 set.tabs.remove(pos);
                 set.focused = set.focused.min(set.tabs.len());
             }
@@ -637,6 +667,27 @@ impl App {
                 set.focused = n - 1;
             }
         }
+    }
+
+    /// Test-only: the document index for a given label within `step`'s entry.
+    #[cfg(test)]
+    pub(crate) fn doc_id(&self, step: usize, label: &str) -> usize {
+        self.entries[step]
+            .documents
+            .iter()
+            .position(|d| d.label == label)
+            .unwrap_or_else(|| panic!("no {label} document at step {step}"))
+    }
+
+    /// Test-only: labels of the current step's open tabs, in tab order.
+    #[cfg(test)]
+    pub(crate) fn tab_labels(&self) -> Vec<String> {
+        let entry = &self.entries[self.current];
+        self.tabsets[self.current]
+            .tabs
+            .iter()
+            .map(|&d| entry.documents[d].label.clone())
+            .collect()
     }
 }
 
@@ -707,27 +758,28 @@ mod tests {
         app.change_step(-1);
         app.change_step(-1); // browsing on 01-01, still status
 
-        // Enter: open the plan, entering viewer mode.
-        let req = app.open_doc(DocKind::Plan).expect("open 01-01 plan");
+        // Enter: open the plan (document 0), entering viewer mode.
+        let req = app.open_doc(0).expect("open 01-01 plan");
         assert!(req.path.ends_with("01-01-PLAN.md"));
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+        assert_eq!(app.focus(), Focus::Doc(0));
 
         // Ctrl-j from viewer mode: keep viewing — the next step's plan
         // auto-opens because its tab set is empty.
         let req = app.change_step(1).expect("auto-open 02-01 plan");
         assert!(req.path.ends_with("02-01-PLAN.md"));
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+        assert_eq!(app.focus(), Focus::Doc(0));
 
         // Back to 01-01: its plan tab is retained and refocused.
         assert!(app.change_step(-1).is_none());
         assert_eq!(app.current_entry().unwrap().step.id, "01-01");
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+        assert_eq!(app.focus(), Focus::Doc(0));
     }
 
     #[test]
     fn status_browsing_onto_a_step_with_tabs_stays_on_status() {
         let mut app = sample_app();
-        app.open_doc(DocKind::Research); // 02-02 now has a tab, viewer focus
+        let research = app.doc_id(app.current, "research");
+        app.open_doc(research); // 02-02 now has a tab, viewer focus
         app.focus_slot(1); // back to status
         app.change_step(1); // 02-03
         assert_eq!(app.focus(), Focus::Status);
@@ -737,55 +789,51 @@ mod tests {
             Focus::Status,
             "browsing from status must not jump into a doc"
         );
-        assert_eq!(app.tabs(), [DocKind::Research], "tab set preserved");
+        assert_eq!(app.tab_labels(), ["research"], "tab set preserved");
     }
 
     #[test]
     fn open_inserts_in_canonical_order_regardless_of_open_order() {
         let mut app = sample_app();
-        assert!(app.open_doc(DocKind::Discussion).is_some());
-        assert!(app.open_doc(DocKind::Uat).is_some());
-        assert!(app.open_doc(DocKind::Research).is_some());
-        assert!(app.open_doc(DocKind::Plan).is_some());
-        assert_eq!(
-            app.tabs(),
-            [
-                DocKind::Plan,
-                DocKind::Research,
-                DocKind::Uat,
-                DocKind::Discussion
-            ]
-        );
-        // Last opened (Plan) is focused.
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+        let cur = app.current;
+        assert!(app.open_doc(app.doc_id(cur, "discussion")).is_some());
+        assert!(app.open_doc(app.doc_id(cur, "uat")).is_some());
+        assert!(app.open_doc(app.doc_id(cur, "research")).is_some());
+        assert!(app.open_doc(app.doc_id(cur, "plan")).is_some());
+        assert_eq!(app.tab_labels(), ["plan", "research", "uat", "discussion"]);
+        // Last opened (plan) is focused.
+        assert_eq!(app.focus(), Focus::Doc(app.doc_id(cur, "plan")));
     }
 
     #[test]
     fn reopening_focuses_without_duplicating() {
         let mut app = sample_app();
-        assert!(app.open_doc(DocKind::Research).is_some());
-        assert!(app.open_doc(DocKind::Context).is_some());
-        assert!(app.open_doc(DocKind::Research).is_none()); // no new request
-        assert_eq!(app.tabs(), [DocKind::Research, DocKind::Context]);
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Research));
+        let cur = app.current;
+        let research = app.doc_id(cur, "research");
+        assert!(app.open_doc(research).is_some());
+        assert!(app.open_doc(app.doc_id(cur, "context")).is_some());
+        assert!(app.open_doc(research).is_none()); // no new request
+        assert_eq!(app.tab_labels(), ["research", "context"]);
+        assert_eq!(app.focus(), Focus::Doc(research));
     }
 
     #[test]
     fn step_change_preserves_tabsets_and_autoopens_plan_on_empty() {
         let mut app = sample_app();
-        app.open_doc(DocKind::Research);
-        app.open_doc(DocKind::Validation);
+        let cur = app.current;
+        app.open_doc(app.doc_id(cur, "research"));
+        app.open_doc(app.doc_id(cur, "validation"));
 
-        // Later step (02-03): empty tab set -> plan auto-opens.
+        // Later step (02-03): empty tab set -> plan (doc 0) auto-opens.
         let req = app.change_step(1).expect("auto-open plan");
-        assert_eq!(req.kind, DocKind::Plan);
+        assert_eq!(req.doc, 0);
         assert!(req.path.ends_with("02-03-PLAN.md"));
-        assert_eq!(app.tabs(), [DocKind::Plan]);
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+        assert_eq!(app.tab_labels(), ["plan"]);
+        assert_eq!(app.focus(), Focus::Doc(0));
 
         // Back to 02-02: its tabs are intact, no auto-open.
         assert!(app.change_step(-1).is_none());
-        assert_eq!(app.tabs(), [DocKind::Research, DocKind::Validation]);
+        assert_eq!(app.tab_labels(), ["research", "validation"]);
     }
 
     #[test]
@@ -801,9 +849,9 @@ mod tests {
     #[test]
     fn closing_last_tab_falls_back_to_status() {
         let mut app = sample_app();
-        app.open_doc(DocKind::Plan);
+        app.open_doc(0); // plan
         let closed = app.close_current().expect("closed");
-        assert_eq!(closed.1, DocKind::Plan);
+        assert_eq!(closed.1, 0);
         assert!(app.tabs().is_empty());
         assert_eq!(app.focus(), Focus::Status);
         // Closing on the Status tab is a no-op.
@@ -819,26 +867,31 @@ mod tests {
         // row; step down onto 01-01.
         app.change_step(1);
         assert_eq!(app.current_entry().unwrap().step.id, "01-01");
-        assert!(app.open_doc(DocKind::Research).is_none());
+        // 01-01's documents are only [plan, verification] — no research exists,
+        // so index 5 (a would-be discussion slot) is out of range and no-ops.
+        assert!(app.open_doc(5).is_none());
         assert!(app.tabs().is_empty());
-        assert!(app.flash.as_deref().unwrap().contains("research"));
+        assert!(app.flash.as_deref().unwrap().contains("no document"));
     }
 
     #[test]
     fn focus_cycles_through_status_and_tabs() {
         let mut app = sample_app();
-        app.open_doc(DocKind::Plan);
-        app.open_doc(DocKind::Context);
+        let cur = app.current;
+        let plan = app.doc_id(cur, "plan");
+        let context = app.doc_id(cur, "context");
+        app.open_doc(plan);
+        app.open_doc(context);
         app.focus_slot(1);
         assert_eq!(app.focus(), Focus::Status);
         app.focus_next();
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+        assert_eq!(app.focus(), Focus::Doc(plan));
         app.focus_next();
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Context));
+        assert_eq!(app.focus(), Focus::Doc(context));
         app.focus_next(); // wraps
         assert_eq!(app.focus(), Focus::Status);
         app.focus_prev(); // wraps back
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Context));
+        assert_eq!(app.focus(), Focus::Doc(context));
     }
 
     fn sample_todos() -> Vec<crate::model::Todo> {
@@ -901,9 +954,9 @@ mod tests {
     fn refresh_remaps_open_tabs_to_surviving_entries() {
         let mut app = App::from_phases_and_todos(sample_planning(), &sample_phases(), &[]);
         // Open a doc on the current step (02-02), then reload with a new todo.
-        app.open_doc(DocKind::Research);
+        app.open_doc(app.doc_id(app.current, "research"));
         let before = app.current;
-        assert_eq!(app.tabs(), [DocKind::Research]);
+        assert_eq!(app.tab_labels(), ["research"]);
 
         let remap = app.refresh(
             sample_planning(),
@@ -915,7 +968,7 @@ mod tests {
         // reports the (unchanged, here) old->new index so the shell can move
         // its DocViews.
         assert_eq!(remap.get(&before), Some(&app.current));
-        assert_eq!(app.tabs(), [DocKind::Research]);
+        assert_eq!(app.tab_labels(), ["research"]);
     }
 
     #[test]
@@ -960,7 +1013,7 @@ mod tests {
         app.change_step(1);
         app.change_step(1);
         assert!(app.current_entry().unwrap().is_todo());
-        let req = app.open_doc(DocKind::Plan).expect("open todo md");
+        let req = app.open_doc(0).expect("open todo md");
         assert!(
             req.path.ends_with("2026-07-07-signed-build.md"),
             "{}",
@@ -1026,7 +1079,7 @@ mod tests {
     fn no_steps_anywhere_is_survivable() {
         let mut app = App::new(Vec::new());
         assert_eq!(app.focus(), Focus::Status);
-        assert!(app.open_doc(DocKind::Plan).is_none());
+        assert!(app.open_doc(0).is_none());
         assert!(app.flash.is_some());
         assert!(app.change_step(1).is_none());
         assert!(app.close_current().is_none());
@@ -1056,15 +1109,47 @@ mod tests {
     }
 
     #[test]
+    fn unmatched_verification_doc_is_openable_after_the_plan() {
+        // The reported bug: 01-VERIFICATION.md was unopenable. It must now show
+        // in the picker after the plan and open on selection.
+        let phases = sample_phases();
+        let mut app = App::from_phases(sample_planning(), &phases[..1]);
+        app.change_step(1); // off the Roadmap row onto 01-01
+
+        app.open_dialog();
+        let names: Vec<String> = app
+            .dialog()
+            .expect("dialog open")
+            .items
+            .iter()
+            .map(|(_, n)| n.clone())
+            .collect();
+        assert_eq!(names, ["01-01-PLAN.md", "01-VERIFICATION.md"]);
+
+        let verification = app.doc_id(app.current, "verification");
+        let req = app.open_doc(verification).expect("verification opens");
+        assert!(req.path.ends_with("01-VERIFICATION.md"));
+        assert_eq!(app.tab_labels(), ["verification"]);
+    }
+
+    #[test]
     fn open_dialog_omits_missing_docs() {
-        // Phase 1 has only its plan file.
+        // Phase 1 has only its plan and a VERIFICATION doc on disk — the
+        // canonical kinds that don't exist (research, validation, uat, …) must
+        // not appear, but any file that does exist is listed.
         let phases = sample_phases();
         let mut app = App::from_phases(sample_planning(), &phases[..1]);
         app.change_step(1); // off the Roadmap row onto 01-01
         app.open_dialog();
         let dialog = app.dialog().expect("dialog open");
         let names: Vec<&str> = dialog.items.iter().map(|(_, n)| n.as_str()).collect();
-        assert_eq!(names, ["01-01-PLAN.md"]);
+        assert_eq!(names, ["01-01-PLAN.md", "01-VERIFICATION.md"]);
+        for missing in ["RESEARCH", "VALIDATION", "UAT", "CONTEXT", "DISCUSSION"] {
+            assert!(
+                !names.iter().any(|n| n.contains(missing)),
+                "missing canonical doc {missing} must be omitted"
+            );
+        }
     }
 
     #[test]
@@ -1074,12 +1159,13 @@ mod tests {
         app.dialog_move(-1); // clamps at top
         assert_eq!(app.dialog().unwrap().selected, 0);
         app.dialog_move(1);
-        app.dialog_move(1); // -> validation
+        app.dialog_move(1); // -> validation (item index 2)
+        let validation = app.doc_id(app.current, "validation");
         let req = app.dialog_select().expect("open request");
-        assert_eq!(req.kind, DocKind::Validation);
+        assert_eq!(req.doc, validation);
         assert!(req.path.ends_with("02-VALIDATION.md"));
         assert!(app.dialog().is_none(), "dialog closes on select");
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Validation));
+        assert_eq!(app.focus(), Focus::Doc(validation));
         app.open_dialog();
         for _ in 0..20 {
             app.dialog_move(1); // clamps at bottom
@@ -1090,11 +1176,12 @@ mod tests {
     #[test]
     fn dialog_select_of_open_doc_focuses_without_new_request() {
         let mut app = sample_app();
-        app.open_doc(DocKind::Research);
+        let research = app.doc_id(app.current, "research");
+        app.open_doc(research);
         app.open_dialog();
         app.dialog_move(1); // research
         assert!(app.dialog_select().is_none(), "already open -> focus only");
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Research));
+        assert_eq!(app.focus(), Focus::Doc(research));
     }
 
     #[test]
@@ -1114,13 +1201,13 @@ mod tests {
         assert_eq!(app.roadmap_index(), Some(0));
         assert!(app.entries[0].is_roadmap());
 
-        // Select the Roadmap row and open it: DocKind::Roadmap -> ROADMAP.md.
+        // Select the Roadmap row and open its document 0 -> ROADMAP.md.
         app.current = 0;
         assert_eq!(app.selection(), Some(Selected::Roadmap));
-        let req = app.open_doc(DocKind::Roadmap).expect("open roadmap");
-        assert_eq!(req.kind, DocKind::Roadmap);
+        let req = app.open_doc(0).expect("open roadmap");
+        assert_eq!(req.doc, 0);
         assert!(req.path.ends_with("ROADMAP.md"), "{}", req.path.display());
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Roadmap));
+        assert_eq!(app.focus(), Focus::Doc(0));
     }
 
     #[test]
@@ -1128,20 +1215,20 @@ mod tests {
         let mut app = sample_app();
         // Viewing the 02-02 plan (the default selection).
         let start = app.current;
-        app.open_doc(DocKind::Plan);
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+        app.open_doc(0);
+        assert_eq!(app.focus(), Focus::Doc(0));
 
         // Stash the location, then peek the roadmap.
         let ret = (app.current, app.focus());
         let req = app.open_roadmap_peek().expect("peek opens roadmap");
         assert!(req.path.ends_with("ROADMAP.md"));
         assert!(app.current_entry().unwrap().is_roadmap());
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Roadmap));
+        assert_eq!(app.focus(), Focus::Doc(0));
 
         // Restoring returns to the prior step and its focused doc.
         app.restore_location(ret.0, ret.1);
         assert_eq!(app.current, start);
-        assert_eq!(app.focus(), Focus::Doc(DocKind::Plan));
+        assert_eq!(app.focus(), Focus::Doc(0));
     }
 
     #[test]

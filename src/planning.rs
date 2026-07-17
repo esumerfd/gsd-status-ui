@@ -1,7 +1,8 @@
 use crate::model::{
     DocKind, Document, Phase, Plan, QuickTask, QuickTaskStatus, Stage, StateMeta, Step, Todo,
 };
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -154,12 +155,18 @@ pub(crate) fn load_phases(planning: &Path) -> Vec<Phase> {
     };
 
     let top_level = parse_phase_index(&body);
+    let detail_phases = parse_phase_details(&body);
     let plans_per_phase = parse_phase_plans(&body);
 
     let phase_dirs = scan_phase_dirs(planning);
 
     let mut phases = Vec::new();
-    for (id, title, checked) in top_level {
+    let mut seen: HashSet<String> = HashSet::new();
+
+    let mut push_phase = |phases: &mut Vec<Phase>, id: String, title: String, checked: bool| {
+        if !seen.insert(normalize_phase_id(&id)) {
+            return;
+        }
         let plans = plans_per_phase.get(&id).cloned().unwrap_or_default();
         let dir = phase_dirs
             .iter()
@@ -174,8 +181,79 @@ pub(crate) fn load_phases(planning: &Path) -> Vec<Phase> {
             dir,
             stage,
         });
+    };
+
+    // The `## Phases` index is the primary, ordered source of phases.
+    for (id, title, checked) in top_level {
+        push_phase(&mut phases, id, title, checked);
     }
+
+    // Fold in phases that appear only as a `### Phase N:` detail heading. These
+    // are counted in STATE.md's total but were dropped when the `## Phases`
+    // index omitted them, causing the header count and the list to diverge.
+    for (id, title) in detail_phases {
+        push_phase(&mut phases, id, title, false);
+    }
+
+    // Finally, phases that exist only as an on-disk directory (scaffolded but
+    // not yet recorded in the roadmap at all) — titled from their slug.
+    for dir in &phase_dirs {
+        if let Some(raw) = phase_id_from_dir(dir) {
+            let title = title_from_dir(dir);
+            push_phase(&mut phases, normalize_phase_id(&raw), title, false);
+        }
+    }
+
+    phases.sort_by(|a, b| {
+        phase_sort_key(&a.id)
+            .partial_cmp(&phase_sort_key(&b.id))
+            .unwrap_or(Ordering::Equal)
+    });
     phases
+}
+
+/// Normalize a phase id for de-duplication across sources (index, detail
+/// headings, directory names): trim surrounding whitespace and leading zeros so
+/// `"03"` and `"3"` collapse to the same key.
+fn normalize_phase_id(id: &str) -> String {
+    let trimmed = id.trim().trim_start_matches('0');
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_ascii_lowercase()
+    }
+}
+
+/// Numeric sort key for a phase id so integer and decimal phases order
+/// naturally (1, 2, 2.1, 3). Unparseable ids sort last.
+fn phase_sort_key(id: &str) -> f64 {
+    id.trim().parse::<f64>().unwrap_or(f64::MAX)
+}
+
+/// The phase id encoded in a directory name, i.e. the leading alphanumeric run
+/// (`"03-apply-fix"` → `"03"`). Returns None for names with no leading id.
+fn phase_id_from_dir(dir: &Path) -> Option<String> {
+    let name = dir.file_name().and_then(|n| n.to_str())?;
+    let leading: String = name
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect();
+    if leading.is_empty() {
+        None
+    } else {
+        Some(leading)
+    }
+}
+
+/// A human-readable title derived from a phase directory slug, used only when
+/// the phase has no roadmap entry to name it (`"04-polish-and-ship"` →
+/// `"polish and ship"`).
+fn title_from_dir(dir: &Path) -> String {
+    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    name.split_once('-')
+        .map(|(_, rest)| rest)
+        .unwrap_or(name)
+        .replace('-', " ")
 }
 
 fn parse_phase_index(body: &str) -> Vec<(String, String, bool)> {
@@ -217,6 +295,30 @@ fn parse_phase_index_line(line: &str) -> Option<(String, String, bool)> {
     let id = phase_part[..colon].trim().to_string();
     let title = phase_part[colon + 1..].trim().to_string();
     Some((id, title, checked))
+}
+
+/// Phases named by a `### Phase N: Title` detail heading, in document order.
+/// These headings carry the phase's real title even when the `## Phases` index
+/// omits the phase entirely.
+fn parse_phase_details(body: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("### Phase ") else {
+            continue;
+        };
+        let (id, title) = match rest.find(':') {
+            Some(c) => (
+                rest[..c].trim().to_string(),
+                rest[c + 1..].trim().to_string(),
+            ),
+            None => (rest.trim().to_string(), String::new()),
+        };
+        if !id.is_empty() {
+            out.push((id, title));
+        }
+    }
+    out
 }
 
 fn parse_phase_plans(body: &str) -> HashMap<String, Vec<Plan>> {
@@ -832,6 +934,63 @@ mod tests {
         let meta = load_state(dir.path());
 
         assert_eq!(meta.project_title, "Anthropic Cost");
+    }
+
+    #[test]
+    fn load_phases_includes_phase_present_only_in_detail_section() {
+        // Regression: a phase counted in STATE.md (e.g. "Phases 2/3") that lives
+        // only as a `### Phase 3:` detail heading — never added to the `## Phases`
+        // index — must still be listed, not silently dropped. Its empty on-disk
+        // directory should surface it as NotStarted.
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::create_dir_all(planning.join("phases/03-apply-fix")).unwrap();
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "## Phases\n\n\
+             - [x] **Phase 1: Reproduce** - diag.\n\
+             - [x] **Phase 2: Fix & Verify** - fix.\n\n\
+             ## Phase Details\n\n\
+             ### Phase 3: Apply Confirmed Doubling Fix\n\n\
+             **Goal:** apply the fix.\n",
+        )
+        .unwrap();
+
+        let phases = load_phases(planning);
+
+        let ids: Vec<&str> = phases.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["1", "2", "3"]);
+        let p3 = phases
+            .iter()
+            .find(|p| p.id == "3")
+            .expect("phase 3 present");
+        assert_eq!(p3.title, "Apply Confirmed Doubling Fix");
+        assert_eq!(p3.stage, Stage::NotStarted);
+    }
+
+    #[test]
+    fn load_phases_includes_phase_present_only_as_directory() {
+        // A scaffolded phase directory with no ROADMAP entry at all must still
+        // appear, titled from its slug, rather than vanishing.
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::create_dir_all(planning.join("phases/04-polish-and-ship")).unwrap();
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "## Phases\n\n- [ ] **Phase 1: Reproduce** - diag.\n",
+        )
+        .unwrap();
+
+        let phases = load_phases(planning);
+
+        let ids: Vec<&str> = phases.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["1", "4"]);
+        let p4 = phases
+            .iter()
+            .find(|p| p.id == "4")
+            .expect("phase 4 present");
+        assert_eq!(p4.title, "polish and ship");
+        assert_eq!(p4.stage, Stage::NotStarted);
     }
 
     #[test]

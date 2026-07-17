@@ -31,6 +31,60 @@ pub(crate) struct Todo {
     pub(crate) completed: bool,
 }
 
+/// A lightweight capture surfaced in the Others section: a note, idea, or seed
+/// markdown file under `.planning/{notes,ideas,seeds}/`. One row per file,
+/// tagged with its [`OtherKind`].
+#[derive(Debug, Clone)]
+pub(crate) struct Other {
+    pub(crate) title: String,
+    pub(crate) kind: OtherKind,
+    /// Filename stem, used as a stable secondary sort key and nav identity.
+    pub(crate) slug: String,
+    /// The capture's markdown file, opened when the row is selected.
+    pub(crate) path: PathBuf,
+}
+
+/// The three capture folders combined into the single Others section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OtherKind {
+    Note,
+    Idea,
+    Seed,
+}
+
+impl OtherKind {
+    /// Render/scan order: Notes, then Ideas, then Seeds.
+    pub(crate) const ALL: [OtherKind; 3] = [OtherKind::Note, OtherKind::Idea, OtherKind::Seed];
+
+    /// The `.planning` subfolder this kind is captured into.
+    pub(crate) fn dir(self) -> &'static str {
+        match self {
+            OtherKind::Note => "notes",
+            OtherKind::Idea => "ideas",
+            OtherKind::Seed => "seeds",
+        }
+    }
+
+    /// The lowercase tag (used for nav step-id prefixes and doc labels).
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            OtherKind::Note => "note",
+            OtherKind::Idea => "idea",
+            OtherKind::Seed => "seed",
+        }
+    }
+
+    /// The capitalized name used to prefix a row ("Note:", "Idea:", "Seed:")
+    /// and to title the tab/footer.
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            OtherKind::Note => "Note",
+            OtherKind::Idea => "Idea",
+            OtherKind::Seed => "Seed",
+        }
+    }
+}
+
 /// A quick task captured under `.planning/quick/{id}-{slug}/`.
 #[derive(Debug, Clone)]
 pub(crate) struct QuickTask {

@@ -8,7 +8,7 @@ pub(crate) mod app;
 pub(crate) mod clipboard;
 
 use crate::model::{Phase, QuickTask, StateMeta, Todo};
-use app::{App, Focus, OpenRequest, Selected};
+use app::{App, DocsFolder, Focus, OpenRequest, Selected};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::Print;
 use crossterm::{execute, terminal};
@@ -122,6 +122,16 @@ fn highlight_index(text: &Text, sel: &Selected) -> Option<usize> {
                 .and_then(|rest| rest.chars().next())
                 .is_some_and(|ch| ch.is_ascii_digit())
         }),
+        // The Intel / Research docs-folder rows each render as a single line
+        // led by their name (e.g. "Intel     ─── 2 files").
+        Selected::Intel => text
+            .lines
+            .iter()
+            .position(|line| line_string(line).trim_start().starts_with("Intel")),
+        Selected::Research => text
+            .lines
+            .iter()
+            .position(|line| line_string(line).trim_start().starts_with("Research")),
         Selected::Phase(id) => text.lines.iter().position(|line| {
             let s = line_string(line);
             // Match "Phase <id>" as a whole token so Phase 1 ≠ Phase 10, and
@@ -161,6 +171,23 @@ fn highlight_index(text: &Text, sel: &Selected) -> Option<usize> {
             .filter(|(_, line)| line_string(line).trim_start().starts_with('○'))
             .nth(*n)
             .map(|(i, _)| i),
+        // Scoped to the Others section (heading + divider, then one ◇ row per
+        // note/idea/seed), mirroring the Task arm so a ◇ row is never confused
+        // with a Todo's ○ row.
+        Selected::Other(n) => {
+            let others_start = text
+                .lines
+                .iter()
+                .position(|line| line_string(line).trim() == "Others")?;
+            text.lines
+                .iter()
+                .enumerate()
+                .skip(others_start + 2) // heading, then its divider
+                .take_while(|(_, line)| !line_string(line).trim().is_empty())
+                .filter(|(_, line)| line_string(line).trim_start().starts_with('◇'))
+                .nth(*n)
+                .map(|(i, _)| i)
+        }
     }
 }
 
@@ -504,8 +531,15 @@ impl Ui {
         // phase/step so stepping (j/k, C-j/k) is visible from any tab.
         let status_title = match self.app.current_entry() {
             Some(entry) if entry.is_roadmap() => "Roadmap".to_string(),
+            Some(entry) if entry.docs_folder() == Some(DocsFolder::Intel) => "Intel".to_string(),
+            Some(entry) if entry.docs_folder() == Some(DocsFolder::Research) => {
+                "Research".to_string()
+            }
             Some(entry) if entry.is_task() => "Task".to_string(),
             Some(entry) if entry.is_todo() => "Todo".to_string(),
+            Some(entry) if entry.other_kind().is_some() => {
+                entry.other_kind().unwrap().title().to_string()
+            }
             Some(entry) => {
                 // Step ids repeat the phase prefix ("02-03"); the label
                 // already names the phase, so show only the step part.
@@ -553,8 +587,11 @@ impl Ui {
                     if let Some(idx) = highlight_index(&text, &sel) {
                         // A just-copied todo flashes green (the "done" accent);
                         // otherwise the selection gets the usual grey band.
-                        let flashing =
-                            self.copy_flash && matches!(sel, Selected::Todo(_) | Selected::Task(_));
+                        let flashing = self.copy_flash
+                            && matches!(
+                                sel,
+                                Selected::Todo(_) | Selected::Task(_) | Selected::Other(_)
+                            );
                         let hl = if flashing {
                             Style::default().bg(Color::Green).fg(Color::Black)
                         } else {
@@ -647,6 +684,15 @@ impl Ui {
         };
         let position = match self.app.current_entry() {
             Some(entry) if entry.is_roadmap() => format!("{mode} Roadmap"),
+            Some(entry) if entry.docs_folder() == Some(DocsFolder::Intel) => {
+                format!("{mode} Intel")
+            }
+            Some(entry) if entry.docs_folder() == Some(DocsFolder::Research) => {
+                format!("{mode} Research")
+            }
+            Some(entry) if entry.other_kind().is_some() => {
+                format!("{mode} {}", entry.other_kind().unwrap().title())
+            }
             Some(entry) => format!(
                 "{mode} Phase {} · step {} ({}/{})",
                 entry.phase_id,
@@ -817,6 +863,46 @@ mod tests {
         assert_eq!(highlight_index(&text, &Selected::Todo(1)), Some(6));
         assert_eq!(highlight_index(&text, &Selected::Phase("9".into())), None);
         assert_eq!(highlight_index(&text, &Selected::Todo(5)), None);
+    }
+
+    #[test]
+    fn highlight_index_finds_intel_and_research_rows() {
+        let text = Text::from(vec![
+            Line::raw("  Roadmap"),
+            Line::raw("  ●  Phases 1/3  in progress"),
+            Line::raw(""),
+            Line::raw("  Intel     ─────── 2 files"),
+            Line::raw("  Research  ─────── 3 files"),
+            Line::raw(""),
+            Line::raw("  Phases"),
+        ]);
+        assert_eq!(highlight_index(&text, &Selected::Roadmap), Some(1));
+        assert_eq!(highlight_index(&text, &Selected::Intel), Some(3));
+        assert_eq!(highlight_index(&text, &Selected::Research), Some(4));
+    }
+
+    #[test]
+    fn highlight_index_scopes_other_selection_to_the_others_section() {
+        // A Todo row starts with ○; an Others row starts with ◇. The Other arm
+        // must only match rows in the Others section (heading + divider, then one
+        // ◇ row per note/idea/seed, then a trailing blank).
+        let text = Text::from(vec![
+            Line::raw("  Todos"),
+            Line::raw("  ─────────"),
+            Line::raw("  ○  A todo   general"),
+            Line::raw(""),
+            Line::raw("  Others"),
+            Line::raw("  ─────────"),
+            Line::raw("  ◇  Grinder   note"),
+            Line::raw("  ◇  Latte art   idea"),
+            Line::raw(""),
+            Line::raw("  Next"),
+        ]);
+        assert_eq!(highlight_index(&text, &Selected::Other(0)), Some(6));
+        assert_eq!(highlight_index(&text, &Selected::Other(1)), Some(7));
+        assert_eq!(highlight_index(&text, &Selected::Other(2)), None);
+        // The Todo row (○) must not be picked up by the Other arm.
+        assert_ne!(highlight_index(&text, &Selected::Other(0)), Some(2));
     }
 
     #[test]
@@ -1628,10 +1714,11 @@ mod tests {
     #[test]
     fn enter_on_the_roadmap_row_opens_the_roadmap_tab() {
         let mut ui = sample_ui();
-        // k up from 02-02 to the Roadmap row: 02-02 -> 02-01 -> 01-01 -> roadmap.
-        ui.on_key(plain('k'));
-        ui.on_key(plain('k'));
-        ui.on_key(plain('k'));
+        // k up from 02-02 to the Roadmap row, passing the Research and Intel
+        // rows: 02-02 -> 02-01 -> 01-01 -> research -> intel -> roadmap.
+        for _ in 0..5 {
+            ui.on_key(plain('k'));
+        }
         let s = screen(&mut ui);
         assert!(s.contains("[status] Roadmap"), "on the roadmap row: {s}");
 
@@ -1679,11 +1766,11 @@ mod tests {
 
     #[test]
     fn status_chunk_nav_keys_move_the_selection() {
-        let mut ui = sample_ui(); // has todos; default selection is 02-02
-                                  // G -> last entry (a todo).
+        let mut ui = sample_ui(); // has todos + others; default selection is 02-02
+                                  // G -> last entry (the final Others row, a seed).
         ui.on_key(plain('G'));
         assert!(
-            screen(&mut ui).contains(" Todo "),
+            screen(&mut ui).contains("[status] Seed"),
             "G jumps to the last row"
         );
         // g -> first entry (the roadmap row).
@@ -1692,17 +1779,23 @@ mod tests {
             screen(&mut ui).contains("[status] Roadmap"),
             "g jumps to the first row"
         );
-        // J from the roadmap row -> phase 1's first step.
-        ui.on_key(plain('J'));
-        assert!(
-            screen(&mut ui).contains("Phase 1 · step 01-01"),
-            "J jumps to the next phase"
-        );
-        // d -> next section (Tasks) from within Phases.
+        // d walks the sections: Roadmap -> Intel -> Research -> Phases.
         ui.on_key(plain('d'));
         assert!(
-            screen(&mut ui).contains(" Task "),
-            "d jumps to the next section"
+            screen(&mut ui).contains("[status] Intel"),
+            "d jumps to the Intel section"
+        );
+        ui.on_key(plain('d'));
+        ui.on_key(plain('d'));
+        assert!(
+            screen(&mut ui).contains("Phase 1 · step 01-01"),
+            "d reaches the Phases section"
+        );
+        // J from a phase step jumps phase-to-phase.
+        ui.on_key(plain('J'));
+        assert!(
+            screen(&mut ui).contains("Phase 2 · step 02-01"),
+            "J jumps to the next phase"
         );
     }
 
@@ -1725,7 +1818,15 @@ mod tests {
         assert!(s.contains("Phase 1 · step 01-01 (1/1)"), "{s}");
         assert!(s.contains("Robot Coffee Service"), "{s}");
 
-        // k again moves up onto the Roadmap row (above the first phase step).
+        // k moves up through the Research and Intel docs-folder rows, then onto
+        // the Roadmap row (above the first phase step).
+        ui.on_key(plain('k'));
+        assert!(
+            screen(&mut ui).contains("[status] Research"),
+            "on research row"
+        );
+        ui.on_key(plain('k'));
+        assert!(screen(&mut ui).contains("[status] Intel"), "on intel row");
         ui.on_key(plain('k'));
         let s = screen(&mut ui);
         assert!(s.contains("[status] Roadmap"), "on the roadmap row: {s}");
@@ -1735,7 +1836,9 @@ mod tests {
         let s = screen(&mut ui);
         assert!(s.contains("already at the first step"), "{s}");
 
-        // Back down onto 01-01, then Enter opens its plan (viewer mode).
+        // Back down through Intel/Research onto 01-01, then Enter opens its plan.
+        ui.on_key(plain('j'));
+        ui.on_key(plain('j'));
         ui.on_key(plain('j'));
         ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let s = screen(&mut ui);

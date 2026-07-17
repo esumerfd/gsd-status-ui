@@ -1,5 +1,6 @@
 use crate::model::{
-    DocKind, Document, Phase, Plan, QuickTask, QuickTaskStatus, Stage, StateMeta, Step, Todo,
+    DocKind, Document, Other, OtherKind, Phase, Plan, QuickTask, QuickTaskStatus, Stage, StateMeta,
+    Step, Todo,
 };
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -824,6 +825,44 @@ pub(crate) fn discover_steps(phase_dir: &Path, roadmap_plans: &[Plan]) -> Vec<St
     steps
 }
 
+/// Sequence candidate documents into canonical tab order — the single algorithm
+/// shared by phase steps and quick tasks. Each candidate is `(path, token)`,
+/// where `token` is the filename with its owning prefix and `.md` extension
+/// already stripped (e.g. `"RESEARCH"`, `"CONTEXT"`, `"VERIFICATION"`). A `PLAN`
+/// token leads (the primary doc, index 0); the known [`DocKind`]s follow in
+/// canonical order, fuzzy-matched by name so slight spelling variance keeps its
+/// slot; anything unrecognized is appended after the known kinds, name-sorted.
+fn sequence_documents(candidates: Vec<(PathBuf, String)>) -> Vec<Document> {
+    // Rank above every canonical ORDER slot; unmatched docs sort here, after
+    // the known kinds, broken by name for determinism.
+    const UNMATCHED_RANK: u32 = DocKind::ORDER.len() as u32;
+
+    let mut ranked: Vec<(u32, String, Document)> = candidates
+        .into_iter()
+        .map(|(path, token)| {
+            let (rank, tiebreak, label) = if token.eq_ignore_ascii_case("PLAN") {
+                (0, String::new(), DocKind::Plan.label().to_string())
+            } else {
+                match DocKind::classify(&token) {
+                    Some(kind) => (
+                        kind.order_index() as u32,
+                        String::new(),
+                        kind.label().to_string(),
+                    ),
+                    None => (
+                        UNMATCHED_RANK,
+                        token.to_ascii_uppercase(),
+                        token.to_lowercase(),
+                    ),
+                }
+            };
+            (rank, tiebreak, Document { path, label })
+        })
+        .collect();
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    ranked.into_iter().map(|(_, _, doc)| doc).collect()
+}
+
 /// Discover every document a step can open, in tab order: the step's own plan
 /// first, then the phase-level docs in canonical order (fuzzy-matched by name
 /// so a known kind keeps its slot), then any unmatched phase-level file sorted
@@ -832,24 +871,13 @@ pub(crate) fn discover_steps(phase_dir: &Path, roadmap_plans: &[Plan]) -> Vec<St
 /// A phase step's tab set is its own `NN-MM-PLAN.md` plus the phase-level
 /// `NN-<word>.md` docs — never other steps' plans/summaries, nor its own
 /// summary (those have a numeric second segment). Only existing files are
-/// returned, so callers can treat the result as directly openable.
+/// returned, so callers can treat the result as directly openable. The ordering
+/// is delegated to [`sequence_documents`], shared with quick tasks.
 pub(crate) fn discover_documents(phase_dir: &Path, prefix: &str, step: &Step) -> Vec<Document> {
-    // Rank above every canonical ORDER slot; unmatched docs sort here, after
-    // the known kinds, broken by name for determinism.
-    const UNMATCHED_RANK: u32 = DocKind::ORDER.len() as u32;
-
-    // (rank, tiebreak, document) — sorted at the end into tab order.
-    let mut ranked: Vec<(u32, String, Document)> = Vec::new();
+    let mut candidates: Vec<(PathBuf, String)> = Vec::new();
 
     if step.plan_path.is_file() {
-        ranked.push((
-            0,
-            String::new(),
-            Document {
-                path: step.plan_path.clone(),
-                label: DocKind::Plan.label().to_string(),
-            },
-        ));
+        candidates.push((step.plan_path.clone(), "PLAN".to_string()));
     }
 
     let phase_marker = format!("{prefix}-");
@@ -875,24 +903,170 @@ pub(crate) fn discover_documents(phase_dir: &Path, prefix: &str, step: &Step) ->
             if !first_segment.is_empty() && first_segment.chars().all(|c| c.is_ascii_digit()) {
                 continue;
             }
-            let (rank, tiebreak, label) = match DocKind::classify(rest) {
-                Some(kind) => (
-                    kind.order_index() as u32,
-                    String::new(),
-                    kind.label().to_string(),
-                ),
-                None => (
-                    UNMATCHED_RANK,
-                    rest.to_ascii_uppercase(),
-                    rest.to_lowercase(),
-                ),
-            };
-            ranked.push((rank, tiebreak, Document { path, label }));
+            let token = rest.to_string();
+            candidates.push((path, token));
         }
     }
 
-    ranked.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
-    ranked.into_iter().map(|(_, _, doc)| doc).collect()
+    sequence_documents(candidates)
+}
+
+/// Every markdown file at the `.planning` root, in tab order: `ROADMAP.md`
+/// pinned first (so document index 0 stays the roadmap), then the rest —
+/// `REQUIREMENTS.md`, `PROJECT.md`, `STATE.md`, `INGEST-CONFLICTS.md`, and any
+/// future root doc — name-sorted for determinism. Discovery is generic (a glob
+/// of `*.md`) rather than a hard-coded list, so new root docs appear
+/// automatically. Subdirectories and non-markdown files are ignored; a missing
+/// directory yields an empty `Vec`.
+pub(crate) fn discover_root_documents(planning: &Path) -> Vec<Document> {
+    let mut others: Vec<(String, Document)> = Vec::new();
+    let mut roadmap: Option<Document> = None;
+    if let Ok(entries) = fs::read_dir(planning) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(stem) = name.strip_suffix(".md") else {
+                continue;
+            };
+            if name == "ROADMAP.md" {
+                roadmap = Some(Document {
+                    path,
+                    label: "roadmap".into(),
+                });
+                continue;
+            }
+            let sort_key = name.to_ascii_uppercase();
+            let label = stem.to_lowercase();
+            others.push((sort_key, Document { path, label }));
+        }
+    }
+    others.sort_by(|a, b| a.0.cmp(&b.0));
+    roadmap
+        .into_iter()
+        .chain(others.into_iter().map(|(_, doc)| doc))
+        .collect()
+}
+
+// ────────────────────────────────────────────────── notes / ideas / seeds ──
+
+/// Load every note, idea, and seed markdown file under `.planning/notes/`,
+/// `.planning/ideas/`, and `.planning/seeds/` into a single list for the Others
+/// section. Grouped by kind in [`OtherKind::ALL`] order (Notes, Ideas, Seeds),
+/// each group sorted by filename (date- or `SEED-NNN`-prefixed, so effectively
+/// chronological). Missing folders contribute nothing.
+pub(crate) fn load_others(planning: &Path) -> Vec<Other> {
+    let mut out = Vec::new();
+    for kind in OtherKind::ALL {
+        let mut group = read_others_dir(&planning.join(kind.dir()), kind);
+        group.sort_by(|a, b| a.slug.cmp(&b.slug));
+        out.extend(group);
+    }
+    out
+}
+
+fn read_others_dir(dir: &Path, kind: OtherKind) -> Vec<Other> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "md"))
+        .filter_map(|path| parse_other(&path, kind))
+        .collect()
+}
+
+fn parse_other(path: &Path, kind: OtherKind) -> Option<Other> {
+    let slug = path.file_stem()?.to_str()?.to_string();
+    let body = fs::read_to_string(path).ok()?;
+    let (front, rest) = split_frontmatter(&body);
+
+    let mut title: Option<String> = None;
+    for raw in front.lines() {
+        let line = raw.trim_end();
+        if line.starts_with("  ") || line.starts_with('\t') {
+            continue;
+        }
+        if let Some((key, value)) = split_kv(line) {
+            let value = strip_quotes(value.trim()).trim().to_string();
+            if !value.is_empty() && key.trim() == "title" {
+                title = Some(value);
+            }
+        }
+    }
+
+    let title = title
+        .or_else(|| first_h1(rest))
+        .unwrap_or_else(|| title_from_slug(&slug));
+    Some(Other {
+        title,
+        kind,
+        slug,
+        path: path.to_path_buf(),
+    })
+}
+
+/// Every markdown file in a quick-task directory (`.planning/quick/{id}-{slug}/`)
+/// in canonical tab order via [`sequence_documents`] — the same fuzzy-classify
+/// sequencing phase steps use. Task docs carry the full task-id prefix
+/// (`{id}-PLAN.md`, `{id}-CONTEXT.md`, …), so it is stripped to recover the kind
+/// token before classifying: `260709-aa1-CONTEXT` → `CONTEXT` → the Context
+/// slot. A missing directory yields an empty `Vec`.
+pub(crate) fn discover_task_documents(dir: &Path, id: &str) -> Vec<Document> {
+    let marker = format!("{id}-");
+    let mut candidates: Vec<(PathBuf, String)> = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(stem) = name.strip_suffix(".md") else {
+                continue;
+            };
+            // Strip the task-id prefix so the token is the doc kind; names that
+            // don't carry it (a bare `PLAN.md`) pass through unchanged.
+            let token = stem.strip_prefix(&marker).unwrap_or(stem).to_string();
+            candidates.push((path, token));
+        }
+    }
+    sequence_documents(candidates)
+}
+
+/// Every markdown file in a single `.planning` subfolder (e.g. `intel/`,
+/// `research/`), name-sorted for determinism. Each doc's label is its lowercased
+/// filename stem. A missing or empty folder — and any non-markdown file or
+/// nested directory within it — yields nothing, so callers can treat an empty
+/// result as "hide this section".
+pub(crate) fn discover_folder_documents(planning: &Path, folder: &str) -> Vec<Document> {
+    let mut docs: Vec<(String, Document)> = Vec::new();
+    if let Ok(entries) = fs::read_dir(planning.join(folder)) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(stem) = name.strip_suffix(".md") else {
+                continue;
+            };
+            let sort_key = name.to_ascii_uppercase();
+            let label = stem.to_lowercase();
+            docs.push((sort_key, Document { path, label }));
+        }
+    }
+    docs.sort_by(|a, b| a.0.cmp(&b.0));
+    docs.into_iter().map(|(_, doc)| doc).collect()
 }
 
 #[cfg(test)]
@@ -1169,5 +1343,190 @@ mod tests {
                 "sibling step plans must be excluded: {name}"
             );
         }
+    }
+
+    #[test]
+    fn discover_root_documents_pins_roadmap_first_then_other_root_docs_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        for name in [
+            "ROADMAP.md",
+            "REQUIREMENTS.md",
+            "PROJECT.md",
+            "STATE.md",
+            "INGEST-CONFLICTS.md",
+        ] {
+            std::fs::write(planning.join(name), "# doc\n").unwrap();
+        }
+        // A non-markdown file and a subdirectory must be ignored.
+        std::fs::write(planning.join("notes.txt"), "ignore me\n").unwrap();
+        std::fs::create_dir_all(planning.join("phases")).unwrap();
+
+        let docs = discover_root_documents(planning);
+
+        let names: Vec<String> = docs
+            .iter()
+            .map(|d| d.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "ROADMAP.md",
+                "INGEST-CONFLICTS.md",
+                "PROJECT.md",
+                "REQUIREMENTS.md",
+                "STATE.md",
+            ],
+            "ROADMAP.md is pinned first; the rest follow name-sorted"
+        );
+        assert_eq!(docs[0].label, "roadmap");
+        assert_eq!(docs[3].label, "requirements");
+    }
+
+    #[test]
+    fn discover_root_documents_omits_roadmap_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::write(planning.join("PROJECT.md"), "# p\n").unwrap();
+        std::fs::write(planning.join("STATE.md"), "# s\n").unwrap();
+
+        let docs = discover_root_documents(planning);
+
+        let names: Vec<String> = docs
+            .iter()
+            .map(|d| d.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["PROJECT.md", "STATE.md"]);
+    }
+
+    #[test]
+    fn discover_root_documents_of_missing_dir_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let docs = discover_root_documents(&dir.path().join("nope"));
+        assert!(docs.is_empty());
+    }
+
+    #[test]
+    fn discover_folder_documents_lists_markdown_name_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::create_dir_all(planning.join("intel")).unwrap();
+        for name in ["STACK.md", "ARCHITECTURE.md", "PITFALLS.md"] {
+            std::fs::write(planning.join("intel").join(name), "# doc\n").unwrap();
+        }
+        // A non-markdown file and a nested directory must be ignored.
+        std::fs::write(planning.join("intel").join("notes.txt"), "ignore\n").unwrap();
+        std::fs::create_dir_all(planning.join("intel").join("sub")).unwrap();
+
+        let docs = discover_folder_documents(planning, "intel");
+
+        let names: Vec<String> = docs
+            .iter()
+            .map(|d| d.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["ARCHITECTURE.md", "PITFALLS.md", "STACK.md"]);
+        assert_eq!(docs[0].label, "architecture");
+    }
+
+    #[test]
+    fn discover_folder_documents_of_missing_or_empty_folder_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(discover_folder_documents(dir.path(), "research").is_empty());
+        std::fs::create_dir_all(dir.path().join("research")).unwrap();
+        assert!(discover_folder_documents(dir.path(), "research").is_empty());
+    }
+
+    #[test]
+    fn load_others_groups_notes_ideas_seeds_and_derives_titles() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("notes")).unwrap();
+        std::fs::write(
+            p.join("notes/2026-07-10-espresso-idea.md"),
+            "---\ntitle: Espresso timing\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("notes/2026-07-11-grinder.md"),
+            "# Grinder calibration\n\nnotes\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(p.join("ideas")).unwrap();
+        std::fs::write(p.join("ideas/latte-art.md"), "# Latte art mode\n").unwrap();
+        std::fs::create_dir_all(p.join("seeds")).unwrap();
+        std::fs::write(
+            p.join("seeds/SEED-001-mobile-orders.md"),
+            "# Mobile orders\n",
+        )
+        .unwrap();
+
+        let others = load_others(p);
+
+        let rows: Vec<(&str, &str)> = others
+            .iter()
+            .map(|o| (o.kind.label(), o.title.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("note", "Espresso timing"),
+                ("note", "Grinder calibration"),
+                ("idea", "Latte art mode"),
+                ("seed", "Mobile orders"),
+            ],
+            "grouped Notes -> Ideas -> Seeds, each sorted by filename, titles resolved"
+        );
+    }
+
+    #[test]
+    fn load_others_of_missing_folders_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_others(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn discover_task_documents_sequences_by_kind_and_strips_the_id_prefix() {
+        // Real quick-task docs carry the full task-id prefix. They must sequence
+        // through the shared algorithm (plan first, known kinds in canonical
+        // order, unmatched last) with the prefix stripped from the label.
+        let dir = tempfile::tempdir().unwrap();
+        let task = dir.path().join("260709-aa1-add-dark-mode-toggle");
+        std::fs::create_dir_all(&task).unwrap();
+        std::fs::write(task.join("260709-aa1-PLAN.md"), "# plan\n").unwrap();
+        std::fs::write(task.join("260709-aa1-SUMMARY.md"), "# summary\n").unwrap();
+        std::fs::write(task.join("260709-aa1-CONTEXT.md"), "# context\n").unwrap();
+        std::fs::write(task.join("notes.txt"), "ignore\n").unwrap();
+
+        let docs = discover_task_documents(&task, "260709-aa1");
+
+        let labels: Vec<&str> = docs.iter().map(|d| d.label.as_str()).collect();
+        // plan (0) → context (canonical Context slot) → summary (unmatched, last).
+        assert_eq!(labels, ["plan", "context", "summary"]);
+        assert!(docs[0].path.ends_with("260709-aa1-PLAN.md"));
+        assert_eq!(
+            docs[1].label, "context",
+            "id prefix stripped from the label"
+        );
+    }
+
+    #[test]
+    fn discover_task_documents_of_missing_dir_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(discover_task_documents(&dir.path().join("nope"), "260709-aa1").is_empty());
+    }
+
+    #[test]
+    fn sequence_documents_shared_algorithm_orders_plan_kinds_then_unmatched() {
+        // The one algorithm phase steps and tasks share: PLAN leads, known kinds
+        // land in canonical order (fuzzy — `RESERCH` still → research), and
+        // unrecognized docs trail, name-sorted.
+        let docs = sequence_documents(vec![
+            (PathBuf::from("z/VERIFICATION.md"), "VERIFICATION".into()),
+            (PathBuf::from("z/RESERCH.md"), "RESERCH".into()),
+            (PathBuf::from("z/PLAN.md"), "PLAN".into()),
+            (PathBuf::from("z/ABACUS.md"), "ABACUS".into()),
+        ]);
+        let labels: Vec<&str> = docs.iter().map(|d| d.label.as_str()).collect();
+        assert_eq!(labels, ["plan", "research", "abacus", "verification"]);
     }
 }

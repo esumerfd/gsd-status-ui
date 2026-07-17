@@ -137,6 +137,23 @@ pub(crate) fn render(
         writeln!(out)?;
     }
 
+    // Intel / Research — one openable line each, sitting between the Roadmap
+    // and Phases sections. Each is a single `.planning` folder of markdown
+    // files; the line just names the folder and its file count (the files
+    // themselves open from the TUI). A folder that doesn't exist or is empty is
+    // skipped entirely, mirroring how the Tasks/Todos sections hide.
+    let intel = crate::planning::discover_folder_documents(planning, "intel");
+    let research = crate::planning::discover_folder_documents(planning, "research");
+    if !intel.is_empty() {
+        docs_folder_row(out, "Intel", intel.len(), use_color)?;
+    }
+    if !research.is_empty() {
+        docs_folder_row(out, "Research", research.len(), use_color)?;
+    }
+    if !intel.is_empty() || !research.is_empty() {
+        writeln!(out)?;
+    }
+
     // Phases section — hidden entirely when there are no phases (no roadmap
     // parsed), so a brand-new workspace shows neither Roadmap nor an empty
     // Phases heading.
@@ -267,6 +284,38 @@ pub(crate) fn render(
         writeln!(out)?;
     }
 
+    // Others — notes, ideas, and seeds combined into a single section below the
+    // Todos, above Next. One row per file, each tagged with its kind. Rendered
+    // only when at least one of the three capture folders has files.
+    let others = crate::planning::load_others(planning);
+    if !others.is_empty() {
+        writeln!(
+            out,
+            "  {bold}Others{reset}",
+            bold = c(color::BOLD),
+            reset = c(color::RESET)
+        )?;
+        writeln!(
+            out,
+            "  {dim}{line}{reset}",
+            dim = c(color::DIM),
+            line = "─".repeat(63),
+            reset = c(color::RESET),
+        )?;
+        for other in &others {
+            writeln!(
+                out,
+                "  {grey}◇{reset}  {dim}{kind}:{reset} {title}",
+                grey = c(color::GREY),
+                dim = c(color::DIM),
+                kind = other.kind.title(),
+                title = truncate(&other.title, 55),
+                reset = c(color::RESET),
+            )?;
+        }
+        writeln!(out)?;
+    }
+
     writeln!(
         out,
         "  {bold}Next{reset}",
@@ -301,6 +350,32 @@ pub(crate) fn render(
 
     writeln!(out)?;
     Ok(())
+}
+
+/// One compact "folder of docs" row: a bold folder name, a dim dash fill to the
+/// box width, and the file count (singular for one file). Used for the Intel and
+/// Research sections, which each surface a single `.planning` subfolder.
+fn docs_folder_row(
+    out: &mut impl Write,
+    name: &str,
+    count: usize,
+    use_color: bool,
+) -> io::Result<()> {
+    let c = |code: &'static str| if use_color { code } else { "" };
+    let suffix = format!("{count} file{}", if count == 1 { "" } else { "s" });
+    let label_width = 9;
+    let used = label_width + 1 + 1 + suffix.chars().count();
+    let fill = 63usize.saturating_sub(used).max(3);
+    writeln!(
+        out,
+        "  {bold}{name:<label_width$}{reset} {dim}{dashes}{reset} {suffix}",
+        bold = c(color::BOLD),
+        name = name,
+        dim = c(color::DIM),
+        dashes = "─".repeat(fill),
+        suffix = suffix,
+        reset = c(color::RESET),
+    )
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -650,6 +725,166 @@ mod tests {
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(!out.contains("Tasks"), "{out}");
+    }
+
+    fn one_phase() -> Vec<Phase> {
+        vec![Phase {
+            id: "1".into(),
+            title: "Skeleton".into(),
+            roadmap_checked: false,
+            plans: vec![],
+            dir: None,
+            stage: Stage::NotStarted,
+        }]
+    }
+
+    #[test]
+    fn renders_intel_and_research_lines_between_roadmap_and_phases() {
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::create_dir_all(planning.join("intel")).unwrap();
+        for name in ["ARCHITECTURE.md", "STACK.md"] {
+            std::fs::write(planning.join("intel").join(name), "# i\n").unwrap();
+        }
+        std::fs::create_dir_all(planning.join("research")).unwrap();
+        for name in ["A.md", "B.md", "C.md"] {
+            std::fs::write(planning.join("research").join(name), "# r\n").unwrap();
+        }
+
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            planning,
+            &StateMeta::default(),
+            &one_phase(),
+            &[],
+            &[],
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Intel"), "intel row present:\n{out}");
+        assert!(out.contains("2 files"), "intel file count:\n{out}");
+        assert!(out.contains("Research"), "research row present:\n{out}");
+        assert!(out.contains("3 files"), "research file count:\n{out}");
+
+        let roadmap = out.find("Roadmap").expect("roadmap");
+        let intel = out.find("Intel").expect("intel");
+        let research = out.find("Research").expect("research");
+        // The Phases *list* heading — the "Phases" that follows the intel rows.
+        let phases_heading = out.rfind("Phases").expect("phases heading");
+        assert!(
+            roadmap < intel && intel < research && research < phases_heading,
+            "order must be Roadmap, Intel, Research, Phases:\n{out}"
+        );
+    }
+
+    #[test]
+    fn intel_research_lines_use_singular_for_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::create_dir_all(planning.join("intel")).unwrap();
+        std::fs::write(planning.join("intel").join("ONLY.md"), "# i\n").unwrap();
+
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            planning,
+            &StateMeta::default(),
+            &one_phase(),
+            &[],
+            &[],
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("1 file"), "singular:\n{out}");
+        assert!(!out.contains("1 files"), "no plural for one file:\n{out}");
+    }
+
+    #[test]
+    fn omits_intel_and_research_when_folders_absent() {
+        // A workspace with a roadmap but no intel/ or research/ folders.
+        let dir = tempfile::tempdir().unwrap();
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            dir.path(),
+            &StateMeta::default(),
+            &one_phase(),
+            &[],
+            &[],
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            !out.contains("Intel"),
+            "no Intel row when folder absent:\n{out}"
+        );
+        assert!(
+            !out.contains("Research"),
+            "no Research row when folder absent:\n{out}"
+        );
+    }
+
+    #[test]
+    fn renders_others_section_between_todos_and_next() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("notes")).unwrap();
+        std::fs::write(p.join("notes/2026-07-10-grinder.md"), "# Grinder\n").unwrap();
+        std::fs::create_dir_all(p.join("ideas")).unwrap();
+        std::fs::write(p.join("ideas/latte.md"), "# Latte art\n").unwrap();
+        std::fs::create_dir_all(p.join("seeds")).unwrap();
+        std::fs::write(p.join("seeds/SEED-001-mobile.md"), "# Mobile orders\n").unwrap();
+
+        let todos = vec![Todo {
+            title: "Do the thing".into(),
+            area: None,
+            slug: "2026-07-07-do-the-thing".into(),
+            path: std::path::PathBuf::from("2026-07-07-do-the-thing.md"),
+            completed: false,
+        }];
+        let mut buf = Vec::new();
+        render(&mut buf, p, &StateMeta::default(), &[], &[], &todos, false).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(out.contains("Others"), "others heading:\n{out}");
+        assert!(out.contains("◇"), "others bullet:\n{out}");
+        // Each row is prefixed with its capitalized type.
+        for row in ["Note: Grinder", "Idea: Latte art", "Seed: Mobile orders"] {
+            assert!(out.contains(row), "missing {row}:\n{out}");
+        }
+        let todos_idx = out.find("Todos").expect("todos heading");
+        let others_idx = out.find("Others").expect("others heading");
+        let next_idx = out.find("Next").expect("next heading");
+        assert!(
+            todos_idx < others_idx && others_idx < next_idx,
+            "Others must sit between Todos and Next:\n{out}"
+        );
+    }
+
+    #[test]
+    fn omits_others_section_when_capture_folders_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            dir.path(),
+            &StateMeta::default(),
+            &one_phase(),
+            &[],
+            &[],
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            !out.contains("Others"),
+            "no Others section when folders absent:\n{out}"
+        );
     }
 
     #[test]

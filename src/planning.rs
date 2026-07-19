@@ -1278,6 +1278,47 @@ mod tests {
     }
 
     #[test]
+    fn merges_active_debug_session_into_todos_prefixed_debug() {
+        let todos = load_todos(Path::new("sample/.planning"), false);
+        let debug_todo = todos
+            .iter()
+            .find(|t| t.title == "Debug: the kiosk app crashes when checking out an empty cart")
+            .expect("active debug session surfaced as a todo");
+        assert!(!debug_todo.completed);
+    }
+
+    #[test]
+    fn hides_resolved_debug_session_unless_asked() {
+        let hidden = load_todos(Path::new("sample/.planning"), false);
+        assert!(
+            !hidden
+                .iter()
+                .any(|t| t.title.contains("receipt printer times out")),
+            "resolved debug session must stay hidden by default"
+        );
+
+        let shown = load_todos(Path::new("sample/.planning"), true);
+        let resolved = shown
+            .iter()
+            .find(|t| {
+                t.title == "Debug: receipt printer times out after 30s on the first print of the day"
+            })
+            .expect("resolved debug session surfaced when show_completed is set");
+        assert!(resolved.completed);
+    }
+
+    #[test]
+    fn never_surfaces_debug_knowledge_base_as_a_row() {
+        let todos = load_todos(Path::new("sample/.planning"), true);
+        assert!(
+            !todos
+                .iter()
+                .any(|t| t.title.contains("Knowledge Base") || t.slug == "knowledge-base"),
+            "knowledge-base.md must never be surfaced as a debug session row"
+        );
+    }
+
+    #[test]
     fn phase_level_docs_ignore_non_step_plan_files() {
         // 01-navigation-skeleton has 01-01-PLAN.md only; VERIFICATION and
         // SUMMARY files must not be mistaken for steps.

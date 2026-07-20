@@ -1149,8 +1149,9 @@ mod tests {
             &sample_quick_tasks(),
             &sample_todos(),
         );
-        // 1 roadmap + 2 docs-folder rows + 5 steps + 4 tasks + 3 todos + 4 others.
-        assert_eq!(app.entries.len(), 19);
+        // 1 roadmap + 2 docs-folder rows + 5 steps + 4 tasks + 4 todos (incl.
+        // the active debug session) + 4 others.
+        assert_eq!(app.entries.len(), 20);
         let last_phase_idx = 7; // the phase-3 placeholder
         let first_todo_idx = 12;
         for e in &app.entries[(last_phase_idx + 1)..first_todo_idx] {
@@ -1297,14 +1298,15 @@ mod tests {
         assert!(!app.current_entry().unwrap().is_todo());
         assert!(!app.current_entry().unwrap().is_roadmap());
         assert_eq!(app.current_entry().unwrap().step.id, "02-02");
-        // 1 roadmap + 2 docs-folder rows + 5 steps + 3 todos + 4 others.
-        assert_eq!(app.entries.len(), 15);
+        // 1 roadmap + 2 docs-folder rows + 5 steps + 4 todos (incl. the active
+        // debug session) + 4 others.
+        assert_eq!(app.entries.len(), 16);
         assert!(app.entries[0].is_roadmap());
         assert!(app.entries[8].is_todo());
-        assert!(app.entries[10].is_todo());
+        assert!(app.entries[11].is_todo());
         // The Others rows trail the todos.
-        assert!(app.entries[11].is_other());
-        assert!(app.entries[14].is_other());
+        assert!(app.entries[12].is_other());
+        assert!(app.entries[15].is_other());
     }
 
     #[test]
@@ -1658,7 +1660,8 @@ mod tests {
         let mut app =
             App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &sample_todos());
         // entries: roadmap(0), intel(1), research(2), 01-01(3)…02-03(6),
-        // ph3(7), todo0(8), todo1(9), todo2(10)
+        // ph3(7), todo0(8), todo1(9), todo2(10), todo3(11, the active debug
+        // session)
 
         // In Todos, K moves one row up (todo → todo), not into the Phases section.
         app.current = 9; // todo1

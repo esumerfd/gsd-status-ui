@@ -120,3 +120,28 @@ fn plain_report_lists_pending_todos_between_phases_and_next() {
         "todo title must render inside the Todos section (above Next)"
     );
 }
+
+#[test]
+fn plain_report_lists_active_debug_session_prefixed_debug_in_todos() {
+    let (stdout, code) = run(&["sample"]);
+    assert_eq!(code, 0);
+    // The full trigger is 60 chars, past report.rs's 55-char todo-row
+    // truncation, so only a prefix survives in the rendered row.
+    assert!(
+        stdout.contains("Debug: the kiosk app crashes when checking out an empt"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("receipt printer times out"),
+        "resolved debug session must stay hidden by default: {stdout}"
+    );
+    let todos = stdout.find("Todos").expect("Todos heading present");
+    let next = stdout.find("Next").expect("Next heading present");
+    let debug_row = stdout
+        .find("Debug: the kiosk app crashes")
+        .expect("debug row present");
+    assert!(
+        debug_row > todos && debug_row < next,
+        "debug row must render inside the Todos section (above Next)"
+    );
+}

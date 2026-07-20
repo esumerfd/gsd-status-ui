@@ -457,12 +457,77 @@ pub(crate) fn load_todos(planning: &Path, show_completed: bool) -> Vec<Todo> {
     if show_completed {
         todos.extend(read_todo_dir(&base.join("completed"), true));
     }
+    todos.extend(load_debug_sessions(planning, show_completed));
     todos.sort_by(|a, b| {
         a.completed
             .cmp(&b.completed)
             .then_with(|| a.slug.cmp(&b.slug))
     });
     todos
+}
+
+// GSD debug sessions (`/gsd-debug`, tracked at `.planning/debug/{slug}.md`
+// while active and `.planning/debug/resolved/{slug}.md` once resolved) are
+// structurally identical to a Todo for display purposes, so they are folded
+// directly into the Todos list rather than getting their own section/type.
+
+/// Load debug sessions as `Todo`s, titled `Debug: {trigger}`. Active sessions
+/// (`.planning/debug/*.md`) are always included; resolved ones
+/// (`.planning/debug/resolved/*.md`) only when `show_completed` is set,
+/// mirroring `load_todos`'s pending/completed split.
+fn load_debug_sessions(planning: &Path, show_completed: bool) -> Vec<Todo> {
+    let base = planning.join("debug");
+    let mut sessions = read_debug_dir(&base, false);
+    if show_completed {
+        sessions.extend(read_debug_dir(&base.join("resolved"), true));
+    }
+    sessions
+}
+
+fn read_debug_dir(dir: &Path, completed: bool) -> Vec<Todo> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "md"))
+        .filter_map(|path| parse_debug_session(&path, completed))
+        .collect()
+}
+
+fn parse_debug_session(path: &Path, completed: bool) -> Option<Todo> {
+    let slug = path.file_stem()?.to_str()?.to_string();
+    if slug == "knowledge-base" {
+        return None;
+    }
+    let body = fs::read_to_string(path).ok()?;
+    let (front, rest) = split_frontmatter(&body);
+
+    let mut trigger: Option<String> = None;
+    for raw in front.lines() {
+        let line = raw.trim_end();
+        if line.starts_with("  ") || line.starts_with('\t') {
+            continue;
+        }
+        if let Some((key, value)) = split_kv(line) {
+            let value = strip_quotes(value.trim()).trim().to_string();
+            if !value.is_empty() && key.trim() == "trigger" {
+                trigger = Some(value);
+            }
+        }
+    }
+
+    let trigger = trigger
+        .or_else(|| first_h1(rest))
+        .unwrap_or_else(|| title_from_slug(&slug));
+    Some(Todo {
+        title: format!("Debug: {trigger}"),
+        area: None,
+        slug,
+        path: path.to_path_buf(),
+        completed,
+    })
 }
 
 fn read_todo_dir(dir: &Path, completed: bool) -> Vec<Todo> {
@@ -1186,12 +1251,15 @@ mod tests {
     fn loads_pending_todos_sorted_with_title_and_fallbacks() {
         let todos = load_todos(Path::new("sample/.planning"), false);
         let titles: Vec<&str> = todos.iter().map(|t| t.title.as_str()).collect();
+        // The active debug session fixture sorts last among non-completed
+        // rows (its slug starts with 'k', after the date-prefixed todo slugs).
         assert_eq!(
             titles,
             [
                 "Official signed build process for pr-monitor apps",
                 "Cache the decrypted secret in-process",
                 "locate mcpsecret source",
+                "Debug: the kiosk app crashes when checking out an empty cart",
             ]
         );
         assert_eq!(todos[0].area.as_deref(), Some("tooling"));
@@ -1215,7 +1283,15 @@ mod tests {
             .filter(|t| t.completed)
             .map(|t| t.title.as_str())
             .collect();
-        assert_eq!(completed, ["Remove debug logging from the brew loop"]);
+        // The resolved debug session fixture also appears once show_completed
+        // is set, alongside the pre-existing completed todo.
+        assert_eq!(
+            completed,
+            [
+                "Remove debug logging from the brew loop",
+                "Debug: receipt printer times out after 30s on the first print of the day",
+            ]
+        );
         // Pending sort before completed.
         let first_completed = shown.iter().position(|t| t.completed).unwrap();
         assert!(shown[..first_completed].iter().all(|t| !t.completed));

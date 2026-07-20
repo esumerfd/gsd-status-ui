@@ -583,8 +583,11 @@ impl Ui {
         match self.app.focus() {
             Focus::Status => {
                 let mut text = self.report.clone();
+                // The line to keep in view: the highlighted selection row, if any.
+                let mut selected_line: Option<usize> = None;
                 if let Some(sel) = self.app.selection() {
                     if let Some(idx) = highlight_index(&text, &sel) {
+                        selected_line = Some(idx);
                         // A just-copied todo flashes green (the "done" accent);
                         // otherwise the selection gets the usual grey band.
                         let flashing = self.copy_flash
@@ -602,7 +605,22 @@ impl Ui {
                         }
                     }
                 }
-                frame.render_widget(Paragraph::new(text), body);
+                // The report can be taller than the body viewport (e.g. once
+                // `H` reveals completed work). Scroll so the selected row is
+                // always visible; without this its highlight renders below the
+                // fold and looks like it never appeared. Clamp so we never
+                // scroll past the report's end, leaving blank space.
+                let body_h = body.height as usize;
+                let total = text.lines.len();
+                let scroll = selected_line
+                    .filter(|&idx| idx >= body_h)
+                    .map(|idx| {
+                        let want = idx + 1 - body_h;
+                        let max = total.saturating_sub(body_h);
+                        want.min(max) as u16
+                    })
+                    .unwrap_or(0);
+                frame.render_widget(Paragraph::new(text).scroll((scroll, 0)), body);
             }
             Focus::Doc(doc) => {
                 if let Some(view) = self.views.get_mut(&(self.app.current, doc)) {
@@ -838,6 +856,52 @@ mod tests {
 
     fn ctrl(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn bg_indexed238_cells(ui: &mut Ui, height: u16) -> usize {
+        let backend = TestBackend::new(90, height);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| ui.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+        buf.content()
+            .iter()
+            .filter(|c| c.style().bg == Some(Color::Indexed(238)))
+            .count()
+    }
+
+    #[test]
+    fn selected_todo_highlight_stays_visible_when_report_exceeds_viewport() {
+        // Regression: with "show completed" ON the status report grows past a
+        // short terminal (completed tasks/todos + resolved debug rows). The
+        // selected todo's highlight must still render on-screen — the panel
+        // scrolls so the selection stays in view. Before the fix the panel was
+        // drawn with no scroll offset, so the highlighted line sat below the
+        // fold and produced zero visible highlight cells.
+        let planning = Path::new("sample/.planning");
+        let mut ui = sample_ui();
+        ui.on_key(plain('H')); // show completed work
+        assert!(ui.take_needs_reload());
+        ui.reload_from_disk(planning);
+        // Jump to the Todos section (Phases -> Tasks -> Todos).
+        ui.on_key(plain('d'));
+        ui.on_key(plain('d'));
+        assert!(
+            matches!(ui.app.selection(), Some(Selected::Todo(_))),
+            "expected a Todo selection, got {:?}",
+            ui.app.selection()
+        );
+        // Sanity: the report is taller than a 24-row terminal's body, so the
+        // selected todo line is below the fold without scrolling.
+        assert!(
+            ui.report.lines.len() > 24,
+            "report should exceed the viewport for this regression to bite"
+        );
+        // At a realistic 24-row terminal the highlight must be visible.
+        let cells = bg_indexed238_cells(&mut ui, 24);
+        assert!(
+            cells > 0,
+            "selected todo highlight must render on-screen at height 24; got {cells} cells"
+        );
     }
 
     #[test]

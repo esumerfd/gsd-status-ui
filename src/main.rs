@@ -60,6 +60,7 @@ fn main() -> ExitCode {
             &phases,
             &quick_tasks,
             &todos,
+            false,
             use_color,
         )
         .ok();

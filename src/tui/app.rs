@@ -195,29 +195,52 @@ impl App {
     /// Like `from_phases`, but appends one navigable entry per active quick
     /// task, then one per pending todo, after all phase steps, so j/k walks
     /// steps, then tasks, then todos. `planning` locates the workspace-root
-    /// `ROADMAP.md` for the leading Roadmap entry.
+    /// `ROADMAP.md` for the leading Roadmap entry, which every phase here is
+    /// taken to be under — production lists a subset, so it uses
+    /// `with_roadmap_row`.
+    #[cfg(test)]
     pub(crate) fn from_phases_and_todos(
         planning: &Path,
         phases: &[Phase],
         quick_tasks: &[QuickTask],
         todos: &[Todo],
     ) -> Self {
-        Self::new(Self::build_entries(planning, phases, quick_tasks, todos))
+        Self::with_roadmap_row(planning, !phases.is_empty(), phases, quick_tasks, todos)
+    }
+
+    /// `from_phases_and_todos` for callers that list only some of the phases:
+    /// `has_roadmap` states outright whether the panel drew its Roadmap row,
+    /// which stops tracking the phase list once completed phases are hidden —
+    /// a fully verified roadmap keeps the tally with no phase rows beneath it.
+    pub(crate) fn with_roadmap_row(
+        planning: &Path,
+        has_roadmap: bool,
+        phases: &[Phase],
+        quick_tasks: &[QuickTask],
+        todos: &[Todo],
+    ) -> Self {
+        Self::new(Self::build_entries(
+            planning,
+            has_roadmap,
+            phases,
+            quick_tasks,
+            todos,
+        ))
     }
 
     /// The flattened roadmap-then-steps-then-tasks-then-todos entry list.
     /// Shared by construction and by `refresh` (the periodic reload), so both
-    /// see the same ordering. A leading Roadmap entry fronts the list
-    /// whenever phases exist (i.e. a `ROADMAP.md` parsed), mirroring the
-    /// report's row.
+    /// see the same ordering. A leading Roadmap entry fronts the list whenever
+    /// the report drew one, mirroring it.
     fn build_entries(
         planning: &Path,
+        has_roadmap: bool,
         phases: &[Phase],
         quick_tasks: &[QuickTask],
         todos: &[Todo],
     ) -> Vec<StepEntry> {
         let mut entries = Vec::new();
-        if !phases.is_empty() {
+        if has_roadmap {
             let roadmap_path = planning.join("ROADMAP.md");
             // The Roadmap row is the UI's window onto every `.planning` root
             // doc: ROADMAP.md stays at index 0 (so open_doc(0)/Enter/R open it),
@@ -396,9 +419,23 @@ impl App {
     /// surviving entry keeps its open-document tab set. Returns a map from old
     /// entry index to new index for the entries that survived, so the shell can
     /// remap its per-entry DocViews.
+    #[cfg(test)]
     pub(crate) fn refresh(
         &mut self,
         planning: &Path,
+        phases: &[Phase],
+        quick_tasks: &[QuickTask],
+        todos: &[Todo],
+    ) -> HashMap<usize, usize> {
+        self.refresh_with_roadmap_row(planning, !phases.is_empty(), phases, quick_tasks, todos)
+    }
+
+    /// `refresh` for callers listing only some of the phases — see
+    /// `with_roadmap_row` for why the Roadmap row needs saying out loud.
+    pub(crate) fn refresh_with_roadmap_row(
+        &mut self,
+        planning: &Path,
+        has_roadmap: bool,
         phases: &[Phase],
         quick_tasks: &[QuickTask],
         todos: &[Todo],
@@ -410,7 +447,7 @@ impl App {
         let key = |e: &StepEntry| (e.phase_id.clone(), e.step.id.clone());
         let selected = self.entries.get(self.current).map(&key);
 
-        let new_entries = Self::build_entries(planning, phases, quick_tasks, todos);
+        let new_entries = Self::build_entries(planning, has_roadmap, phases, quick_tasks, todos);
         let new_index: HashMap<(String, String), usize> = new_entries
             .iter()
             .enumerate()

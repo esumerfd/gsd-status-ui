@@ -130,7 +130,7 @@ impl QuickTaskStatus {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Phase {
     pub(crate) id: String,
     pub(crate) title: String,

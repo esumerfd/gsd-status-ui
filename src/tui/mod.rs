@@ -98,10 +98,22 @@ pub(crate) fn status_text(
         phases,
         &quick_tasks,
         &todos,
+        show_completed,
         true,
     )
     .ok();
     ansi::ansi_to_text(&String::from_utf8_lossy(&buf))
+}
+
+/// The phases the status panel actually lists, in roadmap order — completed
+/// ones drop out until `H` is on. Backs the navigable entry list so it matches
+/// the rendered rows.
+fn navigable_phases(phases: &[Phase], show_completed: bool) -> Vec<Phase> {
+    phases
+        .iter()
+        .filter(|ph| show_completed || !crate::report::phase_complete(ph))
+        .cloned()
+        .collect()
 }
 
 fn line_string(line: &Line) -> String {
@@ -279,6 +291,10 @@ impl Ui {
     /// j/k reach rows the periodic reload added (e.g. a todo captured while the
     /// TUI is open). Open document tabs are carried to each surviving entry's
     /// new index; views for entries that vanished are dropped.
+    ///
+    /// Takes every phase, the way the report does: the Roadmap row is drawn
+    /// off the full list, while only the visible phases become entries, so j/k
+    /// never selects a row that isn't on screen.
     pub(crate) fn refresh_entries(
         &mut self,
         planning: &Path,
@@ -286,7 +302,13 @@ impl Ui {
         quick_tasks: &[QuickTask],
         todos: &[Todo],
     ) {
-        let remap = self.app.refresh(planning, phases, quick_tasks, todos);
+        let remap = self.app.refresh_with_roadmap_row(
+            planning,
+            !phases.is_empty(),
+            &navigable_phases(phases, self.show_completed),
+            quick_tasks,
+            todos,
+        );
         let old_views = std::mem::take(&mut self.views);
         for ((old_idx, doc), view) in old_views {
             if let Some(&new_idx) = remap.get(&old_idx) {
@@ -765,7 +787,13 @@ pub(crate) fn run(
 ) -> io::Result<()> {
     let mut ui = Ui::new(
         status_text(planning, state, phases, false),
-        App::from_phases_and_todos(planning, phases, quick_tasks, todos),
+        App::with_roadmap_row(
+            planning,
+            !phases.is_empty(),
+            &navigable_phases(phases, false),
+            quick_tasks,
+            todos,
+        ),
     );
 
     terminal::enable_raw_mode()?;
@@ -850,8 +878,25 @@ mod tests {
         let todos = crate::planning::load_todos(planning, false);
         Ui::new(
             status_text(planning, &state, &phases, false),
-            App::from_phases_and_todos(planning, &phases, &quick_tasks, &todos),
+            App::with_roadmap_row(
+                planning,
+                !phases.is_empty(),
+                &navigable_phases(&phases, false),
+                &quick_tasks,
+                &todos,
+            ),
         )
+    }
+
+    /// A `sample_ui` with `H` already on, so every phase — including the
+    /// verified Phase 1 — is listed and navigable.
+    fn sample_ui_showing_completed() -> Ui {
+        let planning = Path::new("sample/.planning");
+        let mut ui = sample_ui();
+        ui.on_key(plain('H'));
+        ui.take_needs_reload();
+        ui.reload_from_disk(planning);
+        ui
     }
 
     fn ctrl(c: char) -> KeyEvent {
@@ -1048,6 +1093,81 @@ mod tests {
         assert!(ui.take_needs_reload());
         ui.reload_from_disk(planning);
         assert!(!report_string(&ui).contains("Remove debug logging"));
+    }
+
+    /// Every selection j can reach, walking from the first entry to the last.
+    fn reachable_selections(ui: &mut Ui) -> Vec<Selected> {
+        ui.app.select_first();
+        let mut seen = Vec::new();
+        for _ in 0..200 {
+            if let Some(sel) = ui.app.selection() {
+                if !seen.contains(&sel) {
+                    seen.push(sel);
+                }
+            }
+            ui.on_key(plain('j'));
+        }
+        seen
+    }
+
+    #[test]
+    fn capital_h_toggles_completed_phase_visibility() {
+        let planning = Path::new("sample/.planning");
+        let mut ui = sample_ui();
+
+        // Phase 1 is verified in the sample roadmap, so it starts hidden —
+        // both as a status row and as a navigable entry.
+        let before = report_string(&ui);
+        assert!(
+            !before.contains("Navigation Skeleton"),
+            "completed phase hidden by default:\n{before}"
+        );
+        assert!(
+            before.contains("Coffee Acquisition"),
+            "unfinished phases still listed:\n{before}"
+        );
+        assert!(
+            !reachable_selections(&mut ui).contains(&Selected::Phase("1".into())),
+            "j must skip the hidden phase"
+        );
+
+        ui.on_key(plain('H'));
+        assert!(ui.take_needs_reload(), "H must request a reload");
+        ui.reload_from_disk(planning);
+
+        let after = report_string(&ui);
+        assert!(
+            after.contains("Navigation Skeleton"),
+            "completed phase shown after H:\n{after}"
+        );
+        assert!(
+            reachable_selections(&mut ui).contains(&Selected::Phase("1".into())),
+            "j reaches the revealed phase"
+        );
+    }
+
+    #[test]
+    fn roadmap_stays_reachable_when_every_phase_is_hidden() {
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path().join(".planning");
+        std::fs::create_dir_all(&planning).unwrap();
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "# ROADMAP: Done\n\n## Phases\n\n- [x] **Phase 1: All Wrapped Up**\n",
+        )
+        .unwrap();
+
+        let mut ui = Ui::new(Text::default(), App::new(vec![]));
+        ui.reload_from_disk(&planning);
+
+        assert!(
+            report_string(&ui).contains("Roadmap"),
+            "the report still draws the Roadmap tally"
+        );
+        assert!(
+            ui.app.roadmap_index().is_some(),
+            "and the row it draws stays selectable"
+        );
     }
 
     /// Ctrl-o, move the selection down `moves` times, Enter.
@@ -1403,7 +1523,7 @@ mod tests {
 
     #[test]
     fn dialog_on_phase_1_lists_only_existing_docs() {
-        let mut ui = sample_ui();
+        let mut ui = sample_ui_showing_completed();
         ui.on_key(ctrl('k'));
         ui.on_key(ctrl('k')); // phase 1, step 01-01
         ui.on_key(ctrl('o'));
@@ -1605,7 +1725,7 @@ mod tests {
 
     #[test]
     fn status_tab_label_tracks_the_selected_phase_and_step() {
-        let mut ui = sample_ui();
+        let mut ui = sample_ui_showing_completed();
         let s = screen(&mut ui);
         // The label drops the step id's phase prefix: 02-02 -> Step 02.
         assert!(
@@ -1830,8 +1950,8 @@ mod tests {
 
     #[test]
     fn status_chunk_nav_keys_move_the_selection() {
-        let mut ui = sample_ui(); // has todos + others; default selection is 02-02
-                                  // G -> last entry (the final Others row, a seed).
+        let mut ui = sample_ui_showing_completed(); // has todos + others; default selection is 02-02
+                                                    // G -> last entry (the final Others row, a seed).
         ui.on_key(plain('G'));
         assert!(
             screen(&mut ui).contains("[status] Seed"),
@@ -1865,7 +1985,7 @@ mod tests {
 
     #[test]
     fn status_jk_browses_steps_and_enter_opens_the_plan() {
-        let mut ui = sample_ui();
+        let mut ui = sample_ui_showing_completed();
         let s = screen(&mut ui);
         assert!(s.contains("Phase 2 · step 02-02 (2/3)"), "{s}");
 

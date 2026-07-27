@@ -10,6 +10,7 @@ pub(crate) fn render(
     phases: &[Phase],
     quick_tasks: &[QuickTask],
     todos: &[Todo],
+    show_completed: bool,
     use_color: bool,
 ) -> io::Result<()> {
     let c = |code: &'static str| if use_color { code } else { "" };
@@ -154,10 +155,16 @@ pub(crate) fn render(
         writeln!(out)?;
     }
 
-    // Phases section — hidden entirely when there are no phases (no roadmap
-    // parsed), so a brand-new workspace shows neither Roadmap nor an empty
-    // Phases heading.
-    if !phases.is_empty() {
+    // Phases section — hidden entirely when there are no phases to list, so a
+    // brand-new workspace shows neither Roadmap nor an empty Phases heading,
+    // and a fully verified roadmap collapses to its Roadmap tally until `H`.
+    // Finished phases drop out the way finished tasks and todos do; the
+    // Roadmap row and progress bar above still count them.
+    let visible_phases: Vec<&Phase> = phases
+        .iter()
+        .filter(|ph| show_completed || !phase_complete(ph))
+        .collect();
+    if !visible_phases.is_empty() {
         writeln!(
             out,
             "  {bold}Phases{reset}",
@@ -173,7 +180,7 @@ pub(crate) fn render(
         )?;
     }
 
-    for ph in phases {
+    for ph in &visible_phases {
         let (icon, icon_color) = phase_icon(ph);
         let total = ph.plans.len();
         let done = ph.plans.iter().filter(|p| p.checked).count();
@@ -198,7 +205,7 @@ pub(crate) fn render(
         )?;
     }
 
-    if !phases.is_empty() {
+    if !visible_phases.is_empty() {
         writeln!(out)?;
     }
 
@@ -423,8 +430,14 @@ fn short_planning(p: &Path) -> String {
     }
 }
 
+/// Finished work, for the `H` show/hide toggle: exactly the phases that earn a
+/// green ✓. Shared with the TUI so a hidden row is also an unreachable entry.
+pub(crate) fn phase_complete(ph: &Phase) -> bool {
+    ph.roadmap_checked || ph.stage == Stage::Verified
+}
+
 fn phase_icon(ph: &Phase) -> (&'static str, &'static str) {
-    if ph.roadmap_checked || ph.stage == Stage::Verified {
+    if phase_complete(ph) {
         ("✓", color::GREEN)
     } else if matches!(ph.stage, Stage::Executing | Stage::Executed) {
         ("●", color::YELLOW)
@@ -530,6 +543,7 @@ mod tests {
             &[],
             &[],
             false,
+            false,
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -574,11 +588,12 @@ mod tests {
             &[],
             &[],
             false,
+            false,
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
         let roadmap = out.find("Roadmap").expect("roadmap title present");
-        let phase_list = out.find("Navigation Skeleton").expect("phase list present");
+        let phase_list = out.find("Coffee Acquisition").expect("phase list present");
         assert!(
             roadmap < phase_list,
             "roadmap section must sit above the phase list:\n{out}"
@@ -618,6 +633,7 @@ mod tests {
             &[],
             &[],
             false,
+            false,
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -625,6 +641,80 @@ mod tests {
         assert!(out.contains("complete"), "{out}");
         assert!(!out.contains("in progress"), "{out}");
         assert!(out.contains("✓"), "complete bullet:\n{out}");
+    }
+
+    #[test]
+    fn hides_completed_phase_rows_until_show_completed() {
+        let phases = crate::planning::load_phases(Path::new("sample/.planning"));
+        let render_to_string = |show_completed| {
+            let mut buf = Vec::new();
+            render(
+                &mut buf,
+                Path::new("sample/.planning"),
+                &StateMeta::default(),
+                &phases,
+                &[],
+                &[],
+                show_completed,
+                false,
+            )
+            .unwrap();
+            String::from_utf8(buf).unwrap()
+        };
+
+        let hidden = render_to_string(false);
+        assert!(
+            !hidden.contains("Navigation Skeleton"),
+            "verified phase row hidden by default:\n{hidden}"
+        );
+        assert!(
+            hidden.contains("Coffee Acquisition"),
+            "unfinished phase rows still shown:\n{hidden}"
+        );
+        // The Roadmap tally counts every phase, hidden or not.
+        assert!(
+            hidden.contains("Phases 1/3"),
+            "roadmap tally counts hidden phases:\n{hidden}"
+        );
+
+        let shown = render_to_string(true);
+        assert!(
+            shown.contains("Navigation Skeleton"),
+            "verified phase row shown with show_completed:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn omits_phases_heading_when_every_phase_is_completed_and_hidden() {
+        let phases = vec![Phase {
+            id: "1".into(),
+            title: "A".into(),
+            roadmap_checked: true,
+            plans: vec![],
+            dir: None,
+            stage: Stage::Verified,
+        }];
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            Path::new("sample/.planning"),
+            &StateMeta::default(),
+            &phases,
+            &[],
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            !out.lines().any(|l| l.trim() == "Phases"),
+            "empty Phases section hides its heading:\n{out}"
+        );
+        assert!(
+            out.contains("Phases 1/1"),
+            "the Roadmap row survives:\n{out}"
+        );
     }
 
     #[test]
@@ -637,6 +727,7 @@ mod tests {
             &[],
             &[],
             &[],
+            false,
             false,
         )
         .unwrap();
@@ -663,6 +754,7 @@ mod tests {
             &[],
             &[],
             &[],
+            false,
             false,
         )
         .unwrap();
@@ -695,6 +787,7 @@ mod tests {
             &quick_tasks,
             &todos,
             false,
+            false,
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -720,6 +813,7 @@ mod tests {
             &[],
             &[],
             &[],
+            false,
             false,
         )
         .unwrap();
@@ -760,6 +854,7 @@ mod tests {
             &[],
             &[],
             false,
+            false,
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -796,6 +891,7 @@ mod tests {
             &[],
             &[],
             false,
+            false,
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -815,6 +911,7 @@ mod tests {
             &one_phase(),
             &[],
             &[],
+            false,
             false,
         )
         .unwrap();
@@ -848,7 +945,17 @@ mod tests {
             completed: false,
         }];
         let mut buf = Vec::new();
-        render(&mut buf, p, &StateMeta::default(), &[], &[], &todos, false).unwrap();
+        render(
+            &mut buf,
+            p,
+            &StateMeta::default(),
+            &[],
+            &[],
+            &todos,
+            false,
+            false,
+        )
+        .unwrap();
         let out = String::from_utf8(buf).unwrap();
 
         assert!(out.contains("Others"), "others heading:\n{out}");
@@ -878,6 +985,7 @@ mod tests {
             &[],
             &[],
             false,
+            false,
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -904,6 +1012,7 @@ mod tests {
             &[],
             &[],
             &todos,
+            false,
             false,
         )
         .unwrap();

@@ -157,7 +157,9 @@ fn highlight_index(text: &Text, sel: &Selected) -> Option<usize> {
         // the section's trailing blank line, so a Task selection never
         // mis-indexes against a Phase row that also begins with ● (D-01's
         // ordinal window: report.rs renders Tasks as heading, divider, one
-        // icon-prefixed row per active task, blank line).
+        // icon-prefixed row per task, blank line). The window must count every
+        // QuickTaskStatus icon — including the ✓ that `H` reveals — because the
+        // selection ordinal counts every task row on screen.
         Selected::Task(n) => {
             let tasks_start = text
                 .lines
@@ -171,7 +173,7 @@ fn highlight_index(text: &Text, sel: &Selected) -> Option<usize> {
                 .filter(|(_, line)| {
                     let s = line_string(line);
                     let s = s.trim_start();
-                    s.starts_with('●') || s.starts_with('✗')
+                    s.starts_with('●') || s.starts_with('✗') || s.starts_with('✓')
                 })
                 .nth(*n)
                 .map(|(i, _)| i)
@@ -1143,6 +1145,87 @@ mod tests {
         assert!(
             reachable_selections(&mut ui).contains(&Selected::Phase("1".into())),
             "j reaches the revealed phase"
+        );
+    }
+
+    /// Revealing finished work must make it *usable*, not just visible: every
+    /// row `j` can land on has to resolve to a status-body line, otherwise the
+    /// selection is invisible and the row's documents are unreachable in
+    /// practice. Covers all three kinds — phases, quick tasks, and todos.
+    #[test]
+    fn every_revealed_row_highlights_its_status_line() {
+        let mut ui = sample_ui_showing_completed();
+
+        for sel in reachable_selections(&mut ui) {
+            assert!(
+                highlight_index(&ui.report, &sel).is_some(),
+                "{sel:?} is navigable but highlights no row:\n{}",
+                report_string(&ui)
+            );
+        }
+    }
+
+    /// The completed quick task revealed by `H` must highlight its own row,
+    /// not a neighbour's — its ordinal counts every task, so the highlight
+    /// window has to as well.
+    #[test]
+    fn a_revealed_completed_task_highlights_its_own_row() {
+        let mut ui = sample_ui_showing_completed();
+        let tasks: Vec<Selected> = reachable_selections(&mut ui)
+            .into_iter()
+            .filter(|s| matches!(s, Selected::Task(_)))
+            .collect();
+        let lines: Vec<String> = ui.report.lines.iter().map(line_string).collect();
+
+        let completed = tasks
+            .iter()
+            .filter_map(|sel| highlight_index(&ui.report, sel).map(|i| &lines[i]))
+            .find(|line| line.contains("Tidy the README"));
+        assert!(
+            completed.is_some(),
+            "no task selection lands on the revealed completed task:\n{}",
+            lines.join("\n")
+        );
+    }
+
+    /// The point of reaching a revealed row is opening its files, so the
+    /// completed task and todo that `H` adds must each carry an openable
+    /// document. (Phase 1's revealed documents are covered by
+    /// `dialog_on_phase_1_lists_only_existing_docs`.)
+    #[test]
+    fn revealed_completed_rows_carry_openable_documents() {
+        let mut ui = sample_ui_showing_completed();
+        ui.app.select_first();
+        let mut visited = Vec::new();
+        let mut reached = Vec::new();
+
+        for _ in 0..200 {
+            if !visited.contains(&ui.app.current) {
+                visited.push(ui.app.current);
+                if let Some(entry) = ui.app.current_entry() {
+                    let title = entry
+                        .quick_task_title
+                        .as_deref()
+                        .or(entry.todo_title.as_deref())
+                        .unwrap_or_default()
+                        .to_string();
+                    if title.starts_with("Tidy the README")
+                        || title.starts_with("Remove debug logging")
+                    {
+                        assert!(
+                            !entry.documents.is_empty(),
+                            "revealed row {title:?} has no document to open"
+                        );
+                        reached.push(title);
+                    }
+                }
+            }
+            ui.on_key(plain('j'));
+        }
+        assert_eq!(
+            reached.len(),
+            2,
+            "j reaches both revealed rows: {reached:?}"
         );
     }
 

@@ -14,21 +14,33 @@ use crate::planning::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// A single `.planning` subfolder surfaced as one navigable row between the
-/// Roadmap and Phases sections. Each backs a `StepEntry` whose documents are the
-/// folder's files (first opens on Enter, all listed by the `o` picker).
+/// A group of `.planning` markdown files surfaced as one navigable row between
+/// the Roadmap and Phases sections. Each backs a `StepEntry` whose documents are
+/// the group's files (first opens on Enter, all listed by the `o` picker).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum DocsFolder {
+    /// The `.planning` root itself (`PROJECT.md`, `REQUIREMENTS.md`, …). Only
+    /// drawn when there's no Roadmap row, which otherwise carries these.
+    Project,
     Intel,
     Research,
 }
 
 impl DocsFolder {
-    /// The subfolder name under `.planning/` this row surfaces.
-    fn dir(self) -> &'static str {
+    /// Row id, also its title lowercased.
+    fn id(self) -> &'static str {
         match self {
+            DocsFolder::Project => "project",
             DocsFolder::Intel => "intel",
             DocsFolder::Research => "research",
+        }
+    }
+
+    /// The files this row surfaces, in tab order.
+    fn documents(self, planning: &Path) -> Vec<Document> {
+        match self {
+            DocsFolder::Project => discover_root_documents(planning),
+            other => discover_folder_documents(planning, other.id()),
         }
     }
 }
@@ -99,6 +111,9 @@ impl StepEntry {
 pub(crate) enum Selected {
     /// The project-level Roadmap row (above the Phases list).
     Roadmap,
+    /// The Project docs row of `.planning` root files, which stands in for the
+    /// Roadmap row before a `ROADMAP.md` exists.
+    Project,
     /// The Intel docs-folder row (between Roadmap and Phases).
     Intel,
     /// The Research docs-folder row (between Roadmap and Phases).
@@ -269,18 +284,24 @@ impl App {
                 other: None,
             });
         }
-        // Intel then Research: one row each, only when the folder has files.
-        // They sit between the Roadmap row and the phases so j/k, section jumps,
-        // and the open flow reach them like any other row.
-        for folder in [DocsFolder::Intel, DocsFolder::Research] {
-            let documents = discover_folder_documents(planning, folder.dir());
+        // Project (only without a Roadmap row, which already reaches the root
+        // docs), then Intel, then Research: one row each, only when the group has
+        // files. They sit between the Roadmap row and the phases so j/k, section
+        // jumps, and the open flow reach them like any other row.
+        let folders: &[DocsFolder] = if has_roadmap {
+            &[DocsFolder::Intel, DocsFolder::Research]
+        } else {
+            &[DocsFolder::Project, DocsFolder::Intel, DocsFolder::Research]
+        };
+        for &folder in folders {
+            let documents = folder.documents(planning);
             if documents.is_empty() {
                 continue;
             }
             entries.push(StepEntry {
                 phase_id: String::new(),
                 step: Step {
-                    id: folder.dir().to_string(),
+                    id: folder.id().to_string(),
                     plan_path: documents[0].path.clone(),
                     checked: false,
                 },
@@ -479,6 +500,7 @@ impl App {
             Some(Selected::Roadmap)
         } else if let Some(folder) = entry.docs_folder() {
             Some(match folder {
+                DocsFolder::Project => Selected::Project,
                 DocsFolder::Intel => Selected::Intel,
                 DocsFolder::Research => Selected::Research,
             })
@@ -629,11 +651,12 @@ impl App {
         None
     }
 
-    /// Section ordinal for grouping entries: Roadmap(0), Intel(1), Research(2),
-    /// Phases(3), Tasks(4), Todos(5), Others(6). Entries are built in this
-    /// order, so each section is contiguous.
+    /// Section ordinal for grouping entries: Roadmap or Project(0), Intel(1),
+    /// Research(2), Phases(3), Tasks(4), Todos(5), Others(6). Entries are built
+    /// in this order, so each section is contiguous — Roadmap and Project share
+    /// an ordinal because only one of them is ever drawn.
     fn section_key(e: &StepEntry) -> u8 {
-        if e.is_roadmap() {
+        if e.is_roadmap() || e.docs_folder() == Some(DocsFolder::Project) {
             0
         } else if e.docs_folder() == Some(DocsFolder::Intel) {
             1
@@ -1584,7 +1607,10 @@ mod tests {
         app.open_dialog();
         let dialog = app.dialog().expect("dialog open on the roadmap row");
         let names: Vec<&str> = dialog.items.iter().map(|(_, n)| n.as_str()).collect();
-        assert_eq!(names, ["ROADMAP.md", "PROJECT.md", "STATE.md"]);
+        assert_eq!(
+            names,
+            ["ROADMAP.md", "PROJECT.md", "REQUIREMENTS.md", "STATE.md"]
+        );
         assert_eq!(dialog.selected, 0);
     }
 
@@ -1846,6 +1872,48 @@ mod tests {
             app.current_entry().unwrap().docs_folder(),
             Some(DocsFolder::Research),
             "the Research selection survives a reload by identity"
+        );
+    }
+
+    /// A workspace that finished research but has no ROADMAP.md yet, so no
+    /// phases parse and the Roadmap row can't front the entry list.
+    fn planning_before_roadmap() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::write(p.join("PROJECT.md"), "# Demo\n").unwrap();
+        std::fs::write(p.join("REQUIREMENTS.md"), "# Reqs\n").unwrap();
+        std::fs::create_dir_all(p.join("research")).unwrap();
+        std::fs::write(p.join("research/STACK.md"), "# s\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn project_row_reaches_root_docs_when_no_roadmap_exists_yet() {
+        let dir = planning_before_roadmap();
+        let app = App::from_phases_and_todos(dir.path(), &[], &[], &[]);
+        assert_eq!(app.entries[0].docs_folder(), Some(DocsFolder::Project));
+        let names: Vec<String> = app.entries[0]
+            .documents
+            .iter()
+            .map(|d| d.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["PROJECT.md", "REQUIREMENTS.md"]);
+        assert_eq!(app.entries[1].docs_folder(), Some(DocsFolder::Research));
+        // Nothing else can hold the cursor, so the Project row takes it.
+        assert_eq!(app.selection(), Some(Selected::Project));
+    }
+
+    #[test]
+    fn omits_project_row_when_the_roadmap_row_carries_root_docs() {
+        let dir = planning_with_docs_folders(true, true);
+        let phases = crate::planning::load_phases(dir.path());
+        let app = App::from_phases_and_todos(dir.path(), &phases, &[], &[]);
+        assert!(app.entries[0].is_roadmap());
+        assert!(
+            app.entries
+                .iter()
+                .all(|e| e.docs_folder() != Some(DocsFolder::Project)),
+            "the Roadmap row already reaches every root doc"
         );
     }
 

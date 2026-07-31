@@ -68,16 +68,20 @@ make run        # build + run against $PWD
 Other targets: `make debug`, `make check`, `make fmt`, `make clean`. Run
 `make help` for the full list.
 
-## Try it against the sample workspace
+## Try it against the sample workspaces
 
-The repo ships a fictional `.planning/` tree (`sample/`) shaped like a real GSD
-project, for manual testing and screenshots:
+The repo ships two fictional `.planning/` trees, for manual testing and
+screenshots:
 
 ```bash
-cargo run -- sample
+cargo run -- sample            # mid-milestone: roadmap, phases, steps, todos
+cargo run -- sample-research   # pre-roadmap: research done, no ROADMAP.md yet
 ```
 
-See [`sample/README.md`](sample/README.md) for what each phase in it exercises.
+See [`sample/README.md`](sample/README.md) for what each phase in `sample/`
+exercises. `sample-research/` covers the earlier state, where the **Project**
+docs row is what reaches `PROJECT.md` and `REQUIREMENTS.md` — with no roadmap
+there is no Roadmap row to carry them.
 
 ## Project layout
 
@@ -98,6 +102,8 @@ vendor/leaf/     vendored copy of the markdown/ratatui viewer leaf-adapter
                  wraps (see vendor/README.md for upstream + local patches)
 sample/          example .planning/ workspace used in tests/cli.rs and for
                  manual TUI testing
+sample-research/ the same, for a workspace that has finished research but has
+                 no ROADMAP.md yet (exercises the Project docs row)
 ```
 
 `model.rs` / `planning.rs` / `report.rs` are a module split of the logic

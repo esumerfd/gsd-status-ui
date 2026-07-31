@@ -145,3 +145,19 @@ fn plain_report_lists_active_debug_session_prefixed_debug_in_todos() {
         "debug row must render inside the Todos section (above Next)"
     );
 }
+
+#[test]
+fn plain_report_shows_the_project_row_for_the_pre_roadmap_sample() {
+    // sample-research/ is a workspace that finished research but has no
+    // ROADMAP.md yet, so the Roadmap row is absent and the Project row is what
+    // reaches PROJECT.md and REQUIREMENTS.md.
+    let (stdout, code) = run(&["sample-research"]);
+    assert_eq!(code, 0, "{stdout}");
+    let project = stdout.find("  Project").expect("Project row present");
+    let research = stdout.find("  Research").expect("Research row present");
+    assert!(
+        project < research,
+        "Project row sits above Research:\n{stdout}"
+    );
+    assert!(!stdout.contains("Roadmap"), "no roadmap yet:\n{stdout}");
+}

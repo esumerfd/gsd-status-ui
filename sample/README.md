@@ -19,3 +19,7 @@ What it exercises:
 | All document tab kinds | `02-{RESEARCH,VALIDATION,UAT,CONTEXT,DISCUSSION-LOG}.md` + per-step plans |
 | Missing-doc flash message | Phase 1 has no research/uat/etc. docs |
 | Scroll testing (long doc, tables, code fences) | `02-02-PLAN.md` |
+| Root docs behind the Roadmap row (`o` picker) | `PROJECT.md`, `REQUIREMENTS.md`, `STATE.md` |
+
+For the pre-roadmap state — where those root docs get their own **Project** row
+because there's no Roadmap row yet — use `sample-research/` instead.

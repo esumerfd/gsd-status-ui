@@ -138,20 +138,33 @@ pub(crate) fn render(
         writeln!(out)?;
     }
 
-    // Intel / Research — one openable line each, sitting between the Roadmap
-    // and Phases sections. Each is a single `.planning` folder of markdown
-    // files; the line just names the folder and its file count (the files
-    // themselves open from the TUI). A folder that doesn't exist or is empty is
-    // skipped entirely, mirroring how the Tasks/Todos sections hide.
+    // Project / Intel / Research — one openable line each, sitting between the
+    // Roadmap and Phases sections. Each names a group of `.planning` markdown
+    // files and its file count (the files themselves open from the TUI). A group
+    // that doesn't exist or is empty is skipped entirely, mirroring how the
+    // Tasks/Todos sections hide.
+    //
+    // Project is the `.planning` root — PROJECT.md, REQUIREMENTS.md, and the
+    // rest. It stands in for the Roadmap row, which is what reaches those files
+    // once a ROADMAP.md exists, so it only shows while that row is absent;
+    // otherwise a workspace mid-research has no way to open its requirements.
+    let root = if phases.is_empty() {
+        crate::planning::discover_root_documents(planning)
+    } else {
+        Vec::new()
+    };
     let intel = crate::planning::discover_folder_documents(planning, "intel");
     let research = crate::planning::discover_folder_documents(planning, "research");
+    if !root.is_empty() {
+        docs_folder_row(out, "Project", root.len(), use_color)?;
+    }
     if !intel.is_empty() {
         docs_folder_row(out, "Intel", intel.len(), use_color)?;
     }
     if !research.is_empty() {
         docs_folder_row(out, "Research", research.len(), use_color)?;
     }
-    if !intel.is_empty() || !research.is_empty() {
+    if !root.is_empty() || !intel.is_empty() || !research.is_empty() {
         writeln!(out)?;
     }
 
@@ -923,6 +936,96 @@ mod tests {
         assert!(
             !out.contains("Research"),
             "no Research row when folder absent:\n{out}"
+        );
+    }
+
+    /// True when a docs row named `name` ("Project", "Intel", …) is present —
+    /// matched on the row's own shape so the header box's title can't count.
+    fn has_docs_row(out: &str, name: &str) -> bool {
+        out.lines()
+            .any(|l| l.trim_start().starts_with(name) && l.contains("file"))
+    }
+
+    #[test]
+    fn renders_project_row_for_root_docs_before_a_roadmap_exists() {
+        // Post-research, pre-roadmap: PROJECT.md and REQUIREMENTS.md exist but
+        // no ROADMAP.md, so no phases parse and the Roadmap row is absent.
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::write(planning.join("PROJECT.md"), "# Demo\n").unwrap();
+        std::fs::write(planning.join("REQUIREMENTS.md"), "# Reqs\n").unwrap();
+        std::fs::create_dir_all(planning.join("research")).unwrap();
+        std::fs::write(planning.join("research").join("STACK.md"), "# s\n").unwrap();
+
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            planning,
+            &StateMeta::default(),
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(has_docs_row(&out, "Project"), "project row present:\n{out}");
+        assert!(out.contains("2 files"), "root doc count:\n{out}");
+        let project = out.find("  Project").expect("project row");
+        let research = out.find("  Research").expect("research row");
+        assert!(
+            project < research,
+            "Project row must sit above Research:\n{out}"
+        );
+    }
+
+    #[test]
+    fn omits_project_row_when_the_roadmap_row_carries_root_docs() {
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::write(planning.join("PROJECT.md"), "# Demo\n").unwrap();
+        std::fs::write(planning.join("REQUIREMENTS.md"), "# Reqs\n").unwrap();
+
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            planning,
+            &StateMeta::default(),
+            &one_phase(),
+            &[],
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("Roadmap"), "roadmap row present:\n{out}");
+        assert!(
+            !has_docs_row(&out, "Project"),
+            "no Project row once the Roadmap row reaches root docs:\n{out}"
+        );
+    }
+
+    #[test]
+    fn omits_project_row_when_there_are_no_root_docs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            dir.path(),
+            &StateMeta::default(),
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            !has_docs_row(&out, "Project"),
+            "no Project row in an empty workspace:\n{out}"
         );
     }
 

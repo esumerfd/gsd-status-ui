@@ -134,8 +134,12 @@ fn highlight_index(text: &Text, sel: &Selected) -> Option<usize> {
                 .and_then(|rest| rest.chars().next())
                 .is_some_and(|ch| ch.is_ascii_digit())
         }),
-        // The Intel / Research docs-folder rows each render as a single line
+        // The Project / Intel / Research docs rows each render as a single line
         // led by their name (e.g. "Intel     ─── 2 files").
+        Selected::Project => text
+            .lines
+            .iter()
+            .position(|line| line_string(line).trim_start().starts_with("Project")),
         Selected::Intel => text
             .lines
             .iter()
@@ -555,6 +559,9 @@ impl Ui {
         // phase/step so stepping (j/k, C-j/k) is visible from any tab.
         let status_title = match self.app.current_entry() {
             Some(entry) if entry.is_roadmap() => "Roadmap".to_string(),
+            Some(entry) if entry.docs_folder() == Some(DocsFolder::Project) => {
+                "Project".to_string()
+            }
             Some(entry) if entry.docs_folder() == Some(DocsFolder::Intel) => "Intel".to_string(),
             Some(entry) if entry.docs_folder() == Some(DocsFolder::Research) => {
                 "Research".to_string()
@@ -726,6 +733,9 @@ impl Ui {
         };
         let position = match self.app.current_entry() {
             Some(entry) if entry.is_roadmap() => format!("{mode} Roadmap"),
+            Some(entry) if entry.docs_folder() == Some(DocsFolder::Project) => {
+                format!("{mode} Project")
+            }
             Some(entry) if entry.docs_folder() == Some(DocsFolder::Intel) => {
                 format!("{mode} Intel")
             }
@@ -990,6 +1000,16 @@ mod tests {
         assert_eq!(highlight_index(&text, &Selected::Roadmap), Some(1));
         assert_eq!(highlight_index(&text, &Selected::Intel), Some(3));
         assert_eq!(highlight_index(&text, &Selected::Research), Some(4));
+    }
+
+    #[test]
+    fn highlight_index_finds_the_project_row() {
+        let text = Text::from(vec![
+            Line::raw("  Project   ─────── 2 files"),
+            Line::raw("  Research  ─────── 4 files"),
+            Line::raw(""),
+        ]);
+        assert_eq!(highlight_index(&text, &Selected::Project), Some(0));
     }
 
     #[test]

@@ -111,7 +111,7 @@ pub(crate) fn status_text(
 fn navigable_phases(phases: &[Phase], show_completed: bool) -> Vec<Phase> {
     phases
         .iter()
-        .filter(|ph| show_completed || !crate::report::phase_complete(ph))
+        .filter(|ph| show_completed || !crate::report::phase_settled(ph))
         .cloned()
         .collect()
 }

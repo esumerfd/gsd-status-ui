@@ -16,6 +16,19 @@ pub(crate) struct StateMeta {
     pub(crate) project_title: String,
 }
 
+impl StateMeta {
+    /// True when the workspace was shut down rather than finished. GSD has no
+    /// abandoned status of its own — `normalizeStateStatus` knows only paused,
+    /// executing, planning, discussing, verifying, and completed — so a project
+    /// that gets killed is written up by hand. Match the vocabulary that
+    /// actually appears (`abandoned`, `cancelled`, `canceled`) rather than one
+    /// exact spelling.
+    pub(crate) fn is_abandoned(&self) -> bool {
+        let s = self.status.to_ascii_lowercase();
+        s.contains("abandon") || s.contains("cancel")
+    }
+}
+
 /// A deferred work item captured under `.planning/todos/pending/` (or, once
 /// resolved, `.planning/todos/completed/`).
 #[derive(Debug, Clone)]
@@ -155,12 +168,17 @@ pub(crate) enum Stage {
     Executing,
     Executed,
     Verified,
+    /// Shut down without being finished. Counts as settled work — it hides
+    /// under the same `H` toggle as a verified phase — but keeps its own label
+    /// and icon so it never reads as work that was actually delivered.
+    Abandoned,
 }
 
 impl Stage {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Stage::NotStarted => "not started",
+            Stage::Abandoned => "abandoned",
             Stage::Discussing => "discussing",
             Stage::Discussed => "discussed",
             Stage::Planned => "planned",
@@ -171,7 +189,7 @@ impl Stage {
     }
     pub(crate) fn color(self) -> &'static str {
         match self {
-            Stage::NotStarted => color::GREY,
+            Stage::NotStarted | Stage::Abandoned => color::GREY,
             Stage::Discussing | Stage::Discussed => color::MAGENTA,
             Stage::Planned => color::BLUE,
             Stage::Executing => color::YELLOW,

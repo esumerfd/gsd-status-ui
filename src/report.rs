@@ -70,7 +70,7 @@ pub(crate) fn render(
     )?;
 
     let total_phases = state.total_phases.max(phases.len() as u32);
-    let completed_phases = phases.iter().filter(|p| p.stage == Stage::Verified).count() as u32;
+    let completed_phases = phases.iter().filter(|p| phase_settled(p)).count() as u32;
     let percent = if total_phases == 0 {
         0
     } else {
@@ -104,7 +104,11 @@ pub(crate) fn render(
     // "Phases x/y <state>".
     if !phases.is_empty() {
         let complete = completed_phases == total_phases;
-        let (icon, icon_color, state) = if complete {
+        // An abandoned project reads as settled, not delivered: it earns the
+        // full tally (nothing is still pending) but never the green ✓.
+        let (icon, icon_color, state) = if state.is_abandoned() {
+            ("⊘", color::GREY, "abandoned")
+        } else if complete {
             ("✓", color::GREEN, "complete")
         } else {
             ("●", color::YELLOW, "in progress")
@@ -175,7 +179,7 @@ pub(crate) fn render(
     // Roadmap row and progress bar above still count them.
     let visible_phases: Vec<&Phase> = phases
         .iter()
-        .filter(|ph| show_completed || !phase_complete(ph))
+        .filter(|ph| show_completed || !phase_settled(ph))
         .collect();
     if !visible_phases.is_empty() {
         writeln!(
@@ -356,7 +360,7 @@ pub(crate) fn render(
         writeln!(out)?;
     }
 
-    for hint in suggest_commands(phases) {
+    for hint in suggest_commands(state, phases) {
         writeln!(
             out,
             "    {green}{cmd:<26}{reset}  {dim}{note}{reset}",
@@ -443,14 +447,24 @@ fn short_planning(p: &Path) -> String {
     }
 }
 
-/// Finished work, for the `H` show/hide toggle: exactly the phases that earn a
-/// green ✓. Shared with the TUI so a hidden row is also an unreachable entry.
-pub(crate) fn phase_complete(ph: &Phase) -> bool {
+/// Phases that earn a green ✓ — work actually delivered.
+fn phase_verified(ph: &Phase) -> bool {
     ph.roadmap_checked || ph.stage == Stage::Verified
 }
 
+/// Settled work, for the `H` show/hide toggle: nothing here is still pending, so
+/// it drops out of the list and counts toward the roadmap tally. Abandoned
+/// phases settle alongside verified ones — they will never be worked again — but
+/// [`phase_verified`] keeps them out of the completed count's meaning.
+/// Shared with the TUI so a hidden row is also an unreachable entry.
+pub(crate) fn phase_settled(ph: &Phase) -> bool {
+    phase_verified(ph) || ph.stage == Stage::Abandoned
+}
+
 fn phase_icon(ph: &Phase) -> (&'static str, &'static str) {
-    if phase_complete(ph) {
+    if ph.stage == Stage::Abandoned {
+        ("⊘", color::GREY)
+    } else if phase_verified(ph) {
         ("✓", color::GREEN)
     } else if matches!(ph.stage, Stage::Executing | Stage::Executed) {
         ("●", color::YELLOW)
@@ -468,7 +482,12 @@ struct Hint {
     note: &'static str,
 }
 
-fn suggest_commands(phases: &[Phase]) -> Vec<Hint> {
+fn suggest_commands(state: &StateMeta, phases: &[Phase]) -> Vec<Hint> {
+    // A shut-down project has no next step. Without this, every abandoned phase
+    // still looks like pending work and the panel invites you to start phase 1.
+    if state.is_abandoned() {
+        return Vec::new();
+    }
     let active = phases.iter().find(|p| p.stage != Stage::Verified);
     let mut out = Vec::new();
     match active {
@@ -525,7 +544,7 @@ fn suggest_commands(phases: &[Phase]) -> Vec<Hint> {
                     note: "open PR once verified",
                 });
             }
-            Stage::Verified => {}
+            Stage::Verified | Stage::Abandoned => {}
         },
         None => {
             out.push(Hint {
@@ -654,6 +673,104 @@ mod tests {
         assert!(out.contains("complete"), "{out}");
         assert!(!out.contains("in progress"), "{out}");
         assert!(out.contains("✓"), "complete bullet:\n{out}");
+    }
+
+    fn abandoned_workspace() -> (StateMeta, Vec<Phase>) {
+        let state = StateMeta {
+            status: "abandoned".into(),
+            total_phases: 2,
+            ..Default::default()
+        };
+        let phases = vec![
+            Phase {
+                id: "1".into(),
+                title: "Own-Status Veto".into(),
+                roadmap_checked: false,
+                plans: vec![],
+                dir: None,
+                stage: Stage::Abandoned,
+            },
+            Phase {
+                id: "2".into(),
+                title: "Ancestor Chain".into(),
+                roadmap_checked: false,
+                plans: vec![],
+                dir: None,
+                stage: Stage::Abandoned,
+            },
+        ];
+        (state, phases)
+    }
+
+    fn render_abandoned(show_completed: bool) -> String {
+        let (state, phases) = abandoned_workspace();
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            Path::new("sample/.planning"),
+            &state,
+            &phases,
+            &[],
+            &[],
+            show_completed,
+            false,
+        )
+        .unwrap();
+        String::from_utf8(buf).unwrap()
+    }
+
+    #[test]
+    fn roadmap_section_reads_abandoned_for_an_abandoned_project() {
+        let out = render_abandoned(false);
+        assert!(
+            out.contains("Phases 2/2"),
+            "every phase accounted for:\n{out}"
+        );
+        assert!(
+            out.contains("Phases 2/2  abandoned"),
+            "roadmap row states abandonment:\n{out}"
+        );
+        assert!(!out.contains("in progress"), "not still running:\n{out}");
+        assert!(
+            !out.contains("2/2  complete"),
+            "abandoned is not completed work:\n{out}"
+        );
+    }
+
+    #[test]
+    fn abandoned_project_suggests_no_next_commands() {
+        let out = render_abandoned(false);
+        assert!(
+            !out.contains("/gsd-"),
+            "a dead project invites no further work:\n{out}"
+        );
+    }
+
+    #[test]
+    fn abandoned_phase_rows_hide_by_default_and_read_abandoned_when_shown() {
+        let hidden = render_abandoned(false);
+        assert!(
+            !hidden.contains("Own-Status Veto"),
+            "abandoned rows hide like finished work:\n{hidden}"
+        );
+
+        let shown = render_abandoned(true);
+        assert!(
+            shown.contains("Own-Status Veto"),
+            "revealed by show_completed:\n{shown}"
+        );
+        assert!(
+            shown.contains("abandoned"),
+            "row labelled abandoned:\n{shown}"
+        );
+        assert!(
+            !shown.contains("not started"),
+            "no longer claims pending work:\n{shown}"
+        );
+        assert!(
+            !shown.contains('✓'),
+            "no green tick for work never done:\n{shown}"
+        );
     }
 
     #[test]

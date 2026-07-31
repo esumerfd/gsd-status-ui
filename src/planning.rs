@@ -164,16 +164,21 @@ pub(crate) fn load_phases(planning: &Path) -> Vec<Phase> {
     let mut phases = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
 
-    let mut push_phase = |phases: &mut Vec<Phase>, id: String, title: String, checked: bool| {
+    let mut push_phase = |phases: &mut Vec<Phase>, id: String, title: String, mark: PhaseMark| {
         if !seen.insert(normalize_phase_id(&id)) {
             return;
         }
+        let checked = mark == PhaseMark::Done;
         let plans = plans_per_phase.get(&id).cloned().unwrap_or_default();
         let dir = phase_dirs
             .iter()
             .find(|p| dir_matches_phase(p, &id))
             .cloned();
-        let stage = infer_stage(dir.as_deref(), &plans, checked);
+        let stage = if mark == PhaseMark::Abandoned {
+            Stage::Abandoned
+        } else {
+            infer_stage(dir.as_deref(), &plans, checked)
+        };
         phases.push(Phase {
             id,
             title,
@@ -185,15 +190,15 @@ pub(crate) fn load_phases(planning: &Path) -> Vec<Phase> {
     };
 
     // The `## Phases` index is the primary, ordered source of phases.
-    for (id, title, checked) in top_level {
-        push_phase(&mut phases, id, title, checked);
+    for (id, title, mark) in top_level {
+        push_phase(&mut phases, id, title, mark);
     }
 
     // Fold in phases that appear only as a `### Phase N:` detail heading. These
     // are counted in STATE.md's total but were dropped when the `## Phases`
     // index omitted them, causing the header count and the list to diverge.
     for (id, title) in detail_phases {
-        push_phase(&mut phases, id, title, false);
+        push_phase(&mut phases, id, title, PhaseMark::Open);
     }
 
     // Finally, phases that exist only as an on-disk directory (scaffolded but
@@ -201,7 +206,24 @@ pub(crate) fn load_phases(planning: &Path) -> Vec<Phase> {
     for dir in &phase_dirs {
         if let Some(raw) = phase_id_from_dir(dir) {
             let title = title_from_dir(dir);
-            push_phase(&mut phases, normalize_phase_id(&raw), title, false);
+            push_phase(
+                &mut phases,
+                normalize_phase_id(&raw),
+                title,
+                PhaseMark::Open,
+            );
+        }
+    }
+
+    // A shutdown settles every phase that never finished, whatever the roadmap
+    // checkboxes still say. This is the path that matters in practice: GSD's own
+    // tooling can only ever write `[ ]`, so a project killed through the normal
+    // workflow records its death in STATE.md's status and nowhere else.
+    if load_state(planning).is_abandoned() {
+        for ph in &mut phases {
+            if !ph.roadmap_checked && ph.stage != Stage::Verified {
+                ph.stage = Stage::Abandoned;
+            }
         }
     }
 
@@ -211,6 +233,16 @@ pub(crate) fn load_phases(planning: &Path) -> Vec<Phase> {
             .unwrap_or(Ordering::Equal)
     });
     phases
+}
+
+/// How a `## Phases` index row marks its phase. GSD writes only `[x]` and `[ ]`;
+/// `[~]` is what a hand-written shutdown leaves behind, and dropping those rows
+/// was what made an abandoned roadmap render as six untouched phases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhaseMark {
+    Done,
+    Open,
+    Abandoned,
 }
 
 /// Normalize a phase id for de-duplication across sources (index, detail
@@ -257,7 +289,7 @@ fn title_from_dir(dir: &Path) -> String {
         .replace('-', " ")
 }
 
-fn parse_phase_index(body: &str) -> Vec<(String, String, bool)> {
+fn parse_phase_index(body: &str) -> Vec<(String, String, PhaseMark)> {
     let mut out = Vec::new();
     let mut in_phases = false;
     for line in body.lines() {
@@ -276,15 +308,17 @@ fn parse_phase_index(body: &str) -> Vec<(String, String, bool)> {
     out
 }
 
-fn parse_phase_index_line(line: &str) -> Option<(String, String, bool)> {
+fn parse_phase_index_line(line: &str) -> Option<(String, String, PhaseMark)> {
     let rest = line.strip_prefix("- ")?;
-    let (checked, rest) = if let Some(r) = rest
+    let (mark, rest) = if let Some(r) = rest
         .strip_prefix("[x] ")
         .or_else(|| rest.strip_prefix("[X] "))
     {
-        (true, r)
+        (PhaseMark::Done, r)
     } else if let Some(r) = rest.strip_prefix("[ ] ") {
-        (false, r)
+        (PhaseMark::Open, r)
+    } else if let Some(r) = rest.strip_prefix("[~] ") {
+        (PhaseMark::Abandoned, r)
     } else {
         return None;
     };
@@ -295,7 +329,7 @@ fn parse_phase_index_line(line: &str) -> Option<(String, String, bool)> {
     let colon = phase_part.find(':')?;
     let id = phase_part[..colon].trim().to_string();
     let title = phase_part[colon + 1..].trim().to_string();
-    Some((id, title, checked))
+    Some((id, title, mark))
 }
 
 /// Phases named by a `### Phase N: Title` detail heading, in document order.
@@ -1233,6 +1267,96 @@ mod tests {
     }
 
     #[test]
+    fn load_phases_reads_the_abandoned_roadmap_marker() {
+        // A project shut down by hand marks its phase rows `- [~]`, which is not
+        // GSD vocabulary. Those rows must parse as abandoned phases rather than
+        // being dropped and re-derived as "not started".
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "## Phases\n\n\
+             - [~] **Phase 1: Own-Status Veto** - ABANDONED - drop done tickets.\n\
+             - [~] **Phase 2: Ancestor Chain** - ABANDONED - walk the chain.\n",
+        )
+        .unwrap();
+
+        let phases = load_phases(planning);
+
+        let ids: Vec<&str> = phases.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["1", "2"]);
+        assert_eq!(phases[0].title, "Own-Status Veto");
+        assert_eq!(phases[0].stage, Stage::Abandoned);
+        assert_eq!(phases[1].stage, Stage::Abandoned);
+        assert!(!phases[0].roadmap_checked, "abandoned is not done work");
+    }
+
+    #[test]
+    fn load_phases_marks_open_phases_abandoned_when_the_project_is() {
+        // The realistic case: the shutdown edited STATE.md but left GSD's own
+        // `[ ]` checkboxes alone. The frontmatter status is authoritative.
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::write(
+            planning.join("STATE.md"),
+            "---\nstatus: abandoned\nabandoned_at: '2026-07-31'\n---\n\n# STATE: Standup\n",
+        )
+        .unwrap();
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "## Phases\n\n\
+             - [x] **Phase 1: Reproduce** - diag.\n\
+             - [ ] **Phase 2: Fix** - fix.\n\
+             - [ ] **Phase 3: Ship** - ship.\n",
+        )
+        .unwrap();
+
+        let phases = load_phases(planning);
+
+        assert_eq!(phases[0].stage, Stage::Verified, "finished work stays done");
+        assert!(phases[0].roadmap_checked);
+        assert_eq!(phases[1].stage, Stage::Abandoned);
+        assert_eq!(phases[2].stage, Stage::Abandoned);
+    }
+
+    #[test]
+    fn load_phases_leaves_phases_alone_when_the_project_is_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::write(
+            planning.join("STATE.md"),
+            "---\nstatus: executing\n---\n\n# STATE: Standup\n",
+        )
+        .unwrap();
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "## Phases\n\n- [ ] **Phase 1: Reproduce** - diag.\n",
+        )
+        .unwrap();
+
+        let phases = load_phases(planning);
+
+        assert_eq!(phases[0].stage, Stage::NotStarted);
+    }
+
+    #[test]
+    fn is_abandoned_reads_the_hand_written_status_vocabulary() {
+        let abandoned = |s: &str| {
+            StateMeta {
+                status: s.to_string(),
+                ..Default::default()
+            }
+            .is_abandoned()
+        };
+        assert!(abandoned("abandoned"));
+        assert!(abandoned("Abandoned"));
+        assert!(abandoned("cancelled"));
+        assert!(abandoned("canceled"));
+        assert!(!abandoned("executing"));
+        assert!(!abandoned(""));
+    }
+
+    #[test]
     fn discovers_steps_in_order_with_checked_state() {
         let steps = discover_steps(&sample_phase_dir(), &sample_plans());
         let ids: Vec<&str> = steps.iter().map(|s| s.id.as_str()).collect();
@@ -1377,7 +1501,8 @@ mod tests {
         let resolved = shown
             .iter()
             .find(|t| {
-                t.title == "Debug: receipt printer times out after 30s on the first print of the day"
+                t.title
+                    == "Debug: receipt printer times out after 30s on the first print of the day"
             })
             .expect("resolved debug session surfaced when show_completed is set");
         assert!(resolved.completed);

@@ -55,6 +55,7 @@ fn apply_sgr(style: Style, code: u8) -> Style {
         35 => style.fg(Color::Magenta),
         36 => style.fg(Color::Cyan),
         90 => style.fg(Color::DarkGray),
+        94 => style.fg(Color::LightBlue),
         _ => style,
     }
 }
@@ -88,6 +89,14 @@ mod tests {
         assert_eq!(spans[0].1.fg, Some(Color::Green));
         assert_eq!(spans[1].0, " rest");
         assert_eq!(spans[1].1, Style::default());
+    }
+
+    #[test]
+    fn bright_blue_maps_to_light_blue() {
+        let s = format!("{}planned{}", color::BRIGHT_BLUE, color::RESET);
+        let spans = span_texts(&ansi_to_text(&s));
+        assert_eq!(spans[0].0, "planned");
+        assert_eq!(spans[0].1.fg, Some(Color::LightBlue));
     }
 
     #[test]

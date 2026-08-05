@@ -49,7 +49,7 @@ pub(crate) fn render(
         format!("{} ({})", state.milestone, state.milestone_name)
     };
     let status_color = match state.status.as_str() {
-        "ready_to_plan" | "planning" => color::BLUE,
+        "ready_to_plan" | "planning" => color::BRIGHT_BLUE,
         "executing" => color::YELLOW,
         "verified" | "complete" | "completed" | "shipped" => color::GREEN,
         _ => color::MAGENTA,
@@ -469,7 +469,7 @@ fn phase_icon(ph: &Phase) -> (&'static str, &'static str) {
     } else if matches!(ph.stage, Stage::Executing | Stage::Executed) {
         ("●", color::YELLOW)
     } else if matches!(ph.stage, Stage::Planned) {
-        ("◐", color::BLUE)
+        ("◐", color::BRIGHT_BLUE)
     } else if matches!(ph.stage, Stage::Discussing | Stage::Discussed) {
         ("◌", color::MAGENTA)
     } else {

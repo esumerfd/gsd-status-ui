@@ -191,7 +191,7 @@ impl Stage {
         match self {
             Stage::NotStarted | Stage::Abandoned => color::GREY,
             Stage::Discussing | Stage::Discussed => color::MAGENTA,
-            Stage::Planned => color::BLUE,
+            Stage::Planned => color::BRIGHT_BLUE,
             Stage::Executing => color::YELLOW,
             Stage::Executed => color::CYAN,
             Stage::Verified => color::GREEN,

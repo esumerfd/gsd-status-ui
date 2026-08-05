@@ -2,22 +2,22 @@
 class GsdStatus < Formula
   desc "Terminal status view for a GSD planning workspace"
   homepage "https://github.com/esumerfd/gsd-status-ui"
-  version "0.5.0"
+  version "0.6.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/esumerfd/gsd-status-ui/releases/download/v0.5.0/gsd-status-v0.5.0-aarch64-apple-darwin.tar.gz"
-      sha256 "b31cbfa95da8db0b0a6b52faa4e9d2ac290a2a24bb3f479f3212576fde29f531"
+      url "https://github.com/esumerfd/gsd-status-ui/releases/download/v0.6.0/gsd-status-v0.6.0-aarch64-apple-darwin.tar.gz"
+      sha256 "55aa215255bda2a305075c577d508325e52aa218548b29a31fa42e73f98bc0ef"
     end
     on_intel do
-      url "https://github.com/esumerfd/gsd-status-ui/releases/download/v0.5.0/gsd-status-v0.5.0-x86_64-apple-darwin.tar.gz"
-      sha256 "f6fa6f1f847f9ad7bad97232211d3a709126257666523e1c35aeb55061ad6f2e"
+      url "https://github.com/esumerfd/gsd-status-ui/releases/download/v0.6.0/gsd-status-v0.6.0-x86_64-apple-darwin.tar.gz"
+      sha256 "ed815470ed0220935e824faf7fb27e0f0e69ee76a9f286965b52d6249a074937"
     end
   end
 
   on_linux do
-    url "https://github.com/esumerfd/gsd-status-ui/releases/download/v0.5.0/gsd-status-v0.5.0-x86_64-unknown-linux-gnu.tar.gz"
-    sha256 "0b3618ca2d0fa9458977f53bf58e8b51d5e3370409a0aad4803d91a2de7e80fc"
+    url "https://github.com/esumerfd/gsd-status-ui/releases/download/v0.6.0/gsd-status-v0.6.0-x86_64-unknown-linux-gnu.tar.gz"
+    sha256 "50463cbc806a816efd7026c3a5f884a191dc2c74fa642ffa02756dbb72a5f050"
   end
 
   def install

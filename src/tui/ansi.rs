@@ -1,6 +1,7 @@
 //! Minimal ANSI SGR → ratatui converter for the status panel. Handles
-//! exactly the codes `crate::color` emits (reset, bold, dim, and the six
-//! foreground colors) so the TUI status tab reuses the report's colors.
+//! exactly the codes `crate::color` emits (reset, bold, dim, the named
+//! foreground colors, and `38;5;<n>` palette colors) so the TUI status tab
+//! reuses the report's colors.
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
@@ -32,8 +33,20 @@ pub(crate) fn ansi_to_text(s: &str) -> Text<'static> {
             if !buf.is_empty() {
                 spans.push(Span::styled(std::mem::take(&mut buf), style));
             }
-            for code in params.split(';') {
-                style = apply_sgr(style, code.parse().unwrap_or(0));
+            let codes: Vec<u8> = params.split(';').map(|c| c.parse().unwrap_or(0)).collect();
+            let mut i = 0;
+            while i < codes.len() {
+                // "38;5;<n>" is one 256-palette foreground color spanning three
+                // params, not three independent codes.
+                if codes[i] == 38 && codes.get(i + 1) == Some(&5) {
+                    if let Some(&n) = codes.get(i + 2) {
+                        style = style.fg(Color::Indexed(n));
+                    }
+                    i += 3;
+                    continue;
+                }
+                style = apply_sgr(style, codes[i]);
+                i += 1;
             }
         }
         if !buf.is_empty() {
@@ -92,11 +105,22 @@ mod tests {
     }
 
     #[test]
-    fn bright_blue_maps_to_light_blue() {
+    fn bright_blue_maps_to_its_256_palette_index() {
         let s = format!("{}planned{}", color::BRIGHT_BLUE, color::RESET);
         let spans = span_texts(&ansi_to_text(&s));
         assert_eq!(spans[0].0, "planned");
-        assert_eq!(spans[0].1.fg, Some(Color::LightBlue));
+        assert_eq!(spans[0].1.fg, Some(Color::Indexed(117)));
+    }
+
+    /// The three params of a `38;5;<n>` sequence are one color, not three
+    /// separate codes — a naive per-param loop reads the trailing index as an
+    /// SGR code and the leading `38` as an unknown one.
+    #[test]
+    fn extended_color_params_are_consumed_as_a_unit() {
+        let s = format!("{}{}a{}", color::BRIGHT_BLUE, color::BOLD, color::RESET);
+        let spans = span_texts(&ansi_to_text(&s));
+        assert_eq!(spans[0].1.fg, Some(Color::Indexed(117)));
+        assert!(spans[0].1.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]

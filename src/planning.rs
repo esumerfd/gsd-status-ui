@@ -1267,6 +1267,50 @@ mod tests {
     }
 
     #[test]
+    fn sample_workspace_has_a_phase_in_every_stage() {
+        // The sample workspace is where the status colors get eyeballed, and each
+        // stage paints its row a different color. A stage with no phase behind it
+        // is a color nobody can see, so a regression in it goes unnoticed.
+        let phases = load_phases(Path::new("sample/.planning"));
+
+        for stage in [
+            Stage::NotStarted,
+            Stage::Discussing,
+            Stage::Discussed,
+            Stage::Planned,
+            Stage::Executing,
+            Stage::Executed,
+            Stage::Verified,
+            Stage::Abandoned,
+        ] {
+            assert!(
+                phases.iter().any(|p| p.stage == stage),
+                "sample has no phase in stage {:?}, so its color never renders",
+                stage,
+            );
+        }
+    }
+
+    #[test]
+    fn sample_workspace_has_a_quick_task_in_every_status() {
+        // Same guard for the Tasks section: one task per status color. Completed
+        // tasks are hidden until `H`, so this loads with completions shown.
+        let tasks = load_quick_tasks(Path::new("sample/.planning"), true);
+
+        for status in [
+            QuickTaskStatus::InProgress,
+            QuickTaskStatus::Failed("verification failed".to_string()),
+            QuickTaskStatus::Completed,
+        ] {
+            assert!(
+                tasks.iter().any(|t| t.status == status),
+                "sample has no quick task in status {:?}, so its color never renders",
+                status,
+            );
+        }
+    }
+
+    #[test]
     fn load_phases_reads_the_abandoned_roadmap_marker() {
         // A project shut down by hand marks its phase rows `- [~]`, which is not
         // GSD vocabulary. Those rows must parse as abandoned phases rather than

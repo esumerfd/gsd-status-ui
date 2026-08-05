@@ -631,7 +631,7 @@ mod tests {
             "roadmap section must sit above the phase list:\n{out}"
         );
         // Status line: "Phases x/y <state>" with a not-all-complete bullet.
-        assert!(out.contains("Phases 1/3"), "roadmap shows x/y:\n{out}");
+        assert!(out.contains("Phases 2/8"), "roadmap shows x/y:\n{out}");
         assert!(out.contains("in progress"), "roadmap shows state:\n{out}");
         assert!(out.contains("●"), "in-progress bullet:\n{out}");
     }
@@ -803,7 +803,7 @@ mod tests {
         );
         // The Roadmap tally counts every phase, hidden or not.
         assert!(
-            hidden.contains("Phases 1/3"),
+            hidden.contains("Phases 2/8"),
             "roadmap tally counts hidden phases:\n{hidden}"
         );
 

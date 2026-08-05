@@ -915,6 +915,22 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
     }
 
+    /// Rows from the default landing row (02-02) down to the first Tasks row.
+    /// The sample holds a phase in every stage, so the tail of the Phases
+    /// section is long: 02-03, the phase-3 placeholder, 04-01/02, 05-01/02,
+    /// then the phase-6 and phase-7 placeholders. Verified Phase 1 and
+    /// abandoned Phase 8 are hidden until `H`, so neither is counted.
+    const ROWS_02_02_TO_FIRST_TASK: usize = 9;
+
+    /// Same walk, carried past the four Tasks rows onto the first todo.
+    const ROWS_02_02_TO_FIRST_TODO: usize = ROWS_02_02_TO_FIRST_TASK + 4;
+
+    fn step_down(ui: &mut Ui, rows: usize) {
+        for _ in 0..rows {
+            ui.on_key(plain('j'));
+        }
+    }
+
     fn bg_indexed238_cells(ui: &mut Ui, height: u16) -> usize {
         let backend = TestBackend::new(90, height);
         let mut term = ratatui::Terminal::new(backend).unwrap();
@@ -1333,9 +1349,9 @@ mod tests {
     #[test]
     fn ctrl_j_walks_from_the_last_phase_onto_the_first_task_row() {
         let mut ui = sample_ui();
-        ui.on_key(ctrl('j')); // 02-03
-        ui.on_key(ctrl('j')); // phase-3 placeholder (last phase)
-        ui.on_key(ctrl('j')); // first Task row
+        for _ in 0..ROWS_02_02_TO_FIRST_TASK {
+            ui.on_key(ctrl('j'));
+        }
         let s = screen(&mut ui);
         assert!(
             s.contains(" Task "),
@@ -1363,8 +1379,11 @@ mod tests {
     #[test]
     fn select_phase_moves_single_rows_within_the_tasks_section() {
         let mut ui = sample_ui();
-        ui.on_key(ctrl('j')); // 02-03
-        ui.on_key(ctrl('j')); // phase-3 placeholder (last phase)
+        // J jumps phase to phase: 02-02 -> ph3 -> ph4 -> ph5 -> ph6 -> ph7, the
+        // last navigable phase.
+        for _ in 0..5 {
+            ui.on_key(plain('J'));
+        }
         ui.on_key(plain('J')); // no next phase: flows down into the first Task row
         let s = screen(&mut ui);
         assert!(
@@ -1391,11 +1410,8 @@ mod tests {
         ui.on_key(plain('c'));
         assert_eq!(ui.take_clipboard(), None);
 
-        // Browse to the first todo (02-02 -> 02-03 -> placeholder -> 4 task
-        // rows -> todo0).
-        for _ in 0..7 {
-            ui.on_key(plain('j'));
-        }
+        // Browse off the Phases section, past the 4 task rows, onto todo0.
+        step_down(&mut ui, ROWS_02_02_TO_FIRST_TODO);
         ui.on_key(plain('c'));
         assert_eq!(
             ui.take_clipboard().as_deref(),
@@ -1429,9 +1445,7 @@ mod tests {
         assert_eq!(bg_green_cells(&mut ui), 0);
 
         // Browse to the first todo (past the 4 task rows) and copy it.
-        for _ in 0..7 {
-            ui.on_key(plain('j'));
-        }
+        step_down(&mut ui, ROWS_02_02_TO_FIRST_TODO);
         ui.on_key(plain('c'));
         assert!(
             bg_green_cells(&mut ui) > 0,
@@ -1450,10 +1464,8 @@ mod tests {
         ui.on_key(plain('c'));
         assert_eq!(ui.take_clipboard(), None);
 
-        // Browse to the first task row (02-02 -> 02-03 -> placeholder -> task0).
-        ui.on_key(plain('j'));
-        ui.on_key(plain('j'));
-        ui.on_key(plain('j'));
+        // Browse off the Phases section onto the first task row.
+        step_down(&mut ui, ROWS_02_02_TO_FIRST_TASK);
         ui.on_key(plain('c'));
         assert_eq!(ui.take_clipboard().as_deref(), Some("Add dark-mode toggle"));
         // take_clipboard drains: a second read is empty.
@@ -1469,9 +1481,7 @@ mod tests {
         assert_eq!(bg_green_cells(&mut ui), 0);
 
         // Browse to the first task row and copy it.
-        ui.on_key(plain('j'));
-        ui.on_key(plain('j'));
-        ui.on_key(plain('j'));
+        step_down(&mut ui, ROWS_02_02_TO_FIRST_TASK);
         ui.on_key(plain('c'));
         assert!(
             bg_green_cells(&mut ui) > 0,
@@ -1933,16 +1943,21 @@ mod tests {
         let planning = Path::new("sample/.planning");
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
-        // Launch with no tasks or todos on disk yet.
+        // Launch with no tasks or todos on disk yet. The phases go in filtered
+        // exactly as `refresh_entries` will filter them, so the reload below
+        // rebuilds the same rows plus the new todo.
+        let navigable = navigable_phases(&phases, false);
         let mut ui = Ui::new(
             status_text(planning, &state, &phases, false),
-            App::from_phases_and_todos(planning, &phases, &[], &[]),
+            App::from_phases_and_todos(planning, &navigable, &[], &[]),
         );
-        // Step to the last entry (the phase-3 placeholder) — nav clamps here.
-        ui.on_key(ctrl('j')); // 02-03
-        ui.on_key(ctrl('j')); // phase-3 placeholder (last entry)
+        // Step to the last navigable phase row — the phase-7 placeholder.
+        // Nothing sits between it and where a fresh todo would land.
+        for _ in 0..(ROWS_02_02_TO_FIRST_TASK - 1) {
+            ui.on_key(ctrl('j'));
+        }
         let s = screen(&mut ui);
-        assert!(s.contains("Phase 3"), "at the last entry: {s}");
+        assert!(s.contains("Phase 7"), "at the last phase row: {s}");
 
         // A periodic reload picks up a freshly captured todo.
         let todos = vec![crate::model::Todo {
@@ -2013,7 +2028,10 @@ mod tests {
         ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let s = screen(&mut ui);
         assert!(s.contains("[doc] Roadmap"), "footer shows roadmap doc: {s}");
-        assert!(s.contains("occupancy map"), "roadmap body rendered: {s}");
+        assert!(
+            s.contains("Coffee Delivery MVP"),
+            "roadmap body rendered: {s}"
+        );
     }
 
     #[test]
@@ -2028,7 +2046,7 @@ mod tests {
         ui.on_key(plain('R'));
         let s = screen(&mut ui);
         assert!(s.contains("[doc] Roadmap"), "roadmap peek open: {s}");
-        assert!(s.contains("occupancy map"), "roadmap body: {s}");
+        assert!(s.contains("Coffee Delivery MVP"), "roadmap body: {s}");
 
         // Esc returns to the prior doc (02-02 plan), not the status panel.
         ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

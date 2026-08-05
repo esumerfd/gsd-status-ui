@@ -810,6 +810,26 @@ fn is_passing_status(s: &str) -> bool {
     )
 }
 
+/// Drop a task id the title repeats, plus the separator behind it. GSD writes
+/// the id into the plan's own title, but the row already sits under that id's
+/// directory, so the repeat only eats width the title needs. Returns the title
+/// untouched when it doesn't lead with this task's id, or when the id is all
+/// there is to show.
+fn strip_repeated_id<'a>(title: &'a str, id: &str) -> &'a str {
+    let Some(rest) = title.strip_prefix(id) else {
+        return title;
+    };
+    let rest = rest
+        .trim_start()
+        .trim_start_matches(['—', '–', '-', ':'])
+        .trim_start();
+    if rest.is_empty() {
+        title
+    } else {
+        rest
+    }
+}
+
 fn parse_quick_task(dir: &Path) -> Option<QuickTask> {
     let name = dir.file_name()?.to_str()?.to_string();
     let mut parts = name.splitn(3, '-');
@@ -855,6 +875,7 @@ fn parse_quick_task(dir: &Path) -> Option<QuickTask> {
         }
     }
     let title = title.unwrap_or_else(|| title_from_slug(&name));
+    let title = strip_repeated_id(&title, &id).to_string();
 
     Some(QuickTask {
         id,
@@ -1474,6 +1495,43 @@ mod tests {
             .expect("260709-aa1 present");
         assert_eq!(task.title, "Add dark-mode toggle");
         assert_eq!(task.status, QuickTaskStatus::InProgress);
+    }
+
+    #[test]
+    fn drops_a_task_id_prefix_the_plan_title_repeats() {
+        // GSD writes the task id into the plan's own title, so a row would read
+        // "260711-dd4 — Add search history". The id is already the directory
+        // name and buys the reader nothing, so it eats width the title needs.
+        let tasks = load_quick_tasks(Path::new("sample/.planning"), false);
+        let task = tasks
+            .iter()
+            .find(|t| t.id == "260711-dd4")
+            .expect("260711-dd4 present");
+        assert_eq!(task.title, "Add search history");
+    }
+
+    #[test]
+    fn keeps_a_title_that_only_starts_like_an_id() {
+        // Only the task's own id comes off. A title opening with some other
+        // id-shaped token is the author's wording, not a repeat.
+        assert_eq!(
+            strip_repeated_id("260711-dd4 — Add search history", "260711-dd4"),
+            "Add search history"
+        );
+        assert_eq!(
+            strip_repeated_id("260711-dd4: Fix it", "260711-dd4"),
+            "Fix it"
+        );
+        assert_eq!(
+            strip_repeated_id("260711-dd4 - Fix it", "260711-dd4"),
+            "Fix it"
+        );
+        assert_eq!(
+            strip_repeated_id("260101-zz9 — Fix it", "260711-dd4"),
+            "260101-zz9 — Fix it"
+        );
+        // Nothing but the id leaves nothing to show, so the title stands.
+        assert_eq!(strip_repeated_id("260711-dd4", "260711-dd4"), "260711-dd4");
     }
 
     #[test]

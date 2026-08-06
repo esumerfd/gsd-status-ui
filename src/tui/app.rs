@@ -9,7 +9,7 @@
 use crate::model::{Document, Other, OtherKind, Phase, QuickTask, Step, Todo};
 use crate::planning::{
     discover_docs_sections, discover_documents, discover_root_documents, discover_steps,
-    discover_task_documents, load_others, PhaseDocs,
+    discover_task_documents, load_others, single_document, PhaseDocs,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -265,10 +265,7 @@ impl App {
             // and the other root docs follow so the picker can reach them.
             let mut documents = discover_root_documents(planning);
             if documents.is_empty() {
-                documents.push(Document {
-                    path: roadmap_path.clone(),
-                    label: "roadmap".into(),
-                });
+                documents = single_document(roadmap_path.clone(), "roadmap");
             }
             entries.push(StepEntry {
                 phase_id: String::new(),
@@ -397,10 +394,7 @@ impl App {
                     plan_path: todo.path.clone(),
                     checked: false,
                 },
-                documents: vec![Document {
-                    path: todo.path.clone(),
-                    label: "plan".into(),
-                }],
+                documents: single_document(todo.path.clone(), "plan"),
                 pos_in_phase: 0,
                 phase_steps: 1,
                 todo_title: Some(todo.title.clone()),
@@ -421,10 +415,7 @@ impl App {
                     plan_path: other.path.clone(),
                     checked: false,
                 },
-                documents: vec![Document {
-                    path: other.path.clone(),
-                    label: other.kind.label().to_string(),
-                }],
+                documents: single_document(other.path.clone(), other.kind.label()),
                 pos_in_phase: 0,
                 phase_steps: 1,
                 todo_title: None,

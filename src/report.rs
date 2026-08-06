@@ -368,8 +368,10 @@ pub(crate) fn render(
 }
 
 /// One compact "folder of docs" row: a bold folder name, a dim dash fill to the
-/// box width, and the file count (singular for one file). Used for the Intel and
-/// Research sections, which each surface a single `.planning` subfolder.
+/// box width, and the file count (singular for one file). Used for every
+/// discovered `.planning` subfolder, so the name can be any length — a name
+/// wider than the label field eats into the dash fill instead of overrunning
+/// the box.
 fn docs_folder_row(
     out: &mut impl Write,
     name: &str,
@@ -379,7 +381,7 @@ fn docs_folder_row(
     let c = |code: &'static str| if use_color { code } else { "" };
     let suffix = format!("{count} file{}", if count == 1 { "" } else { "s" });
     let label_width = 9;
-    let used = label_width + 1 + 1 + suffix.chars().count();
+    let used = name.chars().count().max(label_width) + 1 + 1 + suffix.chars().count();
     let fill = 63usize.saturating_sub(used).max(3);
     writeln!(
         out,
@@ -1018,6 +1020,25 @@ mod tests {
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("1 file"), "singular:\n{out}");
         assert!(!out.contains("1 files"), "no plural for one file:\n{out}");
+    }
+
+    #[test]
+    fn docs_folder_row_stays_in_the_box_for_a_long_folder_name() {
+        // Folder names are arbitrary now that rows are discovered, so a name
+        // wider than the label field must eat into the dash fill rather than push
+        // the count past the box edge. Both rows must be exactly as wide as the
+        // 63-column divider the sections draw.
+        for name in ["Intel", "Retrospectives"] {
+            let mut buf = Vec::new();
+            docs_folder_row(&mut buf, name, 2, false).unwrap();
+            let row = String::from_utf8(buf).unwrap();
+            let row = row.trim_end_matches('\n');
+            assert_eq!(
+                row.chars().count(),
+                63 + 2, // the box width, plus the two-space indent
+                "row must fill the box exactly, not overrun it: {row:?}"
+            );
+        }
     }
 
     #[test]

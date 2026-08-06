@@ -1161,6 +1161,17 @@ pub(crate) fn discover_task_documents(dir: &Path, id: &str) -> Vec<Document> {
     sequence_documents(candidates)
 }
 
+/// The document list for a section whose row is backed by exactly one file —
+/// the shape todo rows and Other rows take. Kept here beside the multi-file
+/// discovery so no caller hand-rolls a `Document`, and every line-item type
+/// reaches its files through this module.
+pub(crate) fn single_document(path: PathBuf, label: &str) -> Vec<Document> {
+    vec![Document {
+        path,
+        label: label.to_string(),
+    }]
+}
+
 /// Every markdown file in a single `.planning` subfolder (e.g. `intel/`,
 /// `research/`), name-sorted for determinism. Each doc's label is its lowercased
 /// filename stem. A missing or empty folder — and any non-markdown file or
@@ -1862,6 +1873,23 @@ mod tests {
             .collect();
         assert_eq!(names, ["ARCHITECTURE.md", "PITFALLS.md", "STACK.md"]);
         assert_eq!(docs[0].label, "architecture");
+    }
+
+    #[test]
+    fn single_document_backs_a_one_file_row_with_its_label() {
+        // The pattern for a section whose row is exactly one file: a todo row
+        // (labelled "plan") and an Others row (labelled by its kind).
+        let todo = single_document(PathBuf::from("/w/.planning/todos/pending/a.md"), "plan");
+        assert_eq!(todo.len(), 1);
+        assert_eq!(
+            todo[0].path,
+            PathBuf::from("/w/.planning/todos/pending/a.md")
+        );
+        assert_eq!(todo[0].label, "plan");
+
+        let note = single_document(PathBuf::from("/w/.planning/notes/b.md"), "note");
+        assert_eq!(note.len(), 1);
+        assert_eq!(note[0].label, "note");
     }
 
     #[test]

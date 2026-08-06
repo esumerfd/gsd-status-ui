@@ -54,8 +54,23 @@ brew install esumerfd/gsd-status-ui/gsd-status
 Binaries are prebuilt for macOS (Apple Silicon and Intel) and Linux (x86_64)
 by the [release workflow](.github/workflows/release.yml), which publishes them
 to GitHub Releases and updates [`Formula/gsd-status.rb`](Formula/gsd-status.rb).
-To cut a release, push a `v*` tag — or run the workflow manually to auto-bump
-the minor version.
+
+### Releasing
+
+`Cargo.toml` on `main` always holds the version the **next** release will cut,
+so `gsd-status --version` on a dev build never reports a number a shipped build
+already used. Run the release workflow manually and it:
+
+1. tags `v<Cargo.toml version>` and builds that exact tree,
+2. publishes the tarballs and rewrites the Homebrew formula,
+3. **then** bumps `Cargo.toml` to the next minor on `main`.
+
+Pass the optional `version` input to override step 1 — that is how you jump the
+numbering forward (the workflow commits the version before tagging, so the tag
+and the release agree). Pushing a `v*` tag by hand also releases; the bump job
+skips when `main` is not sitting on the released version.
+[`scripts/version.sh`](scripts/version.sh) holds the arithmetic and is covered
+by [`tests/release_version.rs`](tests/release_version.rs).
 
 ### From source
 

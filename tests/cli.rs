@@ -61,6 +61,17 @@ fn plain_report_renders_sample_workspace() {
 }
 
 #[test]
+fn version_flag_prints_the_package_version() {
+    let (stdout, code) = run(&["--version"]);
+    assert_eq!(code, 0, "--version must exit clean");
+    assert_eq!(
+        stdout.trim(),
+        format!("gsd-status {}", env!("CARGO_PKG_VERSION")),
+        "--version reports the compiled-in package version"
+    );
+}
+
+#[test]
 fn plain_flag_is_accepted_before_path() {
     let (stdout, code) = run(&["--plain", "sample"]);
     assert_eq!(code, 0, "--plain must not be treated as a path");

@@ -7,11 +7,15 @@ on:
       - '**/*.rs'
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+      - 'scripts/**'
+      - 'Formula/gsd-status.rb'
   pull_request:
     paths:
       - '**/*.rs'
       - '**/Cargo.toml'
       - '**/Cargo.lock'
+      - 'scripts/**'
+      - 'Formula/gsd-status.rb'
 
 env:
   CARGO_TERM_COLOR: always

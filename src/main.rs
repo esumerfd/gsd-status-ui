@@ -18,6 +18,10 @@ fn main() -> ExitCode {
                 print_help();
                 return ExitCode::SUCCESS;
             }
+            "--version" | "-V" => {
+                println!("gsd-status {}", env!("CARGO_PKG_VERSION"));
+                return ExitCode::SUCCESS;
+            }
             "--plain" | "--no-tui" => plain = true,
             other => path = Some(PathBuf::from(other)),
         }
@@ -73,6 +77,7 @@ fn print_help() {
     println!();
     println!("Usage:");
     println!("  gsd-status [--plain|--no-tui] [path]");
+    println!("  gsd-status --version");
     println!();
     println!("If [path] is omitted, walks up from the current directory looking for .planning/.");
     println!("With a TTY it opens the tabbed TUI; otherwise (or with --plain) it prints a report.");

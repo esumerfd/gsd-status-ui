@@ -1,17 +1,29 @@
 name: Release gsd-status
 
+# Versioning contract (see scripts/version.sh):
+#   * Cargo.toml on main always holds the version the NEXT release will cut.
+#   * A release tags exactly that version — nothing is bumped beforehand.
+#   * Only after the release is published does the `bump` job move main on, so
+#     no dev build ever carries a version number that a prod build also used.
+#   * The `version` input overrides the manifest for one release, which is how
+#     you jump the numbering forward (e.g. straight to 0.7.0).
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version, e.g. 0.7.0. Defaults to the version in Cargo.toml.'
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Create the git tag (workflow_dispatch only) and publish the tag name
-  # for all downstream jobs to reference.
+  # Settle the release version, tag it, and publish the tag name for all
+  # downstream jobs to reference.
   prepare:
     name: Prepare release
     runs-on: ubuntu-latest
@@ -19,29 +31,48 @@ jobs:
       contents: write
     outputs:
       tag: ${{ steps.tag.outputs.name }}
+      version: ${{ steps.tag.outputs.version }}
 
     steps:
       - uses: actions/checkout@v5
 
       - name: Resolve tag name
         id: tag
-        run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            latest=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // "v0.0.0"')
-            ver=${latest#v}
-            IFS='.' read -r major minor patch <<< "$ver"
-            minor=$((minor + 1))
-            new_tag="v${major}.${minor}.0"
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git tag "$new_tag" || true
-            git push origin "$new_tag" || true
-            echo "name=$new_tag" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          fi
         env:
-          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.version }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            # Tag push: the tag is already the decision.
+            echo "name=${BRANCH}"     >> "$GITHUB_OUTPUT"
+            echo "version=${BRANCH#v}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          version="${REQUESTED:-$(./scripts/version.sh get)}"
+          tag="v${version}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::$tag already exists — pass a different version input"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # A custom version has to land on the branch before it is tagged, so
+          # the tagged tree and the release agree on what was built.
+          ./scripts/version.sh set "$version"
+          if ! git diff --quiet -- Cargo.toml Cargo.lock; then
+            git add Cargo.toml Cargo.lock
+            git commit -m "chore: set release version to ${version}"
+            git push origin "HEAD:${BRANCH}"
+          fi
+
+          git tag "$tag"
+          git push origin "$tag"
+          echo "name=$tag"          >> "$GITHUB_OUTPUT"
+          echo "version=$version"   >> "$GITHUB_OUTPUT"
 
   # Build a native binary for each target platform and upload the
   # platform tarball to the GitHub Release.
@@ -63,7 +94,10 @@ jobs:
             runner: ubuntu-latest
 
     steps:
+      # Build the tagged tree, so the binary's --version matches the release.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -153,4 +187,36 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/gsd-status.rb
           git commit -m "chore: update Homebrew formula to ${TAG}"
+          git push
+
+  # The release is out — only now does main move on, so the version that just
+  # shipped is never also the version a dev build reports.
+  bump:
+    name: Bump version for next release
+    needs: [prepare, build, formula]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - name: Bump the minor version on main
+        env:
+          RELEASED: ${{ needs.prepare.outputs.version }}
+        run: |
+          current=$(./scripts/version.sh get)
+          if [ "$current" != "$RELEASED" ]; then
+            echo "main is at ${current}, not the released ${RELEASED} — leaving it alone"
+            exit 0
+          fi
+
+          next=$(./scripts/version.sh next "$RELEASED")
+          ./scripts/version.sh set "$next"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: bump version to ${next} after v${RELEASED}"
           git push

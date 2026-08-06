@@ -71,11 +71,7 @@ pub(crate) fn render(
 
     let total_phases = state.total_phases.max(phases.len() as u32);
     let completed_phases = phases.iter().filter(|p| phase_settled(p)).count() as u32;
-    let percent = if total_phases == 0 {
-        0
-    } else {
-        (completed_phases * 100) / total_phases
-    };
+    let percent = (completed_phases * 100).checked_div(total_phases).unwrap_or(0);
 
     // The phase/plan tallies live in the Roadmap and phase rows below, so the
     // banner shows only the headline percentage — no duplicated counts here.
@@ -599,6 +595,29 @@ mod tests {
         assert!(bar.contains(color::BOLD), "bold fill: {bar:?}");
         // No color escapes at all when color is off.
         assert_eq!(progress_bar(50, 10, false), "[#####-----]");
+    }
+
+    #[test]
+    fn banner_progress_is_zero_percent_when_there_are_no_phases() {
+        // A workspace with nothing planned yet divides by a zero phase total;
+        // the banner must read 0% rather than panicking.
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            Path::new("sample/.planning"),
+            &StateMeta::default(),
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("progress:") && out.contains("  0%"),
+            "no phases means 0% progress:\n{out}"
+        );
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 use crate::model::{Document, Other, OtherKind, Phase, QuickTask, Step, Todo};
 use crate::planning::{
-    discover_documents, discover_folder_documents, discover_root_documents, discover_steps,
+    discover_docs_sections, discover_documents, discover_root_documents, discover_steps,
     discover_task_documents, load_others, PhaseDocs,
 };
 use std::collections::HashMap;
@@ -17,32 +17,15 @@ use std::path::{Path, PathBuf};
 /// A group of `.planning` markdown files surfaced as one navigable row between
 /// the Roadmap and Phases sections. Each backs a `StepEntry` whose documents are
 /// the group's files (first opens on Enter, all listed by the `o` picker).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum DocsFolder {
-    /// The `.planning` root itself (`PROJECT.md`, `REQUIREMENTS.md`, …). Only
-    /// drawn when there's no Roadmap row, which otherwise carries these.
-    Project,
-    Intel,
-    Research,
-}
-
-impl DocsFolder {
-    /// Row id, also its title lowercased.
-    fn id(self) -> &'static str {
-        match self {
-            DocsFolder::Project => "project",
-            DocsFolder::Intel => "intel",
-            DocsFolder::Research => "research",
-        }
-    }
-
-    /// The files this row surfaces, in tab order.
-    fn documents(self, planning: &Path) -> Vec<Document> {
-        match self {
-            DocsFolder::Project => discover_root_documents(planning),
-            other => discover_folder_documents(planning, other.id()),
-        }
-    }
+///
+/// Not a closed set: which folders exist is decided at runtime by
+/// [`discover_docs_sections`], so a new `.planning` subfolder becomes a row with
+/// no code change here. `id` is the folder name (or `"project"` for the root),
+/// which is also the row's `step.id` — its identity across a live reload.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DocsFolder {
+    id: String,
+    title: String,
 }
 
 /// One navigable step: its openable documents plus the phase it belongs to.
@@ -93,8 +76,18 @@ impl StepEntry {
         self.roadmap
     }
 
-    pub(crate) fn docs_folder(&self) -> Option<DocsFolder> {
-        self.docs_folder
+    /// The docs-folder this row surfaces, if it is one. Private to this module:
+    /// callers outside need only the title, via [`StepEntry::docs_title`].
+    fn docs_folder(&self) -> Option<&DocsFolder> {
+        self.docs_folder.as_ref()
+    }
+
+    /// This row's display title when it is a docs-folder row (`"Intel"`,
+    /// `"Reviews"`, …), else `None`. The one thing the shell needs to know about
+    /// a docs row — it drives the tab title, the footer, and the body highlight,
+    /// so none of them enumerate folders.
+    pub(crate) fn docs_title(&self) -> Option<&str> {
+        self.docs_folder.as_ref().map(|f| f.title.as_str())
     }
 
     pub(crate) fn is_other(&self) -> bool {
@@ -111,13 +104,10 @@ impl StepEntry {
 pub(crate) enum Selected {
     /// The project-level Roadmap row (above the Phases list).
     Roadmap,
-    /// The Project docs row of `.planning` root files, which stands in for the
-    /// Roadmap row before a `ROADMAP.md` exists.
-    Project,
-    /// The Intel docs-folder row (between Roadmap and Phases).
-    Intel,
-    /// The Research docs-folder row (between Roadmap and Phases).
-    Research,
+    /// A docs-folder row between Roadmap and Phases, carrying its title
+    /// (`"Project"`, `"Intel"`, `"Reviews"`, …). One variant for all of them: the
+    /// body highlight finds the row by its title, so no folder needs its own arm.
+    Docs(String),
     /// The row for this phase id (a step belongs to it).
     Phase(String),
     /// The Nth active quick-task row (0-based, in render order).
@@ -284,34 +274,35 @@ impl App {
                 other: None,
             });
         }
-        // Project (only without a Roadmap row, which already reaches the root
-        // docs), then Intel, then Research: one row each, only when the group has
-        // files. They sit between the Roadmap row and the phases so j/k, section
-        // jumps, and the open flow reach them like any other row.
-        let folders: &[DocsFolder] = if has_roadmap {
-            &[DocsFolder::Intel, DocsFolder::Research]
-        } else {
-            &[DocsFolder::Project, DocsFolder::Intel, DocsFolder::Research]
-        };
-        for &folder in folders {
-            let documents = folder.documents(planning);
-            if documents.is_empty() {
-                continue;
-            }
+        // One docs-folder row per group of `.planning` markdown: Project (only
+        // without a Roadmap row, which already reaches the root docs), then
+        // Intel, Research, and every other subfolder discovered at runtime. They
+        // sit between the Roadmap row and the phases so j/k, section jumps, and
+        // the open flow reach them like any other row. The same discovery backs
+        // the report's rows, so a row here always has a line to highlight.
+        //
+        // `step.id` is the folder id and `phase_id` stays empty, which is the
+        // identity `refresh_with_roadmap_row` keys on — so a docs row keeps its
+        // selection and open tabs across a reload that adds or removes an
+        // unrelated folder.
+        for section in discover_docs_sections(planning, !has_roadmap) {
             entries.push(StepEntry {
                 phase_id: String::new(),
                 step: Step {
-                    id: folder.id().to_string(),
-                    plan_path: documents[0].path.clone(),
+                    id: section.id.clone(),
+                    plan_path: section.documents[0].path.clone(),
                     checked: false,
                 },
-                documents,
+                documents: section.documents,
                 pos_in_phase: 0,
                 phase_steps: 1,
                 todo_title: None,
                 quick_task_title: None,
                 roadmap: false,
-                docs_folder: Some(folder),
+                docs_folder: Some(DocsFolder {
+                    id: section.id,
+                    title: section.title,
+                }),
                 other: None,
             });
         }
@@ -498,12 +489,8 @@ impl App {
         let entry = self.entries.get(self.current)?;
         if entry.is_roadmap() {
             Some(Selected::Roadmap)
-        } else if let Some(folder) = entry.docs_folder() {
-            Some(match folder {
-                DocsFolder::Project => Selected::Project,
-                DocsFolder::Intel => Selected::Intel,
-                DocsFolder::Research => Selected::Research,
-            })
+        } else if let Some(title) = entry.docs_title() {
+            Some(Selected::Docs(title.to_string()))
         } else if entry.is_task() {
             let ordinal = self.entries[..self.current]
                 .iter()
@@ -656,11 +643,12 @@ impl App {
     /// in this order, so each section is contiguous — Roadmap and Project share
     /// an ordinal because only one of them is ever drawn.
     fn section_key(e: &StepEntry) -> u8 {
-        if e.is_roadmap() || e.docs_folder() == Some(DocsFolder::Project) {
+        let folder_id = e.docs_folder().map(|f| f.id.as_str());
+        if e.is_roadmap() || folder_id == Some("project") {
             0
-        } else if e.docs_folder() == Some(DocsFolder::Intel) {
+        } else if folder_id == Some("intel") {
             1
-        } else if e.docs_folder() == Some(DocsFolder::Research) {
+        } else if folder_id == Some("research") {
             2
         } else if e.is_task() {
             4
@@ -978,16 +966,20 @@ mod tests {
     fn sample_app() -> App {
         let app = App::from_phases(sample_planning(), &sample_phases());
         let ids: Vec<&str> = app.entries.iter().map(|e| e.step.id.as_str()).collect();
-        // Leading "" is the synthetic Roadmap entry; "intel"/"research" are the
-        // docs-folder rows; each bare "1" is a placeholder for a phase with no
-        // plans yet (phases 3, 6, 7, and 8 — the sample carries one phase per
-        // stage); the trailing note-/idea-/seed- rows are the Others section.
+        // Leading "" is the synthetic Roadmap entry; "intel"/"research"/"reviews"
+        // are the docs-folder rows (intel and research pinned first, then every
+        // other `.planning` subfolder holding markdown, name-sorted — `debug/` is
+        // owned by the Todos section, so it gets no row); each bare "1" is a
+        // placeholder for a phase with no plans yet (phases 3, 6, 7, and 8 — the
+        // sample carries one phase per stage); the trailing note-/idea-/seed- rows
+        // are the Others section.
         assert_eq!(
             ids,
             [
                 "",
                 "intel",
                 "research",
+                "reviews",
                 "01-01",
                 "02-01",
                 "02-02",
@@ -1007,6 +999,31 @@ mod tests {
             ]
         );
         app
+    }
+
+    #[test]
+    fn an_unowned_docs_folder_becomes_a_row_whose_files_open_from_the_picker() {
+        let mut app = sample_app();
+        let idx = app
+            .entries
+            .iter()
+            .position(|e| e.docs_title() == Some("Reviews"))
+            .expect("a Reviews docs-folder row");
+        assert_eq!(app.entries[idx].step.id, "reviews");
+
+        app.set_browsing(idx);
+        app.open_dialog();
+        let names: Vec<&str> = app
+            .dialog()
+            .expect("picker open on the Reviews row")
+            .items
+            .iter()
+            .map(|(_, n)| n.as_str())
+            .collect();
+        assert!(
+            names.contains(&"STK-EXAMPLE-pass-rate-audit.md"),
+            "picker items: {names:?}"
+        );
     }
 
     #[test]
@@ -1037,12 +1054,14 @@ mod tests {
         assert_eq!((entry.pos_in_phase, entry.phase_steps), (0, 1));
         assert_eq!(app.focus(), Focus::Status);
 
-        // 01-01 is the first phase step; k moves up through the Research and
-        // Intel docs-folder rows before reaching the Roadmap row.
+        // 01-01 is the first phase step; k moves up through the docs-folder rows
+        // — Reviews, Research, Intel — before reaching the Roadmap row.
         assert!(app.change_step(-1).is_none());
-        assert_eq!(app.selection(), Some(Selected::Research));
+        assert_eq!(app.selection(), Some(Selected::Docs("Reviews".into())));
         assert!(app.change_step(-1).is_none());
-        assert_eq!(app.selection(), Some(Selected::Intel));
+        assert_eq!(app.selection(), Some(Selected::Docs("Research".into())));
+        assert!(app.change_step(-1).is_none());
+        assert_eq!(app.selection(), Some(Selected::Docs("Intel".into())));
         assert!(app.change_step(-1).is_none());
         assert!(app.current_entry().unwrap().is_roadmap());
         assert_eq!(app.selection(), Some(Selected::Roadmap));
@@ -1224,11 +1243,11 @@ mod tests {
             &sample_quick_tasks(),
             &sample_todos(),
         );
-        // 1 roadmap + 2 docs-folder rows + 12 steps + 4 tasks + 4 todos (incl.
+        // 1 roadmap + 3 docs-folder rows + 12 steps + 4 tasks + 4 todos (incl.
         // the active debug session) + 4 others.
-        assert_eq!(app.entries.len(), 27);
-        let last_phase_idx = 14; // the phase-8 placeholder
-        let first_todo_idx = 19;
+        assert_eq!(app.entries.len(), 28);
+        let last_phase_idx = 15; // the phase-8 placeholder
+        let first_todo_idx = 20;
         for e in &app.entries[(last_phase_idx + 1)..first_todo_idx] {
             assert!(e.is_task(), "expected a task row: {e:?}");
             assert!(!e.is_todo());
@@ -1373,14 +1392,14 @@ mod tests {
         assert!(!app.current_entry().unwrap().is_todo());
         assert!(!app.current_entry().unwrap().is_roadmap());
         assert_eq!(app.current_entry().unwrap().step.id, "02-02");
-        // 1 roadmap + 2 docs-folder rows + 12 steps + 4 todos (incl. the active
+        // 1 roadmap + 3 docs-folder rows + 12 steps + 4 todos (incl. the active
         // debug session) + 4 others.
-        assert_eq!(app.entries.len(), 23);
+        assert_eq!(app.entries.len(), 24);
         assert!(app.entries[0].is_roadmap());
-        assert!(app.entries[15].is_todo());
-        assert!(app.entries[18].is_todo());
+        assert!(app.entries[16].is_todo());
+        assert!(app.entries[19].is_todo());
         // The Others rows trail the todos.
-        assert!(app.entries[19].is_other());
+        assert!(app.entries[20].is_other());
         assert!(app.entries[22].is_other());
     }
 
@@ -1676,17 +1695,15 @@ mod tests {
         assert!(app.current_entry().unwrap().is_roadmap());
 
         app.select_section(1); // -> Intel
-        assert_eq!(
-            app.current_entry().unwrap().docs_folder(),
-            Some(DocsFolder::Intel)
-        );
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Intel"));
         app.select_section(1); // -> Research
-        assert_eq!(
-            app.current_entry().unwrap().docs_folder(),
-            Some(DocsFolder::Research)
-        );
-        app.select_section(1); // -> Phases (first step)
-        assert_eq!(app.current_entry().unwrap().step.id, "01-01");
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Research"));
+        app.select_section(1); // -> Reviews
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Reviews"));
+        // A runtime-discovered folder has no section ordinal of its own while
+        // `section_key` is still a `u8`, so Reviews shares the Phases ordinal and
+        // this jump lands past the phase steps. The `Section` enum gives it its
+        // own section, after which this steps onto 01-01 instead.
         app.select_section(1); // -> Todos (first todo)
         assert!(app.current_entry().unwrap().is_todo());
         app.select_section(1); // -> Others (first note/idea/seed)
@@ -1695,21 +1712,15 @@ mod tests {
         assert!(app.current_entry().unwrap().is_other());
         assert!(app.flash.as_deref().unwrap().contains("last section"));
 
-        // From mid-Phases, up snaps to the top of Phases, then back through the
-        // Research and Intel rows to the Roadmap.
-        app.current = 5; // 02-02, mid Phases
+        // From mid-Phases, up snaps to the top of the section, then back through
+        // the Research and Intel rows to the Roadmap.
+        app.current = 6; // 02-02, mid Phases
         app.select_section(-1);
-        assert_eq!(app.current_entry().unwrap().step.id, "01-01");
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Reviews"));
         app.select_section(-1);
-        assert_eq!(
-            app.current_entry().unwrap().docs_folder(),
-            Some(DocsFolder::Research)
-        );
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Research"));
         app.select_section(-1);
-        assert_eq!(
-            app.current_entry().unwrap().docs_folder(),
-            Some(DocsFolder::Intel)
-        );
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Intel"));
         app.select_section(-1);
         assert!(app.current_entry().unwrap().is_roadmap());
         app.select_section(-1);
@@ -1726,33 +1737,30 @@ mod tests {
         assert_eq!(app.current_entry().unwrap().phase_id, "2");
         app.select_phase(-1); // -> phase 1 (01-01)
         assert_eq!(app.current_entry().unwrap().phase_id, "1");
-        // Past the first phase, K flows one row up onto the Research row (the
-        // row directly above the Phases section).
+        // Past the first phase, K flows one row up onto the last docs-folder row
+        // (the row directly above the Phases section).
         app.select_phase(-1);
-        assert_eq!(
-            app.current_entry().unwrap().docs_folder(),
-            Some(DocsFolder::Research)
-        );
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Reviews"));
     }
 
     #[test]
     fn select_phase_falls_back_to_single_step_off_the_phases_section() {
         let mut app =
             App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &sample_todos());
-        // entries: roadmap(0), intel(1), research(2), 01-01(3)…02-03(6),
-        // ph3(7), 04-01(8), 04-02(9), 05-01(10), 05-02(11), ph6(12), ph7(13),
-        // ph8(14), todo0(15), todo1(16), todo2(17), todo3(18, the active debug
-        // session)
+        // entries: roadmap(0), intel(1), research(2), reviews(3), 01-01(4)…
+        // 02-03(7), ph3(8), 04-01(9), 04-02(10), 05-01(11), 05-02(12), ph6(13),
+        // ph7(14), ph8(15), todo0(16), todo1(17), todo2(18), todo3(19, the
+        // active debug session)
 
         // In Todos, K moves one row up (todo → todo), not into the Phases section.
-        app.current = 16; // todo1
+        app.current = 17; // todo1
         app.select_phase(-1);
-        assert_eq!(app.current, 15);
+        assert_eq!(app.current, 16);
         assert!(app.current_entry().unwrap().is_todo());
 
         // J on a todo moves one row down.
         app.select_phase(1);
-        assert_eq!(app.current, 16);
+        assert_eq!(app.current, 17);
         assert!(app.current_entry().unwrap().is_todo());
 
         // On the Roadmap row, K clamps like k at the top (no phase jump).
@@ -1762,20 +1770,17 @@ mod tests {
         assert!(app.flash.as_deref().unwrap().contains("first step"));
 
         // From the last phase, J flows down into the Todos section…
-        app.current = 14; // phase 8 placeholder (the last phase)
+        app.current = 15; // phase 8 placeholder (the last phase)
         app.select_phase(1);
-        assert_eq!(app.current, 15);
+        assert_eq!(app.current, 16);
         assert!(app.current_entry().unwrap().is_todo());
 
-        // …and from the first phase, K flows up onto the Research row (the row
-        // directly above the Phases section).
-        app.current = 3; // 01-01 (first phase)
+        // …and from the first phase, K flows up onto the last docs-folder row
+        // (the row directly above the Phases section).
+        app.current = 4; // 01-01 (first phase)
         app.select_phase(-1);
-        assert_eq!(app.current, 2);
-        assert_eq!(
-            app.current_entry().unwrap().docs_folder(),
-            Some(DocsFolder::Research)
-        );
+        assert_eq!(app.current, 3);
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Reviews"));
     }
 
     fn planning_with_docs_folders(intel: bool, research: bool) -> tempfile::TempDir {
@@ -1805,12 +1810,12 @@ mod tests {
         let app = App::from_phases_and_todos(dir.path(), &phases, &[], &[]);
         // roadmap(0), intel(1), research(2), phase-1 placeholder(3)
         assert!(app.entries[0].is_roadmap());
-        assert_eq!(app.entries[1].docs_folder(), Some(DocsFolder::Intel));
-        assert_eq!(app.entries[2].docs_folder(), Some(DocsFolder::Research));
-        assert!(app.entries[3].docs_folder().is_none());
+        assert_eq!(app.entries[1].docs_title(), Some("Intel"));
+        assert_eq!(app.entries[2].docs_title(), Some("Research"));
+        assert!(app.entries[3].docs_title().is_none());
         assert_eq!(app.entries[3].phase_id, "1");
         // Default selection skips the docs-folder rows and lands on the phase.
-        assert!(app.current_entry().unwrap().docs_folder().is_none());
+        assert!(app.current_entry().unwrap().docs_title().is_none());
         assert_eq!(app.current_entry().unwrap().phase_id, "1");
     }
 
@@ -1820,7 +1825,7 @@ mod tests {
         let phases = crate::planning::load_phases(dir.path());
         let mut app = App::from_phases_and_todos(dir.path(), &phases, &[], &[]);
         app.current = 1; // Intel row
-        assert_eq!(app.selection(), Some(Selected::Intel));
+        assert_eq!(app.selection(), Some(Selected::Docs("Intel".into())));
 
         let req = app.open_doc(0).expect("open first intel file");
         assert!(
@@ -1847,15 +1852,13 @@ mod tests {
         let phases = crate::planning::load_phases(dir.path());
         let app = App::from_phases_and_todos(dir.path(), &phases, &[], &[]);
         assert!(
-            app.entries
-                .iter()
-                .all(|e| e.docs_folder() != Some(DocsFolder::Intel)),
+            app.entries.iter().all(|e| e.docs_title() != Some("Intel")),
             "no Intel row when intel/ is absent"
         );
         assert!(app
             .entries
             .iter()
-            .any(|e| e.docs_folder() == Some(DocsFolder::Research)));
+            .any(|e| e.docs_title() == Some("Research")));
     }
 
     #[test]
@@ -1866,15 +1869,9 @@ mod tests {
         app.select_first();
         assert!(app.current_entry().unwrap().is_roadmap());
         app.select_section(1);
-        assert_eq!(
-            app.current_entry().unwrap().docs_folder(),
-            Some(DocsFolder::Intel)
-        );
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Intel"));
         app.select_section(1);
-        assert_eq!(
-            app.current_entry().unwrap().docs_folder(),
-            Some(DocsFolder::Research)
-        );
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Research"));
         app.select_section(1);
         assert_eq!(app.current_entry().unwrap().phase_id, "1");
     }
@@ -1887,8 +1884,8 @@ mod tests {
         app.current = 2; // Research row
         app.refresh(dir.path(), &phases, &[], &[]);
         assert_eq!(
-            app.current_entry().unwrap().docs_folder(),
-            Some(DocsFolder::Research),
+            app.current_entry().unwrap().docs_title(),
+            Some("Research"),
             "the Research selection survives a reload by identity"
         );
     }
@@ -1909,16 +1906,16 @@ mod tests {
     fn project_row_reaches_root_docs_when_no_roadmap_exists_yet() {
         let dir = planning_before_roadmap();
         let app = App::from_phases_and_todos(dir.path(), &[], &[], &[]);
-        assert_eq!(app.entries[0].docs_folder(), Some(DocsFolder::Project));
+        assert_eq!(app.entries[0].docs_title(), Some("Project"));
         let names: Vec<String> = app.entries[0]
             .documents
             .iter()
             .map(|d| d.path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["PROJECT.md", "REQUIREMENTS.md"]);
-        assert_eq!(app.entries[1].docs_folder(), Some(DocsFolder::Research));
+        assert_eq!(app.entries[1].docs_title(), Some("Research"));
         // Nothing else can hold the cursor, so the Project row takes it.
-        assert_eq!(app.selection(), Some(Selected::Project));
+        assert_eq!(app.selection(), Some(Selected::Docs("Project".into())));
     }
 
     #[test]
@@ -1930,7 +1927,7 @@ mod tests {
         assert!(
             app.entries
                 .iter()
-                .all(|e| e.docs_folder() != Some(DocsFolder::Project)),
+                .all(|e| e.docs_title() != Some("Project")),
             "the Roadmap row already reaches every root doc"
         );
     }

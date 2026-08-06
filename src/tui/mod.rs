@@ -8,7 +8,7 @@ pub(crate) mod app;
 pub(crate) mod clipboard;
 
 use crate::model::{Phase, QuickTask, StateMeta, Todo};
-use app::{App, DocsFolder, Focus, OpenRequest, Selected};
+use app::{App, Focus, OpenRequest, Selected};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::Print;
 use crossterm::{execute, terminal};
@@ -134,20 +134,13 @@ fn highlight_index(text: &Text, sel: &Selected) -> Option<usize> {
                 .and_then(|rest| rest.chars().next())
                 .is_some_and(|ch| ch.is_ascii_digit())
         }),
-        // The Project / Intel / Research docs rows each render as a single line
-        // led by their name (e.g. "Intel     ─── 2 files").
-        Selected::Project => text
+        // A docs-folder row renders as a single line led by its title (e.g.
+        // "Intel     ─── 2 files"), so one strategy finds any of them — Project,
+        // Intel, Research, or a folder discovered at runtime.
+        Selected::Docs(title) => text
             .lines
             .iter()
-            .position(|line| line_string(line).trim_start().starts_with("Project")),
-        Selected::Intel => text
-            .lines
-            .iter()
-            .position(|line| line_string(line).trim_start().starts_with("Intel")),
-        Selected::Research => text
-            .lines
-            .iter()
-            .position(|line| line_string(line).trim_start().starts_with("Research")),
+            .position(|line| line_string(line).trim_start().starts_with(title.as_str())),
         Selected::Phase(id) => text.lines.iter().position(|line| {
             let s = line_string(line);
             // Match "Phase <id>" as a whole token so Phase 1 ≠ Phase 10, and
@@ -559,13 +552,7 @@ impl Ui {
         // phase/step so stepping (j/k, C-j/k) is visible from any tab.
         let status_title = match self.app.current_entry() {
             Some(entry) if entry.is_roadmap() => "Roadmap".to_string(),
-            Some(entry) if entry.docs_folder() == Some(DocsFolder::Project) => {
-                "Project".to_string()
-            }
-            Some(entry) if entry.docs_folder() == Some(DocsFolder::Intel) => "Intel".to_string(),
-            Some(entry) if entry.docs_folder() == Some(DocsFolder::Research) => {
-                "Research".to_string()
-            }
+            Some(entry) if entry.docs_title().is_some() => entry.docs_title().unwrap().to_string(),
             Some(entry) if entry.is_task() => "Task".to_string(),
             Some(entry) if entry.is_todo() => "Todo".to_string(),
             Some(entry) if entry.other_kind().is_some() => {
@@ -733,14 +720,8 @@ impl Ui {
         };
         let position = match self.app.current_entry() {
             Some(entry) if entry.is_roadmap() => format!("{mode} Roadmap"),
-            Some(entry) if entry.docs_folder() == Some(DocsFolder::Project) => {
-                format!("{mode} Project")
-            }
-            Some(entry) if entry.docs_folder() == Some(DocsFolder::Intel) => {
-                format!("{mode} Intel")
-            }
-            Some(entry) if entry.docs_folder() == Some(DocsFolder::Research) => {
-                format!("{mode} Research")
+            Some(entry) if entry.docs_title().is_some() => {
+                format!("{mode} {}", entry.docs_title().unwrap())
             }
             Some(entry) if entry.other_kind().is_some() => {
                 format!("{mode} {}", entry.other_kind().unwrap().title())
@@ -1014,8 +995,14 @@ mod tests {
             Line::raw("  Phases"),
         ]);
         assert_eq!(highlight_index(&text, &Selected::Roadmap), Some(1));
-        assert_eq!(highlight_index(&text, &Selected::Intel), Some(3));
-        assert_eq!(highlight_index(&text, &Selected::Research), Some(4));
+        assert_eq!(
+            highlight_index(&text, &Selected::Docs("Intel".into())),
+            Some(3)
+        );
+        assert_eq!(
+            highlight_index(&text, &Selected::Docs("Research".into())),
+            Some(4)
+        );
     }
 
     #[test]
@@ -1025,7 +1012,10 @@ mod tests {
             Line::raw("  Research  ─────── 4 files"),
             Line::raw(""),
         ]);
-        assert_eq!(highlight_index(&text, &Selected::Project), Some(0));
+        assert_eq!(
+            highlight_index(&text, &Selected::Docs("Project".into())),
+            Some(0)
+        );
     }
 
     #[test]
@@ -2084,7 +2074,7 @@ mod tests {
             screen(&mut ui).contains("[status] Roadmap"),
             "g jumps to the first row"
         );
-        // d walks the sections: Roadmap -> Intel -> Research -> Phases.
+        // d walks the sections: Roadmap -> Intel -> Research -> Reviews.
         ui.on_key(plain('d'));
         assert!(
             screen(&mut ui).contains("[status] Intel"),
@@ -2093,10 +2083,16 @@ mod tests {
         ui.on_key(plain('d'));
         ui.on_key(plain('d'));
         assert!(
-            screen(&mut ui).contains("Phase 1 · step 01-01"),
-            "d reaches the Phases section"
+            screen(&mut ui).contains("[status] Reviews"),
+            "d reaches the Reviews section"
         );
-        // J from a phase step jumps phase-to-phase.
+        // j steps off the docs rows onto the first phase step, and J from there
+        // jumps phase-to-phase.
+        ui.on_key(plain('j'));
+        assert!(
+            screen(&mut ui).contains("Phase 1 · step 01-01"),
+            "j steps onto the first phase step"
+        );
         ui.on_key(plain('J'));
         assert!(
             screen(&mut ui).contains("Phase 2 · step 02-01"),
@@ -2123,8 +2119,13 @@ mod tests {
         assert!(s.contains("Phase 1 · step 01-01 (1/1)"), "{s}");
         assert!(s.contains("Robot Coffee Service"), "{s}");
 
-        // k moves up through the Research and Intel docs-folder rows, then onto
-        // the Roadmap row (above the first phase step).
+        // k moves up through the docs-folder rows — Reviews, Research, Intel —
+        // then onto the Roadmap row (above the first phase step).
+        ui.on_key(plain('k'));
+        assert!(
+            screen(&mut ui).contains("[status] Reviews"),
+            "on reviews row"
+        );
         ui.on_key(plain('k'));
         assert!(
             screen(&mut ui).contains("[status] Research"),
@@ -2141,7 +2142,9 @@ mod tests {
         let s = screen(&mut ui);
         assert!(s.contains("already at the first step"), "{s}");
 
-        // Back down through Intel/Research onto 01-01, then Enter opens its plan.
+        // Back down through the Intel/Research/Reviews rows onto 01-01, then
+        // Enter opens its plan.
+        ui.on_key(plain('j'));
         ui.on_key(plain('j'));
         ui.on_key(plain('j'));
         ui.on_key(plain('j'));

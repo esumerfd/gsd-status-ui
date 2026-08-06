@@ -142,33 +142,24 @@ pub(crate) fn render(
         writeln!(out)?;
     }
 
-    // Project / Intel / Research — one openable line each, sitting between the
-    // Roadmap and Phases sections. Each names a group of `.planning` markdown
-    // files and its file count (the files themselves open from the TUI). A group
-    // that doesn't exist or is empty is skipped entirely, mirroring how the
-    // Tasks/Todos sections hide.
+    // Docs-folder rows — one openable line each, sitting between the Roadmap and
+    // Phases sections. Each names a group of `.planning` markdown files and its
+    // file count (the files themselves open from the TUI). The folder list comes
+    // from `discover_docs_sections`, the same discovery the TUI's nav entries and
+    // `o` picker use, so a row drawn here is always navigable and vice versa —
+    // `highlight_index` finds a row by its title, so a row the report doesn't
+    // draw could not be selected. An empty group is already dropped by the
+    // discovery, mirroring how the Tasks/Todos sections hide.
     //
-    // Project is the `.planning` root — PROJECT.md, REQUIREMENTS.md, and the
-    // rest. It stands in for the Roadmap row, which is what reaches those files
-    // once a ROADMAP.md exists, so it only shows while that row is absent;
-    // otherwise a workspace mid-research has no way to open its requirements.
-    let root = if phases.is_empty() {
-        crate::planning::discover_root_documents(planning)
-    } else {
-        Vec::new()
-    };
-    let intel = crate::planning::discover_folder_documents(planning, "intel");
-    let research = crate::planning::discover_folder_documents(planning, "research");
-    if !root.is_empty() {
-        docs_folder_row(out, "Project", root.len(), use_color)?;
+    // Project (the `.planning` root — PROJECT.md, REQUIREMENTS.md, and the rest)
+    // stands in for the Roadmap row, which is what reaches those files once a
+    // ROADMAP.md exists, so it is included only while no phases parse; otherwise
+    // a workspace mid-research has no way to open its requirements.
+    let docs_sections = crate::planning::discover_docs_sections(planning, phases.is_empty());
+    for section in &docs_sections {
+        docs_folder_row(out, &section.title, section.documents.len(), use_color)?;
     }
-    if !intel.is_empty() {
-        docs_folder_row(out, "Intel", intel.len(), use_color)?;
-    }
-    if !research.is_empty() {
-        docs_folder_row(out, "Research", research.len(), use_color)?;
-    }
-    if !root.is_empty() || !intel.is_empty() || !research.is_empty() {
+    if !docs_sections.is_empty() {
         writeln!(out)?;
     }
 
@@ -1027,6 +1018,42 @@ mod tests {
         let out = String::from_utf8(buf).unwrap();
         assert!(out.contains("1 file"), "singular:\n{out}");
         assert!(!out.contains("1 files"), "no plural for one file:\n{out}");
+    }
+
+    #[test]
+    fn renders_a_row_for_an_unowned_docs_folder() {
+        // A folder no section owns — `reviews/` — gets its own count row, so a
+        // file inside it has a row to be reached from.
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::create_dir_all(planning.join("reviews")).unwrap();
+        std::fs::write(
+            planning
+                .join("reviews")
+                .join("STK-EXAMPLE-pass-rate-audit.md"),
+            "# audit\n",
+        )
+        .unwrap();
+
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            planning,
+            &StateMeta::default(),
+            &one_phase(),
+            &[],
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        assert!(
+            out.lines()
+                .any(|l| l.trim_start().starts_with("Reviews") && l.contains("1 file")),
+            "a Reviews row with a singular file count:\n{out}"
+        );
     }
 
     #[test]

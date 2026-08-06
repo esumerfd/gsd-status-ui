@@ -1189,6 +1189,98 @@ pub(crate) fn discover_folder_documents(planning: &Path, folder: &str) -> Vec<Do
     docs.into_iter().map(|(_, doc)| doc).collect()
 }
 
+/// One navigable group of `.planning` markdown files: the `.planning` root
+/// ("Project") or a single subfolder (`intel/`, `research/`, `reviews/`, …).
+/// `id` is the row's stable identity (the folder name, or `"project"` for the
+/// root) and doubles as the selection key across a live reload; `title` is what
+/// the row and the footer display.
+pub(crate) struct DocsSection {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) documents: Vec<Document>,
+}
+
+/// `.planning` subfolders another section already surfaces, so they never also
+/// become a generic docs row: `phases/` (the Phases list), `quick/` (Tasks),
+/// `todos/` (Todos), `notes/`+`ideas/`+`seeds/` (Others), and `debug/` (debug
+/// sessions render as Todo rows via `load_debug_sessions`).
+const OWNED_FOLDERS: [&str; 7] = [
+    "phases", "quick", "todos", "notes", "ideas", "seeds", "debug",
+];
+
+/// Subfolders emitted ahead of the auto-discovered ones, so the familiar layout
+/// never shuffles when a new folder appears.
+const PINNED_FOLDERS: [(&str, &str); 2] = [("intel", "Intel"), ("research", "Research")];
+
+/// Every group of `.planning` markdown files that deserves its own navigable
+/// row, in display order: the root (when `include_root`), then `intel/`, then
+/// `research/`, then every other subfolder holding markdown, name-sorted.
+///
+/// This is the single place the folder list is decided — the report rows, the
+/// TUI nav entries, and the `o` picker all read it, so a new `.planning`
+/// subfolder becomes a row with no code change. Folders another section already
+/// owns are excluded ([`OWNED_FOLDERS`]), and a section with no markdown is
+/// dropped, so a section that exists is always openable.
+///
+/// `include_root` prepends the `.planning` root as `Project`, backed by
+/// [`discover_root_documents`] (ROADMAP pinned at index 0). Callers pass "there
+/// is no Roadmap row", which is what otherwise reaches those root docs.
+///
+/// Cost is one `read_dir` of `.planning` plus one per surviving folder, with no
+/// recursion and no file reads — cheap enough for the periodic live reload.
+pub(crate) fn discover_docs_sections(planning: &Path, include_root: bool) -> Vec<DocsSection> {
+    let mut sections: Vec<DocsSection> = Vec::new();
+    let mut push = |id: &str, title: &str, documents: Vec<Document>| {
+        if !documents.is_empty() {
+            sections.push(DocsSection {
+                id: id.to_string(),
+                title: title.to_string(),
+                documents,
+            });
+        }
+    };
+
+    if include_root {
+        push("project", "Project", discover_root_documents(planning));
+    }
+    for (id, title) in PINNED_FOLDERS {
+        push(id, title, discover_folder_documents(planning, id));
+    }
+
+    let mut discovered: Vec<String> = Vec::new();
+    if let Ok(entries) = fs::read_dir(planning) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if OWNED_FOLDERS.contains(&name) || PINNED_FOLDERS.iter().any(|(id, _)| *id == name) {
+                continue;
+            }
+            discovered.push(name.to_string());
+        }
+    }
+    discovered.sort();
+    for name in discovered {
+        let documents = discover_folder_documents(planning, &name);
+        push(&name, &title_from_folder(&name), documents);
+    }
+    sections
+}
+
+/// A folder name as a row title: the first character uppercased, the rest left
+/// alone (`reviews` → `Reviews`, `adr` → `Adr`).
+fn title_from_folder(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1770,6 +1862,27 @@ mod tests {
             .collect();
         assert_eq!(names, ["ARCHITECTURE.md", "PITFALLS.md", "STACK.md"]);
         assert_eq!(docs[0].label, "architecture");
+    }
+
+    #[test]
+    fn discover_docs_sections_surfaces_an_unowned_folder_as_its_own_section() {
+        // `reviews/` is not a folder any other section owns, so it earns a
+        // generic docs row titled from its name, backed by its markdown.
+        let sections = discover_docs_sections(Path::new("sample/.planning"), false);
+        let reviews = sections
+            .iter()
+            .find(|s| s.id == "reviews")
+            .expect("a reviews section");
+        assert_eq!(reviews.title, "Reviews");
+        let names: Vec<String> = reviews
+            .documents
+            .iter()
+            .map(|d| d.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.contains(&"STK-EXAMPLE-pass-rate-audit.md".to_string()),
+            "reviews docs: {names:?}"
+        );
     }
 
     #[test]

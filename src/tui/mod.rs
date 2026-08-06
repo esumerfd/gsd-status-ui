@@ -93,13 +93,12 @@ pub(crate) fn status_text(
     let quick_tasks = crate::planning::load_quick_tasks(planning, show_completed);
     crate::report::render(
         &mut buf,
-        planning,
-        state,
-        phases,
-        &quick_tasks,
-        &todos,
-        show_completed,
-        true,
+        &crate::report::Report::new(planning, state)
+            .phases(phases)
+            .quick_tasks(&quick_tasks)
+            .todos(&todos)
+            .show_completed(show_completed)
+            .use_color(true),
     )
     .ok();
     ansi::ansi_to_text(&String::from_utf8_lossy(&buf))

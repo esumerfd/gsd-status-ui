@@ -59,13 +59,11 @@ fn main() -> ExitCode {
         let mut out = io::stdout().lock();
         report::render(
             &mut out,
-            &planning,
-            &state,
-            &phases,
-            &quick_tasks,
-            &todos,
-            false,
-            use_color,
+            &report::Report::new(&planning, &state)
+                .phases(&phases)
+                .quick_tasks(&quick_tasks)
+                .todos(&todos)
+                .use_color(use_color),
         )
         .ok();
         ExitCode::SUCCESS

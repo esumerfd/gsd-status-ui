@@ -149,13 +149,10 @@ mod tests {
         let mut buf = Vec::new();
         crate::report::render(
             &mut buf,
-            planning,
-            &state,
-            &phases,
-            &[],
-            &todos,
-            false,
-            true,
+            &crate::report::Report::new(planning, &state)
+                .phases(&phases)
+                .todos(&todos)
+                .use_color(true),
         )
         .unwrap();
         let text = ansi_to_text(&String::from_utf8_lossy(&buf));

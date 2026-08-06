@@ -3,16 +3,72 @@ use crate::model::{Phase, QuickTask, Stage, StateMeta, Todo};
 use std::io::{self, Write};
 use std::path::Path;
 
-pub(crate) fn render(
-    out: &mut impl Write,
-    planning: &Path,
-    state: &StateMeta,
-    phases: &[Phase],
-    quick_tasks: &[QuickTask],
-    todos: &[Todo],
+/// Everything `render` draws from, bundled so the entry point takes a sink and
+/// one input instead of a positional argument list where the two trailing bools
+/// are indistinguishable at the call site.
+///
+/// Build with `Report::new(planning, state)` and add what the workspace has:
+/// the collections default to empty and both flags to off, which is exactly the
+/// shape of a workspace that has nothing planned yet.
+pub(crate) struct Report<'a> {
+    planning: &'a Path,
+    state: &'a StateMeta,
+    phases: &'a [Phase],
+    quick_tasks: &'a [QuickTask],
+    todos: &'a [Todo],
     show_completed: bool,
     use_color: bool,
-) -> io::Result<()> {
+}
+
+impl<'a> Report<'a> {
+    pub(crate) fn new(planning: &'a Path, state: &'a StateMeta) -> Self {
+        Self {
+            planning,
+            state,
+            phases: &[],
+            quick_tasks: &[],
+            todos: &[],
+            show_completed: false,
+            use_color: false,
+        }
+    }
+
+    pub(crate) fn phases(mut self, phases: &'a [Phase]) -> Self {
+        self.phases = phases;
+        self
+    }
+
+    pub(crate) fn quick_tasks(mut self, quick_tasks: &'a [QuickTask]) -> Self {
+        self.quick_tasks = quick_tasks;
+        self
+    }
+
+    pub(crate) fn todos(mut self, todos: &'a [Todo]) -> Self {
+        self.todos = todos;
+        self
+    }
+
+    pub(crate) fn show_completed(mut self, show_completed: bool) -> Self {
+        self.show_completed = show_completed;
+        self
+    }
+
+    pub(crate) fn use_color(mut self, use_color: bool) -> Self {
+        self.use_color = use_color;
+        self
+    }
+}
+
+pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()> {
+    let &Report {
+        planning,
+        state,
+        phases,
+        quick_tasks,
+        todos,
+        show_completed,
+        use_color,
+    } = report;
     let c = |code: &'static str| if use_color { code } else { "" };
 
     let title = if state.project_title.is_empty() {
@@ -71,7 +127,9 @@ pub(crate) fn render(
 
     let total_phases = state.total_phases.max(phases.len() as u32);
     let completed_phases = phases.iter().filter(|p| phase_settled(p)).count() as u32;
-    let percent = (completed_phases * 100).checked_div(total_phases).unwrap_or(0);
+    let percent = (completed_phases * 100)
+        .checked_div(total_phases)
+        .unwrap_or(0);
 
     // The phase/plan tallies live in the Roadmap and phase rows below, so the
     // banner shows only the headline percentage — no duplicated counts here.
@@ -558,13 +616,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            Path::new("sample/.planning"),
-            &state,
-            &[],
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(Path::new("sample/.planning"), &state),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -604,13 +656,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            Path::new("sample/.planning"),
-            &StateMeta::default(),
-            &[],
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(Path::new("sample/.planning"), &StateMeta::default()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -626,13 +672,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            Path::new("sample/.planning"),
-            &StateMeta::default(),
-            &phases,
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(Path::new("sample/.planning"), &StateMeta::default()).phases(&phases),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -671,13 +711,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            Path::new("sample/.planning"),
-            &StateMeta::default(),
-            &phases,
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(Path::new("sample/.planning"), &StateMeta::default()).phases(&phases),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -719,13 +753,9 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            Path::new("sample/.planning"),
-            &state,
-            &phases,
-            &[],
-            &[],
-            show_completed,
-            false,
+            &Report::new(Path::new("sample/.planning"), &state)
+                .phases(&phases)
+                .show_completed(show_completed),
         )
         .unwrap();
         String::from_utf8(buf).unwrap()
@@ -792,13 +822,9 @@ mod tests {
             let mut buf = Vec::new();
             render(
                 &mut buf,
-                Path::new("sample/.planning"),
-                &StateMeta::default(),
-                &phases,
-                &[],
-                &[],
-                show_completed,
-                false,
+                &Report::new(Path::new("sample/.planning"), &StateMeta::default())
+                    .phases(&phases)
+                    .show_completed(show_completed),
             )
             .unwrap();
             String::from_utf8(buf).unwrap()
@@ -839,13 +865,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            Path::new("sample/.planning"),
-            &StateMeta::default(),
-            &phases,
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(Path::new("sample/.planning"), &StateMeta::default()).phases(&phases),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -864,13 +884,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            Path::new("sample/.planning"),
-            &StateMeta::default(),
-            &[],
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(Path::new("sample/.planning"), &StateMeta::default()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -891,13 +905,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            Path::new("sample/.planning"),
-            &StateMeta::default(),
-            &[],
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(Path::new("sample/.planning"), &StateMeta::default()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -923,13 +931,10 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            Path::new("sample/.planning"),
-            &StateMeta::default(),
-            &phases,
-            &quick_tasks,
-            &todos,
-            false,
-            false,
+            &Report::new(Path::new("sample/.planning"), &StateMeta::default())
+                .phases(&phases)
+                .quick_tasks(&quick_tasks)
+                .todos(&todos),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -950,13 +955,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            Path::new("sample/.planning"),
-            &StateMeta::default(),
-            &[],
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(Path::new("sample/.planning"), &StateMeta::default()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -990,13 +989,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            planning,
-            &StateMeta::default(),
-            &one_phase(),
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(planning, &StateMeta::default()).phases(&one_phase()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -1027,13 +1020,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            planning,
-            &StateMeta::default(),
-            &one_phase(),
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(planning, &StateMeta::default()).phases(&one_phase()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -1078,13 +1065,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            planning,
-            &StateMeta::default(),
-            &one_phase(),
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(planning, &StateMeta::default()).phases(&one_phase()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -1103,13 +1084,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            dir.path(),
-            &StateMeta::default(),
-            &one_phase(),
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(dir.path(), &StateMeta::default()).phases(&one_phase()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -1142,17 +1117,7 @@ mod tests {
         std::fs::write(planning.join("research").join("STACK.md"), "# s\n").unwrap();
 
         let mut buf = Vec::new();
-        render(
-            &mut buf,
-            planning,
-            &StateMeta::default(),
-            &[],
-            &[],
-            &[],
-            false,
-            false,
-        )
-        .unwrap();
+        render(&mut buf, &Report::new(planning, &StateMeta::default())).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(has_docs_row(&out, "Project"), "project row present:\n{out}");
         assert!(out.contains("2 files"), "root doc count:\n{out}");
@@ -1174,13 +1139,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            planning,
-            &StateMeta::default(),
-            &one_phase(),
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(planning, &StateMeta::default()).phases(&one_phase()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -1195,17 +1154,7 @@ mod tests {
     fn omits_project_row_when_there_are_no_root_docs() {
         let dir = tempfile::tempdir().unwrap();
         let mut buf = Vec::new();
-        render(
-            &mut buf,
-            dir.path(),
-            &StateMeta::default(),
-            &[],
-            &[],
-            &[],
-            false,
-            false,
-        )
-        .unwrap();
+        render(&mut buf, &Report::new(dir.path(), &StateMeta::default())).unwrap();
         let out = String::from_utf8(buf).unwrap();
         assert!(
             !has_docs_row(&out, "Project"),
@@ -1234,13 +1183,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            p,
-            &StateMeta::default(),
-            &[],
-            &[],
-            &todos,
-            false,
-            false,
+            &Report::new(p, &StateMeta::default()).todos(&todos),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -1266,13 +1209,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            dir.path(),
-            &StateMeta::default(),
-            &one_phase(),
-            &[],
-            &[],
-            false,
-            false,
+            &Report::new(dir.path(), &StateMeta::default()).phases(&one_phase()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -1294,13 +1231,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            Path::new("sample/.planning"),
-            &StateMeta::default(),
-            &[],
-            &[],
-            &todos,
-            false,
-            false,
+            &Report::new(Path::new("sample/.planning"), &StateMeta::default()).todos(&todos),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();

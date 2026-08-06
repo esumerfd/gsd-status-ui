@@ -118,6 +118,19 @@ pub(crate) enum Selected {
     Other(usize),
 }
 
+/// A contiguous run of rows that `d`/`u` treat as one unit. `Docs` carries the
+/// folder id because the docs rows are discovered at runtime — there is no fixed
+/// number of them, so a section cannot be a plain ordinal. Only equality between
+/// adjacent rows matters, so `PartialEq` is enough.
+#[derive(Debug, Clone, PartialEq)]
+enum Section {
+    Docs(String),
+    Phases,
+    Tasks,
+    Todos,
+    Others,
+}
+
 /// What the shell must open (create a DocView for) after a state change.
 /// `doc` is the index into the current entry's `documents`.
 #[derive(Debug, PartialEq)]
@@ -642,32 +655,36 @@ impl App {
     /// Research(2), Phases(3), Tasks(4), Todos(5), Others(6). Entries are built
     /// in this order, so each section is contiguous — Roadmap and Project share
     /// an ordinal because only one of them is ever drawn.
-    fn section_key(e: &StepEntry) -> u8 {
-        let folder_id = e.docs_folder().map(|f| f.id.as_str());
-        if e.is_roadmap() || folder_id == Some("project") {
-            0
-        } else if folder_id == Some("intel") {
-            1
-        } else if folder_id == Some("research") {
-            2
+    /// Which section a row belongs to, for grouping entries so `d`/`u` step
+    /// section by section. Entries are built in section order, so each section is
+    /// contiguous and `section_bounds` need only compare adjacent rows.
+    ///
+    /// Every docs folder is its own section — there is no fixed count of them, so
+    /// this cannot be an ordinal. The Roadmap row and the Project row both map to
+    /// `Docs("project")`: only one of them is ever drawn.
+    fn section_key(e: &StepEntry) -> Section {
+        if e.is_roadmap() {
+            Section::Docs("project".to_string())
+        } else if let Some(folder) = e.docs_folder() {
+            Section::Docs(folder.id.clone())
         } else if e.is_task() {
-            4
+            Section::Tasks
         } else if e.is_todo() {
-            5
+            Section::Todos
         } else if e.is_other() {
-            6
+            Section::Others
         } else {
-            3
+            Section::Phases
         }
     }
 
     /// Start index of each contiguous section present, in entry order.
     fn section_bounds(&self) -> Vec<usize> {
         let mut starts = Vec::new();
-        let mut last: Option<u8> = None;
+        let mut last: Option<Section> = None;
         for (i, e) in self.entries.iter().enumerate() {
             let k = Self::section_key(e);
-            if last != Some(k) {
+            if last.as_ref() != Some(&k) {
                 starts.push(i);
                 last = Some(k);
             }
@@ -1698,12 +1715,10 @@ mod tests {
         assert_eq!(app.current_entry().unwrap().docs_title(), Some("Intel"));
         app.select_section(1); // -> Research
         assert_eq!(app.current_entry().unwrap().docs_title(), Some("Research"));
-        app.select_section(1); // -> Reviews
+        app.select_section(1); // -> Reviews (its own section)
         assert_eq!(app.current_entry().unwrap().docs_title(), Some("Reviews"));
-        // A runtime-discovered folder has no section ordinal of its own while
-        // `section_key` is still a `u8`, so Reviews shares the Phases ordinal and
-        // this jump lands past the phase steps. The `Section` enum gives it its
-        // own section, after which this steps onto 01-01 instead.
+        app.select_section(1); // -> Phases (first step)
+        assert_eq!(app.current_entry().unwrap().step.id, "01-01");
         app.select_section(1); // -> Todos (first todo)
         assert!(app.current_entry().unwrap().is_todo());
         app.select_section(1); // -> Others (first note/idea/seed)
@@ -1712,9 +1727,11 @@ mod tests {
         assert!(app.current_entry().unwrap().is_other());
         assert!(app.flash.as_deref().unwrap().contains("last section"));
 
-        // From mid-Phases, up snaps to the top of the section, then back through
-        // the Research and Intel rows to the Roadmap.
+        // From mid-Phases, up snaps to the top of Phases, then back through the
+        // Reviews, Research, and Intel rows to the Roadmap.
         app.current = 6; // 02-02, mid Phases
+        app.select_section(-1);
+        assert_eq!(app.current_entry().unwrap().step.id, "01-01");
         app.select_section(-1);
         assert_eq!(app.current_entry().unwrap().docs_title(), Some("Reviews"));
         app.select_section(-1);
@@ -1888,6 +1905,125 @@ mod tests {
             Some("Research"),
             "the Research selection survives a reload by identity"
         );
+    }
+
+    /// A workspace with the pinned intel/research folders plus `reviews/` — a
+    /// folder no section owns, so it is discovered at runtime rather than pinned.
+    /// Two phases, so "snap to the top of the Phases section" is distinguishable
+    /// from "jump to the previous section".
+    ///
+    /// entries: roadmap(0), intel(1), research(2), reviews(3), phase1(4), phase2(5)
+    fn planning_with_a_discovered_folder() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::write(
+            p.join("ROADMAP.md"),
+            "## Phases\n\n- [ ] **Phase 1: Skeleton** - x.\n- [ ] **Phase 2: Body** - y.\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(p.join("intel")).unwrap();
+        std::fs::write(p.join("intel/ARCHITECTURE.md"), "# a\n").unwrap();
+        std::fs::create_dir_all(p.join("research")).unwrap();
+        std::fs::write(p.join("research/SUMMARY.md"), "# s\n").unwrap();
+        std::fs::create_dir_all(p.join("reviews")).unwrap();
+        std::fs::write(
+            p.join("reviews/STK-EXAMPLE-pass-rate-audit.md"),
+            "# audit\n",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    fn select_section_treats_each_discovered_folder_as_its_own_section() {
+        let dir = planning_with_a_discovered_folder();
+        let phases = crate::planning::load_phases(dir.path());
+        let mut app = App::from_phases_and_todos(dir.path(), &phases, &[], &[]);
+        app.current = 1; // Intel
+        app.select_section(1);
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Research"));
+        app.select_section(1);
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Reviews"));
+        // A discovered folder is its own section, so the next jump leaves the
+        // docs rows entirely and lands in Phases.
+        app.select_section(1);
+        assert_eq!(app.current_entry().unwrap().phase_id, "1");
+        assert!(app.current_entry().unwrap().docs_title().is_none());
+    }
+
+    #[test]
+    fn select_section_walks_back_up_through_every_discovered_folder() {
+        let dir = planning_with_a_discovered_folder();
+        let phases = crate::planning::load_phases(dir.path());
+        let mut app = App::from_phases_and_todos(dir.path(), &phases, &[], &[]);
+        app.current = 5; // phase 2 — mid Phases
+                         // Up first snaps to the top of Phases…
+        app.select_section(-1);
+        assert_eq!(app.current_entry().unwrap().phase_id, "1");
+        // …then steps up one docs folder at a time.
+        app.select_section(-1);
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Reviews"));
+        app.select_section(-1);
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Research"));
+        app.select_section(-1);
+        assert_eq!(app.current_entry().unwrap().docs_title(), Some("Intel"));
+        app.select_section(-1);
+        assert!(app.current_entry().unwrap().is_roadmap());
+    }
+
+    #[test]
+    fn refresh_preserves_selection_and_tabs_on_a_discovered_docs_folder_row() {
+        let dir = planning_with_a_discovered_folder();
+        let phases = crate::planning::load_phases(dir.path());
+        let mut app = App::from_phases_and_todos(dir.path(), &phases, &[], &[]);
+        app.current = 3; // Reviews
+        app.open_doc(0).expect("open the review document");
+        assert!(!app.tabs().is_empty());
+
+        // A folder appearing elsewhere must not disturb this row's identity.
+        std::fs::create_dir_all(dir.path().join("adr")).unwrap();
+        std::fs::write(dir.path().join("adr/0001-choice.md"), "# adr\n").unwrap();
+        app.refresh(dir.path(), &phases, &[], &[]);
+
+        assert_eq!(
+            app.current_entry().unwrap().docs_title(),
+            Some("Reviews"),
+            "the Reviews selection survives a reload by identity"
+        );
+        assert!(
+            !app.tabs().is_empty(),
+            "and its open tab survives with it: {:?}",
+            app.tabs()
+        );
+    }
+
+    #[test]
+    fn omits_a_discovered_docs_folder_row_when_it_holds_no_markdown() {
+        let dir = planning_with_a_discovered_folder();
+        // An empty folder, and one holding only non-markdown: neither is
+        // openable, so neither earns a row.
+        std::fs::create_dir_all(dir.path().join("archive")).unwrap();
+        std::fs::create_dir_all(dir.path().join("exports")).unwrap();
+        std::fs::write(dir.path().join("exports/data.csv"), "a,b\n").unwrap();
+
+        let phases = crate::planning::load_phases(dir.path());
+        let app = App::from_phases_and_todos(dir.path(), &phases, &[], &[]);
+        assert!(
+            app.entries
+                .iter()
+                .all(|e| e.docs_title() != Some("Archive")),
+            "no row for an empty folder"
+        );
+        assert!(
+            app.entries
+                .iter()
+                .all(|e| e.docs_title() != Some("Exports")),
+            "no row for a folder with no markdown"
+        );
+        assert!(app
+            .entries
+            .iter()
+            .any(|e| e.docs_title() == Some("Reviews")));
     }
 
     /// A workspace that finished research but has no ROADMAP.md yet, so no

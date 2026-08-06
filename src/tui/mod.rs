@@ -2074,7 +2074,8 @@ mod tests {
             screen(&mut ui).contains("[status] Roadmap"),
             "g jumps to the first row"
         );
-        // d walks the sections: Roadmap -> Intel -> Research -> Reviews.
+        // d walks the sections one docs folder at a time:
+        // Roadmap -> Intel -> Research -> Reviews -> Phases.
         ui.on_key(plain('d'));
         assert!(
             screen(&mut ui).contains("[status] Intel"),
@@ -2084,15 +2085,14 @@ mod tests {
         ui.on_key(plain('d'));
         assert!(
             screen(&mut ui).contains("[status] Reviews"),
-            "d reaches the Reviews section"
+            "a discovered folder is its own section"
         );
-        // j steps off the docs rows onto the first phase step, and J from there
-        // jumps phase-to-phase.
-        ui.on_key(plain('j'));
+        ui.on_key(plain('d'));
         assert!(
             screen(&mut ui).contains("Phase 1 · step 01-01"),
-            "j steps onto the first phase step"
+            "d reaches the Phases section"
         );
+        // J from a phase step jumps phase-to-phase.
         ui.on_key(plain('J'));
         assert!(
             screen(&mut ui).contains("Phase 2 · step 02-01"),

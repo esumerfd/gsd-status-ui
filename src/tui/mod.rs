@@ -23,7 +23,8 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-const STATUS_HINTS: &str = "j/k step · Enter plan · o open · c copy todo · ? help · q quit";
+const STATUS_HINTS: &str =
+    "j/k step · Enter plan · o open · c copy todo · / find · ? help · q quit";
 const DOC_HINTS: &str = "j/k scroll · / find · ? help · q/Esc status";
 const SEARCH_HINTS: &str = "Enter find · Esc cancel";
 const HELP_HINTS: &str = "q/Esc close";
@@ -37,6 +38,7 @@ const HELP_TEXT: &str = "\
             Enter    open the step's plan
             o        open-document dialog
             c        copy selected todo's name
+            /        find a requirement by ID
             q        quit
  [doc]      j/k      scroll
             d/u      page down / up
@@ -76,6 +78,14 @@ pub(crate) struct Ui {
     /// Set by `H` so the event loop re-reads `.planning/` with the new
     /// `show_completed` value. Drained by `take_needs_reload`.
     needs_reload: bool,
+    /// The in-progress `/`-prompt draft for finding a requirement by ID, at
+    /// the main-list (`Focus::Status`) level. `Some("")` right after `/`,
+    /// growing with each typed character, `None` when no find is drafting.
+    find_draft: Option<String>,
+    /// A find query confirmed by Enter, queued for the event loop to run
+    /// (the event loop, not a key handler, holds the `planning: &Path` the
+    /// resolver needs). Drained by `take_pending_find`.
+    pending_find: Option<String>,
 }
 
 /// The colored status report as ratatui text (reuses the report's ANSI colors).
@@ -214,6 +224,8 @@ impl Ui {
             roadmap_return: None,
             show_completed: false,
             needs_reload: false,
+            find_draft: None,
+            pending_find: None,
         }
     }
 
@@ -232,6 +244,27 @@ impl Ui {
     /// Drain the `H`-set reload request (see `needs_reload`).
     pub(crate) fn take_needs_reload(&mut self) -> bool {
         std::mem::take(&mut self.needs_reload)
+    }
+
+    /// Drain a find query confirmed by Enter (see `pending_find`).
+    pub(crate) fn take_pending_find(&mut self) -> Option<String> {
+        self.pending_find.take()
+    }
+
+    /// Resolve `query` to the file that defines that requirement ID (D-02)
+    /// and jump to it — selecting its row and opening/focusing its tab. Both
+    /// of D-04's failure modes (no definer, more than one, or `query` isn't
+    /// shaped like an ID) surface the same "requirement not found" flash.
+    pub(crate) fn run_find(&mut self, planning: &Path, query: &str) {
+        self.app.flash = None;
+        let located = crate::planning::find_requirement_definition(planning, query)
+            .and_then(|path| self.app.locate_document(&path));
+        let Some((step, doc)) = located else {
+            self.app.flash = Some("requirement not found".into());
+            return;
+        };
+        let request = self.app.select_document(step, doc);
+        self.apply(request);
     }
 
     pub(crate) fn quit(&self) -> bool {
@@ -429,6 +462,27 @@ impl Ui {
                 }
             }
         }
+        // While drafting a find-a-requirement query (D-01's `/` prompt on the
+        // main list), every unmodified key belongs to the draft too — mirrors
+        // the doc-search draft above, one level up (Focus::Status).
+        if self.find_draft.is_some() {
+            match code {
+                KeyCode::Esc => self.find_draft = None,
+                KeyCode::Enter => self.pending_find = self.find_draft.take(),
+                KeyCode::Backspace => {
+                    if let Some(draft) = self.find_draft.as_mut() {
+                        draft.pop();
+                    }
+                }
+                KeyCode::Char(c) => {
+                    if let Some(draft) = self.find_draft.as_mut() {
+                        draft.push(c);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         // Global: R peeks the project roadmap from any mode. (A search draft
         // returned above, so R only reaches here as a command key.)
         if code == KeyCode::Char('R') {
@@ -484,6 +538,9 @@ impl Ui {
                 }
                 KeyCode::Char('o') => self.app.open_dialog(),
                 KeyCode::Char('c') => self.copy_selection(),
+                // Find a requirement by ID (D-01): opens a draft in the
+                // footer; Enter queues it for the event loop via `run_find`.
+                KeyCode::Char('/') => self.find_draft = Some(String::new()),
                 // Chunked navigation: first/last, section jumps, phase jumps.
                 KeyCode::Char('g') | KeyCode::Home => self.app.select_first(),
                 KeyCode::Char('G') | KeyCode::End => self.app.select_last(),
@@ -744,6 +801,8 @@ impl Ui {
             DIALOG_HINTS.to_string()
         } else if let Some(view) = doc_view.filter(|v| v.is_search_mode()) {
             format!("/{} · {SEARCH_HINTS}", view.search_draft())
+        } else if let Some(draft) = &self.find_draft {
+            format!("find: {draft} · {SEARCH_HINTS}")
         } else if let Some(flash) = self.app.flash.clone() {
             flash
         } else if let Some(view) = doc_view.filter(|v| !v.search_query().is_empty()) {
@@ -833,6 +892,12 @@ fn event_loop(
                 // H (and future reload triggers) re-read .planning/ on demand.
                 if ui.take_needs_reload() {
                     ui.reload_from_disk(planning);
+                }
+                // Enter on a find-a-requirement draft queues the query here,
+                // where `planning: &Path` is in scope (key handlers have no
+                // access to it).
+                if let Some(query) = ui.take_pending_find() {
+                    ui.run_find(planning, &query);
                 }
                 if let Some(text) = ui.take_clipboard() {
                     execute!(io::stdout(), Print(clipboard::osc52_copy_sequence(&text))).ok();
@@ -1925,6 +1990,66 @@ mod tests {
         ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let s = screen(&mut ui);
         assert!(s.contains("no matches"), "{s}");
+    }
+
+    #[test]
+    fn slash_at_status_drafts_a_find_query_in_the_footer() {
+        let mut ui = sample_ui();
+        assert!(matches!(ui.app.focus(), Focus::Status));
+
+        ui.on_key(plain('/'));
+        let s = screen(&mut ui);
+        assert!(s.contains("find:"), "draft prompt shown: {s}");
+
+        for ch in "fr-1".chars() {
+            ui.on_key(plain(ch));
+        }
+        let s = screen(&mut ui);
+        assert!(s.contains("find: fr-1"), "draft echoed lowercase: {s}");
+
+        // Esc cancels without queuing a find and returns to normal hints.
+        ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(ui.take_pending_find(), None);
+        let s = screen(&mut ui);
+        assert!(!s.contains("find:"), "cancel clears the draft: {s}");
+        assert!(s.contains("j/k step"), "cancel restores hints: {s}");
+    }
+
+    #[test]
+    fn enter_on_a_find_draft_queues_the_query_for_the_event_loop() {
+        let mut ui = sample_ui();
+        ui.on_key(plain('/'));
+        for ch in "FR-1".chars() {
+            ui.on_key(plain(ch));
+        }
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(ui.take_pending_find(), Some("FR-1".to_string()));
+        // Draining is a take: a second read finds nothing left to queue.
+        assert_eq!(ui.take_pending_find(), None);
+    }
+
+    #[test]
+    fn run_find_selects_the_row_and_opens_the_tab_for_the_defining_file() {
+        let mut ui = sample_ui();
+        let planning = Path::new("sample/.planning");
+
+        ui.run_find(planning, "FR-1");
+
+        let s = screen(&mut ui);
+        assert!(s.contains("REQUIREMENTS.md"), "tab opened: {s}");
+        assert_eq!(ui.app.selection(), Some(Selected::Roadmap));
+    }
+
+    #[test]
+    fn run_find_of_an_unresolvable_query_reports_not_found() {
+        let mut ui = sample_ui();
+        let planning = Path::new("sample/.planning");
+
+        ui.run_find(planning, "not an id");
+
+        let s = screen(&mut ui);
+        assert!(s.contains("requirement not found"), "{s}");
     }
 
     #[test]

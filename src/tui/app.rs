@@ -604,6 +604,28 @@ impl App {
         })
     }
 
+    /// Find the `(step, doc)` index pair whose document path equals `path`,
+    /// scanning every entry's `documents` in row order. Used by the find-a-
+    /// requirement feature to turn a resolved file path back into a
+    /// selectable row/tab pair.
+    pub(crate) fn locate_document(&self, path: &Path) -> Option<(usize, usize)> {
+        for (step, entry) in self.entries.iter().enumerate() {
+            if let Some(doc) = entry.documents.iter().position(|d| d.path == path) {
+                return Some((step, doc));
+            }
+        }
+        None
+    }
+
+    /// Select `step` then open (or focus) its document at `doc` — the
+    /// combination `locate_document` feeds into to jump straight to a
+    /// resolved requirement definition. Delegates to `open_doc` so tab
+    /// ordering and the missing-file flash stay in one place.
+    pub(crate) fn select_document(&mut self, step: usize, doc: usize) -> Option<OpenRequest> {
+        self.current = step;
+        self.open_doc(doc)
+    }
+
     /// Move to a later (`+1`) or earlier (`-1`) step, crossing phase
     /// boundaries. Navigation preserves the current mode:
     /// - from the Status tab (browsing) the selection just moves — nothing
@@ -2134,5 +2156,43 @@ mod tests {
         let app = App::from_phases_and_todos(sample_planning(), &[], &[], &[]);
         assert_eq!(app.roadmap_index(), None);
         assert!(app.entries.first().is_none_or(|e| !e.is_roadmap()));
+    }
+
+    #[test]
+    fn locate_document_finds_the_step_and_doc_index_for_a_path() {
+        let app = sample_app();
+        // Roadmap row (entries[0]) lists ROADMAP, PROJECT, REQUIREMENTS, STATE
+        // in that order — REQUIREMENTS.md is document index 2.
+        let path = sample_planning().join("REQUIREMENTS.md");
+
+        let found = app.locate_document(&path);
+
+        assert_eq!(found, Some((0, 2)));
+    }
+
+    #[test]
+    fn locate_document_of_an_unknown_path_is_none() {
+        let app = sample_app();
+        let path = sample_planning().join("NOPE.md");
+
+        assert_eq!(app.locate_document(&path), None);
+    }
+
+    #[test]
+    fn select_document_moves_current_step_and_opens_the_tab() {
+        let mut app = sample_app();
+        assert_ne!(app.current, 0, "sanity: not already on the Roadmap row");
+
+        let req = app
+            .select_document(0, 2)
+            .expect("REQUIREMENTS.md exists and is not already open");
+
+        assert_eq!(app.current, 0);
+        assert!(
+            req.path.ends_with("REQUIREMENTS.md"),
+            "{}",
+            req.path.display()
+        );
+        assert_eq!(app.selection(), Some(Selected::Roadmap));
     }
 }

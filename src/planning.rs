@@ -1292,6 +1292,176 @@ fn title_from_folder(name: &str) -> String {
     }
 }
 
+// ────────────────────────────────────────────── find a requirement by ID ──
+
+/// Decoration characters that can lead a "defining" line — table pipes,
+/// heading hashes, list/emphasis markers, blockquotes, inline code, and
+/// underscores. Stripped one at a time (see [`strip_line_decoration`]) so
+/// `### **SKL-01**` peels down to `SKL-01` after several passes.
+const LINE_DECORATION: [char; 7] = ['|', '#', '*', '-', '>', '`', '_'];
+
+/// Whether `id` (already upper-cased) has the shape of a requirement ID: a
+/// dash, an alphabetic-led alphanumeric prefix before it, and a numeric
+/// suffix after it. Hand-rolled — this crate has no `regex` dependency and
+/// the constraint forbids adding one for a single check.
+///
+/// Task 1 only needs this to accept `FR-1`; the length bounds that reject
+/// `LOWERCASE-01`-shaped junk and `SKL-0001`-shaped over-long suffixes are
+/// tightened in Task 2 (see the D-04 non-ID test scenarios).
+fn is_requirement_id_shape(id: &str) -> bool {
+    let Some((prefix, suffix)) = id.split_once('-') else {
+        return false;
+    };
+    if prefix.is_empty() || suffix.is_empty() {
+        return false;
+    }
+    let mut chars = prefix.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_uppercase() {
+        return false;
+    }
+    if !chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()) {
+        return false;
+    }
+    suffix.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Trim and upper-case `input`, then check its shape — so `skl-01` matches
+/// `SKL-01`. `None` for anything that is not a requirement ID, without
+/// touching disk (this is D-04's third failure mode: a non-ID input).
+fn normalize_requirement_id(input: &str) -> Option<String> {
+    let upper = input.trim().to_ascii_uppercase();
+    is_requirement_id_shape(&upper).then_some(upper)
+}
+
+/// Strip leading whitespace and any run of [`LINE_DECORATION`] characters
+/// from the start of a line — so `| FR-1 | ...` and `### **SKL-01**` both
+/// peel down to a line starting with the ID.
+///
+/// Task 1 only needs to strip a table pipe; a GFM checkbox token
+/// (`- [x] **SKL-01**: ...`) is not yet handled and is tightened in Task 2
+/// (see the D-02 checkbox-line test scenario).
+fn strip_line_decoration(line: &str) -> &str {
+    line.trim_start()
+        .trim_start_matches(LINE_DECORATION)
+        .trim_start()
+}
+
+/// Whether `line` *defines* `id` (D-02): after stripping leading decoration,
+/// the remainder starts with `id` and the next character is end-of-line or is
+/// not `[A-Za-z0-9-]` — so `SKL-01:` and `SKL-01 —` define it, but `SKL-010`
+/// and `SKL-01x` (a different, longer token) do not.
+fn line_defines(line: &str, id: &str) -> bool {
+    let Some(rest) = strip_line_decoration(line).strip_prefix(id) else {
+        return false;
+    };
+    match rest.chars().next() {
+        None => true,
+        Some(c) => !(c.is_ascii_alphanumeric() || c == '-'),
+    }
+}
+
+/// Whether any line in the file at `path` defines `id`. Unreadable files are
+/// skipped rather than erroring, matching the tolerance every other loader in
+/// this module has for a file that vanished mid-scan.
+fn file_defines(path: &Path, id: &str) -> bool {
+    let Some(body) = fs::read_to_string(path).ok() else {
+        return false;
+    };
+    body.lines().any(|line| line_defines(line, id))
+}
+
+/// Every `.md` file directly inside `dir` (non-recursive). A missing
+/// directory yields an empty `Vec`.
+fn collect_md_files_at(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "md"))
+        .collect()
+}
+
+/// Every `.md` file anywhere under `dir`, at any depth.
+fn collect_md_files_recursive(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    collect_md_files_recursive_into(dir, &mut out);
+    out
+}
+
+fn collect_md_files_recursive_into(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_md_files_recursive_into(&path, out);
+        } else if path.extension().is_some_and(|x| x == "md") {
+            out.push(path);
+        }
+    }
+}
+
+/// The outcome of scanning one stage (root, or the deeper tree) for `id`'s
+/// defining files. `Ambiguous` and `None` both resolve to D-04's shared
+/// "not found" outcome, but the caller needs to tell them apart from a clean
+/// `None` to decide whether to descend to the next stage.
+enum Definers {
+    None,
+    One(PathBuf),
+    Ambiguous,
+}
+
+/// Scan `files`, deduping by path so several defining lines inside one file
+/// still count as a single definer (D-02).
+fn find_definers(files: &[PathBuf], id: &str) -> Definers {
+    let mut found: Option<PathBuf> = None;
+    for path in files {
+        if file_defines(path, id) {
+            match found {
+                None => found = Some(path.clone()),
+                Some(_) => return Definers::Ambiguous,
+            }
+        }
+    }
+    match found {
+        Some(path) => Definers::One(path),
+        None => Definers::None,
+    }
+}
+
+/// Resolve a requirement ID to the single file that defines it (D-02), or
+/// `None` when zero or multiple files do, or when `id` is not shaped like a
+/// requirement ID at all (D-04's three failure modes).
+///
+/// Two-stage, root-first scan: `.planning/*.md` at the root is checked first
+/// and wins outright when exactly one root file defines the ID — the deeper
+/// tree is never consulted in that case. Only when the root defines the ID in
+/// no file does the scan descend into the rest of the `.planning` tree. This
+/// is not optional: a real corpus (wk-axol) has some IDs defined at both the
+/// root `REQUIREMENTS.md` and a phase's `RESEARCH.md`, and root-first
+/// precedence is what makes that resolve instead of reporting ambiguous.
+pub(crate) fn find_requirement_definition(planning: &Path, id: &str) -> Option<PathBuf> {
+    let id = normalize_requirement_id(id)?;
+    let root_files = collect_md_files_at(planning);
+    match find_definers(&root_files, &id) {
+        Definers::One(path) => return Some(path),
+        Definers::Ambiguous => return None,
+        Definers::None => {}
+    }
+    let mut deeper_files = collect_md_files_recursive(planning);
+    deeper_files.retain(|p| p.parent() != Some(planning));
+    match find_definers(&deeper_files, &id) {
+        Definers::One(path) => Some(path),
+        Definers::Ambiguous | Definers::None => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2013,5 +2183,17 @@ mod tests {
         ]);
         let labels: Vec<&str> = docs.iter().map(|d| d.label.as_str()).collect();
         assert_eq!(labels, ["plan", "research", "abacus", "verification"]);
+    }
+
+    #[test]
+    fn find_requirement_definition_locates_the_defining_file() {
+        // FR-1 is defined at sample/.planning/REQUIREMENTS.md:21 as a table
+        // row (`| FR-1 | ... |`) and appears nowhere else in the sample tree
+        // — an unambiguous tracer target for the whole feature slice.
+        let planning = Path::new("sample/.planning");
+
+        let found = find_requirement_definition(planning, "FR-1");
+
+        assert_eq!(found, Some(planning.join("REQUIREMENTS.md")));
     }
 }

@@ -279,6 +279,22 @@ impl Ui {
         };
         let request = self.app.select_document(step, doc);
         self.apply(request);
+        if let Some(id) = crate::planning::normalize_requirement_id(query) {
+            self.highlight_in_focused_doc(&id);
+        }
+    }
+
+    /// Arm the focused document's own search with `query`, so a jump lands
+    /// on the term highlighted and scrolled to rather than merely in the
+    /// right file. Re-arming an already-open tab retargets it. No-op when
+    /// the jump did not end on a document.
+    fn highlight_in_focused_doc(&mut self, query: &str) {
+        let Focus::Doc(doc) = self.app.focus() else {
+            return;
+        };
+        if let Some(view) = self.views.get_mut(&(self.app.current, doc)) {
+            view.set_search(query);
+        }
     }
 
     pub(crate) fn quit(&self) -> bool {
@@ -2116,6 +2132,118 @@ mod tests {
         assert_eq!(ui.app.selection(), before, "selection stays put");
         let s = screen(&mut ui);
         assert!(s.contains("requirement not found"), "{s}");
+    }
+
+    /// The `(query, match count)` of the currently focused document's search.
+    fn focused_search(ui: &Ui) -> Option<(String, usize)> {
+        let Focus::Doc(doc) = ui.app.focus() else {
+            return None;
+        };
+        let view = ui.views.get(&(ui.app.current, doc))?;
+        Some((view.search_query().to_string(), view.search_match_count()))
+    }
+
+    #[test]
+    fn run_find_highlights_the_requirement_id_in_the_opened_doc() {
+        // Landing on the right file is only half the jump — the ID has to be
+        // findable on the page. The jump arms the doc's own search so the
+        // defining line is highlighted and scrolled to, exactly as a manual
+        // `/` search would leave it.
+        let mut ui = sample_ui();
+        let planning = Path::new("sample/.planning");
+
+        ui.run_find(planning, "FR-1");
+
+        let (query, matches) = focused_search(&ui).expect("a doc tab is focused");
+        assert_eq!(query, "FR-1", "the ID is armed as the doc search");
+        assert!(matches > 0, "the defining line must be a match");
+        let s = screen(&mut ui);
+        assert!(
+            s.contains(&format!("match 1/{matches}")),
+            "footer reports the highlight like a manual search: {s}"
+        );
+    }
+
+    #[test]
+    fn the_found_id_actually_paints_a_highlight_on_screen() {
+        // End-to-end proof through the real draw path: the armed search is
+        // worth nothing if the jump scrolls the match off-screen or the
+        // doc pane drops the styling. Assert the rendered row carrying the
+        // ID has background cells the surrounding body rows do not.
+        let mut ui = sample_ui();
+        let planning = Path::new("sample/.planning");
+
+        ui.run_find(planning, "FR-1");
+
+        let backend = TestBackend::new(90, 24);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| ui.draw(f)).unwrap();
+        let buf = term.backend().buffer().clone();
+
+        let mut highlighted_rows = Vec::new();
+        for y in 0..24u16 {
+            let text: String = (0..90u16).map(|x| buf[(x, y)].symbol()).collect();
+            let painted = (0..90u16)
+                .filter(|&x| {
+                    buf[(x, y)]
+                        .style()
+                        .bg
+                        .is_some_and(|b| b != ratatui::style::Color::Reset)
+                })
+                .count();
+            if painted > 0 {
+                highlighted_rows.push(text.trim_end().to_string());
+            }
+        }
+        assert!(
+            highlighted_rows.iter().any(|r| r.contains("FR-1")),
+            "no painted row carries the found ID; painted rows were {highlighted_rows:#?}"
+        );
+    }
+
+    #[test]
+    fn run_find_highlights_the_canonical_id_for_a_lowercase_query() {
+        // The resolver is case-insensitive, so the highlight must be armed
+        // with the normalized ID rather than whatever case was typed.
+        let mut ui = sample_ui();
+        let planning = Path::new("sample/.planning");
+
+        ui.run_find(planning, "  fr-1  ");
+
+        let (query, matches) = focused_search(&ui).expect("a doc tab is focused");
+        assert_eq!(query, "FR-1", "normalized, not echoed as typed");
+        assert!(matches > 0, "still matches the defining line");
+    }
+
+    #[test]
+    fn run_find_retargets_the_highlight_when_the_tab_is_already_open() {
+        // FR-1 and FR-2 are defined in the same file, so the second find
+        // opens no new tab. The highlight must still move to the new ID
+        // instead of being left on the first one.
+        let mut ui = sample_ui();
+        let planning = Path::new("sample/.planning");
+
+        ui.run_find(planning, "FR-1");
+        ui.run_find(planning, "FR-2");
+
+        let (query, matches) = focused_search(&ui).expect("a doc tab is focused");
+        assert_eq!(query, "FR-2", "the highlight follows the newest find");
+        assert!(matches > 0);
+    }
+
+    #[test]
+    fn run_find_that_finds_nothing_leaves_an_open_docs_highlight_alone() {
+        // A failed find must not disturb the document the user is already
+        // reading — the not-found flash is the whole of its effect.
+        let mut ui = sample_ui();
+        let planning = Path::new("sample/.planning");
+        ui.run_find(planning, "FR-1");
+
+        ui.run_find(planning, "ZZZ-99");
+
+        let (query, _) = focused_search(&ui).expect("the doc tab is still focused");
+        assert_eq!(query, "FR-1", "the previous highlight survives");
+        assert_eq!(ui.app.flash, Some("requirement not found".to_string()));
     }
 
     #[test]

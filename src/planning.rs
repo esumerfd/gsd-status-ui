@@ -1326,7 +1326,10 @@ fn is_requirement_id_shape(id: &str) -> bool {
 /// Trim and upper-case `input`, then check its shape — so `skl-01` matches
 /// `SKL-01`. `None` for anything that is not a requirement ID, without
 /// touching disk (this is D-04's third failure mode: a non-ID input).
-fn normalize_requirement_id(input: &str) -> Option<String> {
+///
+/// Also the canonical form the TUI highlights in the file it jumps to, so
+/// the term on the page is the ID as written rather than as typed.
+pub(crate) fn normalize_requirement_id(input: &str) -> Option<String> {
     let upper = input.trim().to_ascii_uppercase();
     is_requirement_id_shape(&upper).then_some(upper)
 }

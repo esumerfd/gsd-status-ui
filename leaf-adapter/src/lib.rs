@@ -211,6 +211,25 @@ impl DocView {
         self.jump_to_match();
     }
 
+    /// Run `query` as the active search without going through a draft —
+    /// for a jump that arrives with the term already known (finding a
+    /// requirement by ID). Leaves the same state `confirm_search` does,
+    /// input mode included (off), so the caller gets the highlight, the
+    /// scroll-to-first-match, and the `match n/N` footer for free. An
+    /// empty `query` clears the search.
+    pub fn set_search(&mut self, query: &str) {
+        self.search.mode = false;
+        self.search.draft.clear();
+        self.search.query = query.to_string();
+        self.search.matches.clear();
+        self.search.idx = 0;
+        if self.search.query.is_empty() {
+            return;
+        }
+        self.compute_matches();
+        self.jump_to_match();
+    }
+
     pub fn push_search_draft(&mut self, ch: char) {
         self.search.draft.push(ch);
     }

@@ -222,6 +222,56 @@ fn active_match_line_is_highlighted() {
 }
 
 #[test]
+fn set_search_runs_a_query_nobody_typed() {
+    // The find-a-requirement jump highlights its ID without the user ever
+    // opening a draft, so `set_search` must land in the same state a
+    // confirmed search does — matches computed, scrolled to the first one,
+    // and *not* in input mode (no draft prompt on a doc the user only
+    // jumped into).
+    let body: String = (1..=50)
+        .map(|i| {
+            if i == 20 || i == 40 {
+                format!("needle target {i}\n\n")
+            } else {
+                format!("line number {i}\n\n")
+            }
+        })
+        .collect();
+    let f = fixture(&body);
+    let mut view = DocView::open(f.path(), 40).expect("open");
+
+    view.set_search("needle");
+
+    assert_eq!(view.search_query(), "needle");
+    assert_eq!(view.search_match_count(), 2);
+    assert_eq!(view.search_index(), 0);
+    assert!(!view.is_search_mode(), "must not open a draft prompt");
+    let text = rendered_text(&mut view, 40, 5);
+    assert!(
+        text.contains("needle target 20"),
+        "not scrolled to first match:\n{text}"
+    );
+}
+
+#[test]
+fn set_search_replaces_a_previous_query_and_clears_on_empty() {
+    let f = fixture("# Doc\n\nneedle one.\n\nhaystack two.\n");
+    let mut view = DocView::open(f.path(), 40).expect("open");
+
+    view.set_search("needle");
+    assert_eq!(view.search_match_count(), 1);
+
+    // A second jump into the same view must retarget, not stack.
+    view.set_search("haystack");
+    assert_eq!(view.search_query(), "haystack");
+    assert_eq!(view.search_match_count(), 1);
+
+    view.set_search("");
+    assert_eq!(view.search_query(), "");
+    assert_eq!(view.search_match_count(), 0);
+}
+
+#[test]
 fn slash_starts_with_an_empty_draft_even_after_a_search() {
     let f = fixture("# Doc\n\nneedle one.\n");
     let mut view = DocView::open(f.path(), 40).expect("open");

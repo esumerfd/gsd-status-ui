@@ -2202,6 +2202,22 @@ mod tests {
     }
 
     #[test]
+    fn find_requirement_definition_falls_back_to_the_deeper_tree_for_a_real_sample_fixture() {
+        // NAV-01 is defined only at
+        // phases/01-navigation-skeleton/01-VERIFICATION.md, a table row added
+        // for D-03 (the reveal-hidden-row behavior) — nothing at root defines
+        // it, so this exercises the real sample tree's stage-2 fallback.
+        let planning = Path::new("sample/.planning");
+
+        let found = find_requirement_definition(planning, "NAV-01");
+
+        assert_eq!(
+            found,
+            Some(planning.join("phases/01-navigation-skeleton/01-VERIFICATION.md"))
+        );
+    }
+
+    #[test]
     fn find_requirement_definition_via_table_row() {
         let dir = tempfile::tempdir().unwrap();
         let req = dir.path().join("REQUIREMENTS.md");

@@ -255,10 +255,24 @@ impl Ui {
     /// and jump to it — selecting its row and opening/focusing its tab. Both
     /// of D-04's failure modes (no definer, more than one, or `query` isn't
     /// shaped like an ID) surface the same "requirement not found" flash.
+    ///
+    /// D-03: when the defining file's row exists but is hidden by the `H`
+    /// show/hide-completed-work toggle, reveal it — flip the toggle on,
+    /// reload, and retry the lookup once — rather than reporting not found.
+    /// The reveal is one-shot; a second miss is a real "not found" and the
+    /// toggle is left on (the row must stay visible).
     pub(crate) fn run_find(&mut self, planning: &Path, query: &str) {
         self.app.flash = None;
-        let located = crate::planning::find_requirement_definition(planning, query)
-            .and_then(|path| self.app.locate_document(&path));
+        let Some(path) = crate::planning::find_requirement_definition(planning, query) else {
+            self.app.flash = Some("requirement not found".into());
+            return;
+        };
+        let mut located = self.app.locate_document(&path);
+        if located.is_none() && !self.show_completed {
+            self.show_completed = true;
+            self.reload_from_disk(planning);
+            located = self.app.locate_document(&path);
+        }
         let Some((step, doc)) = located else {
             self.app.flash = Some("requirement not found".into());
             return;
@@ -2063,6 +2077,43 @@ mod tests {
 
         ui.run_find(planning, "not an id");
 
+        let s = screen(&mut ui);
+        assert!(s.contains("requirement not found"), "{s}");
+    }
+
+    #[test]
+    fn run_find_reveals_a_row_hidden_by_the_completed_work_toggle() {
+        // NAV-01 is defined only at
+        // phases/01-navigation-skeleton/01-VERIFICATION.md — Phase 1 is
+        // verified, so `sample_ui()` (show_completed == false) does not list
+        // it. D-03: the find must reveal it rather than report not found.
+        let mut ui = sample_ui();
+        let planning = Path::new("sample/.planning");
+        assert!(!ui.show_completed, "sanity: starts with completed hidden");
+
+        ui.run_find(planning, "NAV-01");
+
+        assert!(ui.show_completed, "the reveal must flip the toggle on");
+        assert_ne!(
+            ui.app.flash,
+            Some("requirement not found".to_string()),
+            "must not report not-found once revealed"
+        );
+        let s = screen(&mut ui);
+        assert!(s.contains("01-VERIFICATION.md"), "tab opened: {s}");
+    }
+
+    #[test]
+    fn run_find_of_a_truly_missing_id_leaves_selection_put_after_one_reveal_retry() {
+        let mut ui = sample_ui();
+        let planning = Path::new("sample/.planning");
+        let before = ui.app.selection();
+
+        ui.run_find(planning, "ZZZ-99");
+
+        // Only the observable outcome is asserted — not whether the reveal
+        // retry flipped show_completed internally along the way.
+        assert_eq!(ui.app.selection(), before, "selection stays put");
         let s = screen(&mut ui);
         assert!(s.contains("requirement not found"), "{s}");
     }

@@ -7,5 +7,6 @@
 | Dock → kitchen under 90 s | ✅ worst case 77 s |
 | 10 collision-free runs | ✅ 10/10 |
 | Map survives restart | ✅ reloads from disk |
+| NAV-01 | ✅ occupancy map rebuilds within one tick of a restart |
 
 Phase goal achieved; roadmap checkbox ticked.

@@ -2016,6 +2016,21 @@ mod tests {
     }
 
     #[test]
+    fn find_draft_swallows_the_global_h_toggle() {
+        // While drafting, every unmodified key belongs to the draft —
+        // including H, which elsewhere is the global show/hide-completed
+        // toggle. A draft `/H` must not flip `show_completed`.
+        let mut ui = sample_ui();
+        ui.on_key(plain('/'));
+        ui.on_key(plain('H'));
+
+        assert!(!ui.show_completed, "H typed into the draft must not toggle");
+        assert!(!ui.take_needs_reload(), "no reload was queued either");
+        let s = screen(&mut ui);
+        assert!(s.contains("find: H"), "H became draft text instead: {s}");
+    }
+
+    #[test]
     fn enter_on_a_find_draft_queues_the_query_for_the_event_loop() {
         let mut ui = sample_ui();
         ui.on_key(plain('/'));

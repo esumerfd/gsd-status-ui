@@ -1300,19 +1300,14 @@ fn title_from_folder(name: &str) -> String {
 /// `### **SKL-01**` peels down to `SKL-01` after several passes.
 const LINE_DECORATION: [char; 7] = ['|', '#', '*', '-', '>', '`', '_'];
 
-/// Whether `id` (already upper-cased) has the shape of a requirement ID: a
-/// dash, an alphabetic-led alphanumeric prefix before it, and a numeric
-/// suffix after it. Hand-rolled — this crate has no `regex` dependency and
-/// the constraint forbids adding one for a single check.
-///
-/// Task 1 only needs this to accept `FR-1`; the length bounds that reject
-/// `LOWERCASE-01`-shaped junk and `SKL-0001`-shaped over-long suffixes are
-/// tightened in Task 2 (see the D-04 non-ID test scenarios).
+/// Whether `id` (already upper-cased) has the shape of a requirement ID:
+/// `[A-Z][A-Z0-9]{1,7}-[0-9]{1,3}`. Hand-rolled — this crate has no `regex`
+/// dependency and the constraint forbids adding one for a single check.
 fn is_requirement_id_shape(id: &str) -> bool {
     let Some((prefix, suffix)) = id.split_once('-') else {
         return false;
     };
-    if prefix.is_empty() || suffix.is_empty() {
+    if prefix.is_empty() || prefix.len() > 8 || suffix.is_empty() || suffix.len() > 3 {
         return false;
     }
     let mut chars = prefix.chars();
@@ -1336,17 +1331,26 @@ fn normalize_requirement_id(input: &str) -> Option<String> {
     is_requirement_id_shape(&upper).then_some(upper)
 }
 
-/// Strip leading whitespace and any run of [`LINE_DECORATION`] characters
-/// from the start of a line — so `| FR-1 | ...` and `### **SKL-01**` both
-/// peel down to a line starting with the ID.
-///
-/// Task 1 only needs to strip a table pipe; a GFM checkbox token
-/// (`- [x] **SKL-01**: ...`) is not yet handled and is tightened in Task 2
-/// (see the D-02 checkbox-line test scenario).
+/// Strip decoration from the start of a line, repeatedly, until nothing more
+/// strips: whitespace; a GFM checkbox token (`[ ]` / `[x]` / `[X]`); or any
+/// run of [`LINE_DECORATION`] characters. Looping is what lets
+/// `- [x] **SKL-01**: ...` peel down to `SKL-01: ...` — the leading `-`
+/// strips on pass one, the checkbox on pass two, and `**` on pass three.
 fn strip_line_decoration(line: &str) -> &str {
-    line.trim_start()
-        .trim_start_matches(LINE_DECORATION)
-        .trim_start()
+    let mut s = line;
+    loop {
+        let stripped = s.trim_start();
+        let stripped = stripped
+            .strip_prefix("[x]")
+            .or_else(|| stripped.strip_prefix("[X]"))
+            .or_else(|| stripped.strip_prefix("[ ]"))
+            .unwrap_or(stripped);
+        let stripped = stripped.trim_start_matches(LINE_DECORATION);
+        if stripped == s {
+            return s;
+        }
+        s = stripped;
+    }
 }
 
 /// Whether `line` *defines* `id` (D-02): after stripping leading decoration,
@@ -2195,5 +2199,174 @@ mod tests {
         let found = find_requirement_definition(planning, "FR-1");
 
         assert_eq!(found, Some(planning.join("REQUIREMENTS.md")));
+    }
+
+    #[test]
+    fn find_requirement_definition_via_table_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = dir.path().join("REQUIREMENTS.md");
+        std::fs::write(&req, "| SKL-01 | The skill must be loaded on demand. |\n").unwrap();
+
+        assert_eq!(find_requirement_definition(dir.path(), "SKL-01"), Some(req));
+    }
+
+    #[test]
+    fn find_requirement_definition_via_heading() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = dir.path().join("REQUIREMENTS.md");
+        std::fs::write(&req, "### SKL-01 — Skill loading\n").unwrap();
+
+        assert_eq!(find_requirement_definition(dir.path(), "SKL-01"), Some(req));
+    }
+
+    #[test]
+    fn find_requirement_definition_via_bold() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = dir.path().join("REQUIREMENTS.md");
+        std::fs::write(&req, "**SKL-01**: loads on demand\n").unwrap();
+
+        assert_eq!(find_requirement_definition(dir.path(), "SKL-01"), Some(req));
+    }
+
+    #[test]
+    fn find_requirement_definition_via_plain_colon() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = dir.path().join("REQUIREMENTS.md");
+        std::fs::write(&req, "SKL-01: loads on demand\n").unwrap();
+
+        assert_eq!(find_requirement_definition(dir.path(), "SKL-01"), Some(req));
+    }
+
+    #[test]
+    fn find_requirement_definition_via_checkbox_line() {
+        // The canonical wk-axol corpus defines requirements this way
+        // (`REQUIREMENTS.md:12` — `- [x] **STAMP-01**: …`). Without checkbox
+        // stripping, the primary requirements file stops defining its own
+        // requirements.
+        let dir = tempfile::tempdir().unwrap();
+        let req = dir.path().join("REQUIREMENTS.md");
+        std::fs::write(&req, "- [x] **SKL-01**: loads on demand\n").unwrap();
+
+        assert_eq!(find_requirement_definition(dir.path(), "SKL-01"), Some(req));
+    }
+
+    #[test]
+    fn find_requirement_definition_ignores_substring_and_bracket_mentions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("ROADMAP.md"),
+            "...as SKL-01 says, the skill...\ndepends_on: [SKL-01]\n",
+        )
+        .unwrap();
+
+        assert_eq!(find_requirement_definition(dir.path(), "SKL-01"), None);
+    }
+
+    #[test]
+    fn find_requirement_definition_dedupes_multiple_defining_lines_in_one_file() {
+        // Mirrors wk-axol's REQUIREMENTS.md:12 (checkbox) and :92 (table row)
+        // both defining STAMP-01 — two defining lines, still one file.
+        let dir = tempfile::tempdir().unwrap();
+        let req = dir.path().join("REQUIREMENTS.md");
+        std::fs::write(
+            &req,
+            "- [x] **SKL-01**: loads on demand\n| SKL-01 | table mention |\n",
+        )
+        .unwrap();
+
+        assert_eq!(find_requirement_definition(dir.path(), "SKL-01"), Some(req));
+    }
+
+    #[test]
+    fn find_requirement_definition_prefers_root_over_deeper_tree() {
+        // The wk-axol STAMP-01 case: root REQUIREMENTS.md and a phase's
+        // RESEARCH.md both define the same ID. Root wins outright — the
+        // deeper tree is never consulted once the root resolves.
+        let dir = tempfile::tempdir().unwrap();
+        let root_req = dir.path().join("REQUIREMENTS.md");
+        std::fs::write(&root_req, "SKL-01: root definition\n").unwrap();
+        let phase_dir = dir.path().join("phases/01-x");
+        std::fs::create_dir_all(&phase_dir).unwrap();
+        std::fs::write(
+            phase_dir.join("01-RESEARCH.md"),
+            "| SKL-01 | deep definition |\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            find_requirement_definition(dir.path(), "SKL-01"),
+            Some(root_req)
+        );
+    }
+
+    #[test]
+    fn find_requirement_definition_of_an_undefined_id_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("REQUIREMENTS.md"), "no requirements here\n").unwrap();
+
+        assert_eq!(find_requirement_definition(dir.path(), "SKL-01"), None);
+    }
+
+    #[test]
+    fn find_requirement_definition_ambiguous_at_root_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("A.md"), "DUP-01: definition a\n").unwrap();
+        std::fs::write(dir.path().join("B.md"), "DUP-01: definition b\n").unwrap();
+
+        assert_eq!(find_requirement_definition(dir.path(), "DUP-01"), None);
+    }
+
+    #[test]
+    fn find_requirement_definition_rejects_shapeless_input_without_touching_disk() {
+        // A path that does not exist — these calls must still return None,
+        // documenting that normalize_requirement_id rejects an input with no
+        // dash before any fs::read is attempted.
+        let planning = Path::new("/nonexistent/gsd-status-ui-test-path-12345");
+
+        for input in ["", "hello"] {
+            assert_eq!(
+                find_requirement_definition(planning, input),
+                None,
+                "expected None for {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn find_requirement_definition_rejects_an_over_length_prefix() {
+        // A file that WOULD match if the shape check had no length bound —
+        // pins that `[A-Z][A-Z0-9]{1,7}-...` (prefix capped at 8 chars) is
+        // enforced, not just "starts with an uppercase letter".
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("REQUIREMENTS.md"), "TOOMANYCHARS-01: def\n").unwrap();
+
+        assert_eq!(
+            find_requirement_definition(dir.path(), "toomanychars-01"),
+            None
+        );
+    }
+
+    #[test]
+    fn find_requirement_definition_rejects_an_over_length_numeric_suffix() {
+        // Same idea for the suffix: `-[0-9]{1,3}` caps it at 3 digits.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("REQUIREMENTS.md"), "SKL-0001: def\n").unwrap();
+
+        assert_eq!(find_requirement_definition(dir.path(), "skl-0001"), None);
+    }
+
+    #[test]
+    fn find_requirement_definition_falls_back_to_the_deeper_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("REQUIREMENTS.md"), "nothing here\n").unwrap();
+        let phase_dir = dir.path().join("phases/01-x");
+        std::fs::create_dir_all(&phase_dir).unwrap();
+        let deep = phase_dir.join("01-RESEARCH.md");
+        std::fs::write(&deep, "DEEP-01: only defined here\n").unwrap();
+
+        assert_eq!(
+            find_requirement_definition(dir.path(), "DEEP-01"),
+            Some(deep)
+        );
     }
 }

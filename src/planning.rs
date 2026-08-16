@@ -807,6 +807,7 @@ fn is_passing_status(s: &str) -> bool {
             | "complete"
             | "completed"
             | "verified"
+            | "superseded"
     )
 }
 
@@ -1837,6 +1838,43 @@ mod tests {
             !tasks.iter().any(|t| t.id == "260708-cc3"),
             "260708-cc3 (completed) must be hidden by default"
         );
+    }
+
+    #[test]
+    fn superseded_quick_task_is_treated_as_completed() {
+        // A "Superseded" Status row means the task's work was overtaken by
+        // something else, not that it failed verification. It should hide
+        // alongside other completed tasks by default and read as Completed
+        // (not Failed) when show_completed surfaces it.
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::create_dir_all(planning.join("quick/260713-ff6-old-approach")).unwrap();
+        std::fs::write(
+            planning.join("quick/260713-ff6-old-approach/260713-ff6-PLAN.md"),
+            "---\ntitle: Old approach\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            planning.join("STATE.md"),
+            "# STATE\n\n### Quick Tasks Completed\n\n\
+             | # | Description | Date | Commit | Status | Directory |\n\
+             |---|--------------|------|--------|--------|-----------|\n\
+             | 260713-ff6 | Old approach | 2026-07-13 | a1b2c3d | Superseded | ./quick/260713-ff6-old-approach/ |\n",
+        )
+        .unwrap();
+
+        let hidden = load_quick_tasks(planning, false);
+        assert!(
+            !hidden.iter().any(|t| t.id == "260713-ff6"),
+            "superseded task must be hidden by default like other completed tasks"
+        );
+
+        let shown = load_quick_tasks(planning, true);
+        let task = shown
+            .iter()
+            .find(|t| t.id == "260713-ff6")
+            .expect("260713-ff6 present when show_completed");
+        assert_eq!(task.status, QuickTaskStatus::Completed);
     }
 
     #[test]

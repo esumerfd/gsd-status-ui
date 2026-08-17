@@ -272,3 +272,27 @@ fn code_blocks_ignores_inline_math_dollar_syntax() {
     let parsed = parse_markdown(src, &ss, &theme, &test_md_theme(), false, true);
     assert_eq!(parsed.code_blocks.len(), 0);
 }
+
+#[test]
+fn bare_structural_tags_render_their_body_instead_of_vanishing() {
+    let (ss, theme) = test_assets();
+    let src = "<objective>\nHello objective body.\n</objective>\n";
+    let (lines, _, _, _) = parse_markdown(src, &ss, &theme, &test_md_theme(), false, true).into();
+    let rendered = rendered_non_empty_lines(&lines);
+    assert!(
+        rendered.iter().any(|line| line.contains("Hello objective body.")),
+        "objective body missing from render, got: {rendered:?}"
+    );
+}
+
+#[test]
+fn bare_tags_with_attributes_render_their_body_instead_of_vanishing() {
+    let (ss, theme) = test_assets();
+    let src = "<task type=\"auto\">\nDo the thing.\n</task>\n";
+    let (lines, _, _, _) = parse_markdown(src, &ss, &theme, &test_md_theme(), false, true).into();
+    let rendered = rendered_non_empty_lines(&lines);
+    assert!(
+        rendered.iter().any(|line| line.contains("Do the thing.")),
+        "task body missing from render, got: {rendered:?}"
+    );
+}

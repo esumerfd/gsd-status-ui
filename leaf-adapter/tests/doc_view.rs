@@ -38,6 +38,23 @@ fn open_renders_markdown_into_a_panel() {
 }
 
 #[test]
+fn open_renders_gsd_style_bare_xml_tag_sections() {
+    let f = fixture(
+        "# Plan\n\n<objective>\nClose out the ticket end to end.\n</objective>\n\n<task type=\"auto\">\nRecord the outcome.\n</task>\n",
+    );
+    let mut view = DocView::open(f.path(), 80).expect("open");
+    let text = rendered_text(&mut view, 80, 20);
+    assert!(
+        text.contains("Close out the ticket end to end."),
+        "objective body missing:\n{text}"
+    );
+    assert!(
+        text.contains("Record the outcome."),
+        "task body missing:\n{text}"
+    );
+}
+
+#[test]
 fn title_is_the_file_name() {
     let f = fixture("# T\n");
     let view = DocView::open(f.path(), 40).expect("open");

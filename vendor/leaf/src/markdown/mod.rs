@@ -571,6 +571,39 @@ pub(crate) fn parse_markdown_with_width(
                     inline,
                 );
             }
+            // Bare tag-like lines (`<objective>`, `<task type="auto">`, ...) match
+            // CommonMark's HTML-block/inline-HTML grammar even though they're not
+            // real HTML. Render the raw text literally instead of dropping it.
+            MdEvent::Html(text) | MdEvent::InlineHtml(text) => {
+                let raw = text.as_ref();
+                let mut lines_in_event = raw.split('\n').peekable();
+                while let Some(part) = lines_in_event.next() {
+                    if !part.is_empty() {
+                        push_text_event(
+                            &mut spans,
+                            &mut code_buf,
+                            part,
+                            in_code,
+                            theme_colors,
+                            blockquote_depth,
+                            inline,
+                        );
+                    }
+                    if lines_in_event.peek().is_some() {
+                        flush_wrapped_spans(
+                            &mut lines,
+                            &mut spans,
+                            blockquote_depth,
+                            &list_stack,
+                            &mut item_stack,
+                            render_width,
+                            theme_colors,
+                            blockquote_color,
+                        );
+                        wraps = true;
+                    }
+                }
+            }
             MdEvent::SoftBreak | MdEvent::HardBreak if !in_code => {
                 flush_wrapped_spans(
                     &mut lines,

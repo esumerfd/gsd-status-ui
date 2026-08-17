@@ -41,7 +41,8 @@ const HELP_TEXT: &str = "\
             /        find a requirement by ID
             q        quit
  [doc]      j/k      scroll
-            d/u      page down / up
+            d/u      half page down / up
+            C-d/u    page down / up
             g/G      top / bottom
             /        search
             n/N      next / prev match
@@ -471,6 +472,19 @@ impl Ui {
                     self.views.remove(&closed);
                 }
             }
+            // Whole-page scroll, mirroring bare d/u's half-page scroll. Only
+            // meaningful with a doc open; a no-op from the status panel.
+            KeyCode::Char('d') | KeyCode::Char('u') => {
+                if let Focus::Doc(doc) = self.app.focus() {
+                    if let Some(view) = self.views.get_mut(&(self.app.current, doc)) {
+                        if code == KeyCode::Char('d') {
+                            view.page_down();
+                        } else {
+                            view.page_up();
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -606,10 +620,10 @@ impl Ui {
         match code {
             KeyCode::Char('j') | KeyCode::Down => view.scroll_down(),
             KeyCode::Char('k') | KeyCode::Up => view.scroll_up(),
-            KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f') | KeyCode::Char('d') => {
-                view.page_down()
-            }
-            KeyCode::PageUp | KeyCode::Char('b') | KeyCode::Char('u') => view.page_up(),
+            KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f') => view.page_down(),
+            KeyCode::PageUp | KeyCode::Char('b') => view.page_up(),
+            KeyCode::Char('d') => view.half_page_down(),
+            KeyCode::Char('u') => view.half_page_up(),
             KeyCode::Char('g') | KeyCode::Home => view.to_top(),
             KeyCode::Char('G') | KeyCode::End => view.to_bottom(),
             KeyCode::Char('/') => view.begin_search(),
@@ -1820,20 +1834,47 @@ mod tests {
     }
 
     #[test]
-    fn d_and_u_page_the_document_like_pagedown_pageup() {
+    fn d_and_u_scroll_the_document_by_half_a_page() {
         let mut ui = sample_ui();
         open_via_dialog(&mut ui, 0);
         let top = screen(&mut ui);
 
         ui.on_key(plain('d'));
+        let half = screen(&mut ui);
+        assert_ne!(top, half, "d must scroll down");
+
+        ui.on_key(plain('g'));
+        let _ = screen(&mut ui);
+        ui.on_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        let one_full = screen(&mut ui);
+        assert_ne!(half, one_full, "d must scroll less than a full PageDown");
+
+        ui.on_key(plain('g'));
+        let _ = screen(&mut ui);
+        ui.on_key(plain('d'));
+        ui.on_key(plain('u'));
+        let back = screen(&mut ui);
+        assert_eq!(top, back, "u must undo d");
+    }
+
+    #[test]
+    fn ctrl_d_and_ctrl_u_page_the_document_a_whole_page() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0);
+        let top = screen(&mut ui);
+
+        ui.on_key(ctrl('d'));
         let paged = screen(&mut ui);
-        assert_ne!(top, paged, "d must page down");
+        assert_ne!(top, paged, "ctrl-d must page down");
 
         ui.on_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-        ui.on_key(plain('u'));
+        ui.on_key(ctrl('u'));
         ui.on_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE));
         let back = screen(&mut ui);
-        assert_eq!(top, back, "u must page up by the same amount as d");
+        assert_eq!(
+            top, back,
+            "ctrl-u must page up by the same amount as ctrl-d"
+        );
     }
 
     #[test]
@@ -1845,9 +1886,16 @@ mod tests {
         for group in ["browse rows", "back to status", "anywhere", "dialog"] {
             assert!(s.contains(group), "help must mention '{group}': {s}");
         }
-        // Every key gets its own row; d/u and n/N must not hide inside
-        // another key's action text.
-        assert!(s.contains("page down / up"), "d/u needs its own row: {s}");
+        // Every key gets its own row; d/u, C-d/u, and n/N must not hide
+        // inside another key's action text.
+        assert!(
+            s.contains("half page down / up"),
+            "d/u needs its own row: {s}"
+        );
+        assert!(
+            s.contains("C-d/u") && s.contains("page down / up"),
+            "C-d/u needs its own row: {s}"
+        );
         assert!(
             s.contains("next / prev match"),
             "n/N needs its own row: {s}"

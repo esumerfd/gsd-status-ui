@@ -96,6 +96,59 @@ fn page_and_edge_scrolling() {
 }
 
 #[test]
+fn half_page_down_scrolls_less_than_a_full_page_down() {
+    let body: String = (1..=50).map(|i| format!("line number {i}\n\n")).collect();
+    let f = fixture(&body);
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    let top = rendered_text(&mut view, 40, 11);
+
+    view.half_page_down();
+    let half = rendered_text(&mut view, 40, 11);
+    assert_ne!(top, half, "half_page_down did not move");
+
+    view.to_top();
+    let _ = rendered_text(&mut view, 40, 11);
+    view.page_down();
+    let full = rendered_text(&mut view, 40, 11);
+    assert_ne!(half, full, "half_page_down must scroll less than page_down");
+}
+
+#[test]
+fn two_half_page_downs_equal_one_page_down() {
+    let body: String = (1..=50).map(|i| format!("line number {i}\n\n")).collect();
+    let f = fixture(&body);
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    let _ = rendered_text(&mut view, 40, 11);
+
+    view.half_page_down();
+    view.half_page_down();
+    let two_halves = rendered_text(&mut view, 40, 11);
+
+    view.to_top();
+    let _ = rendered_text(&mut view, 40, 11);
+    view.page_down();
+    let one_full = rendered_text(&mut view, 40, 11);
+
+    assert_eq!(
+        two_halves, one_full,
+        "two half_page_downs must land where one page_down does"
+    );
+}
+
+#[test]
+fn half_page_up_undoes_half_page_down() {
+    let body: String = (1..=50).map(|i| format!("line number {i}\n\n")).collect();
+    let f = fixture(&body);
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    let top = rendered_text(&mut view, 40, 11);
+
+    view.half_page_down();
+    view.half_page_up();
+    let back = rendered_text(&mut view, 40, 11);
+    assert_eq!(top, back, "half_page_up did not undo half_page_down");
+}
+
+#[test]
 fn open_missing_file_is_an_error() {
     let err = DocView::open(std::path::Path::new("/nonexistent/nope.md"), 40);
     assert!(matches!(err, Err(DocViewError::Io { .. })));

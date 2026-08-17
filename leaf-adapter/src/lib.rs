@@ -175,6 +175,14 @@ impl DocView {
         self.scroll = self.scroll.saturating_sub(self.page());
     }
 
+    pub fn half_page_down(&mut self) {
+        self.scroll = self.scroll.saturating_add(self.half_page());
+    }
+
+    pub fn half_page_up(&mut self) {
+        self.scroll = self.scroll.saturating_sub(self.half_page());
+    }
+
     pub fn to_top(&mut self) {
         self.scroll = 0;
     }
@@ -287,6 +295,10 @@ impl DocView {
 
     fn page(&self) -> u16 {
         self.last_viewport.saturating_sub(1).max(1)
+    }
+
+    fn half_page(&self) -> u16 {
+        (self.page() / 2).max(1)
     }
 
     fn clamp_scroll(&mut self, viewport_height: u16) {

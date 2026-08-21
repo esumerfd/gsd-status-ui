@@ -1014,17 +1014,20 @@ pub(crate) fn discover_documents(phase_dir: &Path, prefix: &str, step: &Step) ->
             let Some(stem) = name.strip_suffix(".md") else {
                 continue;
             };
-            // Only this phase's docs (share the phase prefix).
-            let Some(rest) = stem.strip_prefix(&phase_marker) else {
-                continue;
-            };
             // Skip step-scoped files (`NN-MM-…`): a numeric first segment after
-            // the prefix means it belongs to a specific step, not the phase.
-            let first_segment = rest.split('-').next().unwrap_or("");
-            if !first_segment.is_empty() && first_segment.chars().all(|c| c.is_ascii_digit()) {
-                continue;
+            // the phase prefix means it belongs to a specific step (its plan or
+            // summary), not the phase as a whole — regardless of whether the
+            // rest of the file follows the `NN-` phase-prefix convention.
+            if let Some(rest) = stem.strip_prefix(&phase_marker) {
+                let first_segment = rest.split('-').next().unwrap_or("");
+                if !first_segment.is_empty() && first_segment.chars().all(|c| c.is_ascii_digit()) {
+                    continue;
+                }
             }
-            let token = rest.to_string();
+            // Every other `.md` file in the phase dir is a phase-level doc —
+            // whether or not it happens to carry the `NN-` prefix (e.g.
+            // `discovery-results.md`, `COVERAGE.md`).
+            let token = stem.strip_prefix(&phase_marker).unwrap_or(stem).to_string();
             candidates.push((path, token));
         }
     }
@@ -2005,6 +2008,40 @@ mod tests {
                 "sibling step plans must be excluded: {name}"
             );
         }
+    }
+
+    #[test]
+    fn discover_documents_includes_phase_docs_without_the_numeric_prefix() {
+        // The reported bug: a phase directory can hold planning artifacts that
+        // never picked up the `NN-` prefix (e.g. `discovery-results.md`,
+        // `COVERAGE.md`, `SKELETON.md`). They live in the phase dir and aren't
+        // step-scoped, so they must still be openable — just appended after
+        // the known kinds, like any other unmatched doc.
+        let dir = tempfile::tempdir().unwrap();
+        let phase_dir = dir.path();
+        std::fs::write(phase_dir.join("01-01-PLAN.md"), "# plan\n").unwrap();
+        std::fs::write(phase_dir.join("01-RESEARCH.md"), "# research\n").unwrap();
+        std::fs::write(phase_dir.join("discovery-results.md"), "# results\n").unwrap();
+        std::fs::write(phase_dir.join("COVERAGE.md"), "# coverage\n").unwrap();
+        // Sibling step file: must stay excluded.
+        std::fs::write(phase_dir.join("01-02-PLAN.md"), "# plan 2\n").unwrap();
+
+        let step = &discover_steps(phase_dir, &[])[0]; // 01-01
+        let docs = discover_documents(phase_dir, "01", step);
+
+        let names: Vec<String> = docs
+            .iter()
+            .map(|d| d.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "01-01-PLAN.md",
+                "01-RESEARCH.md",
+                "COVERAGE.md",
+                "discovery-results.md",
+            ]
+        );
     }
 
     #[test]

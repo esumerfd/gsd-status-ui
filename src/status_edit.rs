@@ -38,6 +38,11 @@ pub(crate) enum StatusTarget {
         planning: PathBuf,
         task_id: String,
     },
+    /// A note/idea/seed capture, identified by its own markdown file. Status
+    /// lives in that file's frontmatter `status:` key, not in any index.
+    Other {
+        path: PathBuf,
+    },
 }
 
 /// A choice offered in the status dialog. Which choices are offered for a
@@ -52,6 +57,8 @@ pub(crate) enum StatusChoice {
     QuickTaskInProgress,
     QuickTaskCompleted,
     QuickTaskFailed,
+    OtherActive,
+    OtherComplete,
 }
 
 impl StatusChoice {
@@ -65,6 +72,8 @@ impl StatusChoice {
             StatusChoice::QuickTaskInProgress => "in-progress",
             StatusChoice::QuickTaskCompleted => "complete",
             StatusChoice::QuickTaskFailed => "failed",
+            StatusChoice::OtherActive => "active",
+            StatusChoice::OtherComplete => "complete",
         }
     }
 }
@@ -113,6 +122,16 @@ impl StatusTarget {
                     StatusChoice::QuickTaskFailed.label().to_string(),
                 ),
             ],
+            StatusTarget::Other { .. } => vec![
+                (
+                    StatusChoice::OtherActive,
+                    StatusChoice::OtherActive.label().to_string(),
+                ),
+                (
+                    StatusChoice::OtherComplete,
+                    StatusChoice::OtherComplete.label().to_string(),
+                ),
+            ],
         }
     }
 }
@@ -137,6 +156,7 @@ pub(crate) fn apply(target: &StatusTarget, choice: StatusChoice) -> io::Result<P
         StatusTarget::QuickTask { planning, task_id } => {
             apply_quick_task(planning, task_id, choice)
         }
+        StatusTarget::Other { path } => apply_other(path, choice),
     }
 }
 
@@ -470,6 +490,36 @@ fn resolve_quick_task_dir_name(planning: &Path, task_id: &str) -> Option<String>
         }
     }
     None
+}
+
+// ─────────────────────────────────────────────────────────────── other ──
+
+/// Toggle a note/idea/seed capture's `status:` frontmatter key in place.
+/// Marking active removes the key (dropping the whole frontmatter block only
+/// if this write is what added it); marking complete upserts it — reusing the
+/// same surgery `apply_todo`'s `completed` stamp uses, so every other key and
+/// the body are preserved byte-for-byte. Read back by
+/// `planning::parse_other`, which treats absent/unrecognized values as active.
+fn apply_other(path: &Path, choice: StatusChoice) -> io::Result<PathBuf> {
+    if !path.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no file at {}", path.display()),
+        ));
+    }
+    let body = fs::read_to_string(path)?;
+    let updated = match choice {
+        StatusChoice::OtherComplete => upsert_frontmatter_key(&body, "status", "done"),
+        StatusChoice::OtherActive => remove_frontmatter_key(&body, "status"),
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{other:?} is not an other-capture choice"),
+            ));
+        }
+    };
+    fs::write(path, updated)?;
+    Ok(path.to_path_buf())
 }
 
 // ─────────────────────────────────────────────────── frontmatter surgery ──
@@ -949,5 +999,105 @@ mod tests {
                 "row updated in place, not duplicated: {body}"
             );
         }
+    }
+
+    #[test]
+    fn marking_a_note_complete_writes_the_status_key_into_its_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(
+            tmp.path(),
+            "notes/2026-07-10-espresso.md",
+            "---\ntitle: Espresso timing\n---\nbody\n",
+        );
+        let target = StatusTarget::Other { path: path.clone() };
+
+        apply(&target, StatusChoice::OtherComplete).expect("apply");
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(
+            written.contains("status: done"),
+            "status key written:\n{written}"
+        );
+        let other = crate::planning::load_others(tmp.path(), true)
+            .into_iter()
+            .find(|o| o.path == path)
+            .expect("note still parses");
+        assert!(other.completed, "parse_other reports it completed");
+    }
+
+    #[test]
+    fn marking_a_note_active_removes_the_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(
+            tmp.path(),
+            "notes/2026-07-10-espresso.md",
+            "---\ntitle: Espresso timing\nstatus: done\n---\nbody\n",
+        );
+        let target = StatusTarget::Other { path: path.clone() };
+
+        apply(&target, StatusChoice::OtherActive).expect("apply");
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(
+            !written.contains("status:"),
+            "status key removed:\n{written}"
+        );
+        let others = crate::planning::load_others(tmp.path(), false);
+        assert_eq!(
+            others.len(),
+            1,
+            "shows again with the toggle off:\n{others:?}"
+        );
+    }
+
+    #[test]
+    fn a_note_with_no_frontmatter_block_gains_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(
+            tmp.path(),
+            "notes/grinder.md",
+            "# Grinder calibration\n\nnotes\n",
+        );
+        let target = StatusTarget::Other { path: path.clone() };
+
+        apply(&target, StatusChoice::OtherComplete).expect("apply");
+
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(
+            written.starts_with("---\n"),
+            "a frontmatter block was added:\n{written}"
+        );
+        assert!(written.contains("status: done"));
+        let other = crate::planning::load_others(tmp.path(), true)
+            .into_iter()
+            .find(|o| o.path == path)
+            .expect("its title still parses");
+        assert_eq!(other.title, "Grinder calibration");
+    }
+
+    #[test]
+    fn marking_a_note_preserves_its_other_frontmatter_keys_and_its_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = write(
+            tmp.path(),
+            "notes/2026-07-10-espresso.md",
+            "---\ntitle: Espresso timing\ntags: coffee, brewing\n---\n\n# Espresso timing\n\nSome body text.\n",
+        );
+        let target = StatusTarget::Other { path: path.clone() };
+
+        apply(&target, StatusChoice::OtherComplete).expect("apply");
+        let written = fs::read_to_string(&path).unwrap();
+        assert!(written.contains("title: Espresso timing"), "{written}");
+        assert!(written.contains("tags: coffee, brewing"), "{written}");
+        assert!(written.contains("# Espresso timing"), "{written}");
+        assert!(written.contains("Some body text."), "{written}");
+
+        apply(&target, StatusChoice::OtherActive).expect("apply");
+        let reverted = fs::read_to_string(&path).unwrap();
+        assert!(!reverted.contains("status:"), "{reverted}");
+        assert!(reverted.contains("title: Espresso timing"), "{reverted}");
+        assert!(reverted.contains("tags: coffee, brewing"), "{reverted}");
+        assert!(reverted.contains("# Espresso timing"), "{reverted}");
+        assert!(reverted.contains("Some body text."), "{reverted}");
     }
 }

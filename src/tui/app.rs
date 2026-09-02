@@ -242,19 +242,32 @@ impl App {
         quick_tasks: &[QuickTask],
         todos: &[Todo],
     ) -> Self {
-        Self::with_roadmap_row(planning, !phases.is_empty(), phases, quick_tasks, todos)
+        // Test-only wrapper: completed captures are always hidden here. Tests
+        // exercising the show-completed toggle for Others go through
+        // `with_roadmap_row` directly, which takes the flag explicitly.
+        Self::with_roadmap_row(
+            planning,
+            !phases.is_empty(),
+            phases,
+            quick_tasks,
+            todos,
+            false,
+        )
     }
 
     /// `from_phases_and_todos` for callers that list only some of the phases:
     /// `has_roadmap` states outright whether the panel drew its Roadmap row,
     /// which stops tracking the phase list once completed phases are hidden —
     /// a fully verified roadmap keeps the tally with no phase rows beneath it.
+    /// `show_completed` governs the Others section the same way `H` governs
+    /// completed todos and quick tasks.
     pub(crate) fn with_roadmap_row(
         planning: &Path,
         has_roadmap: bool,
         phases: &[Phase],
         quick_tasks: &[QuickTask],
         todos: &[Todo],
+        show_completed: bool,
     ) -> Self {
         let mut app = Self::new(Self::build_entries(
             planning,
@@ -262,6 +275,7 @@ impl App {
             phases,
             quick_tasks,
             todos,
+            show_completed,
         ));
         app.planning = planning.to_path_buf();
         app
@@ -277,6 +291,7 @@ impl App {
         phases: &[Phase],
         quick_tasks: &[QuickTask],
         todos: &[Todo],
+        show_completed: bool,
     ) -> Vec<StepEntry> {
         let mut entries = Vec::new();
         if has_roadmap {
@@ -428,7 +443,7 @@ impl App {
         // Others: notes/ideas/seeds, below the todos. Each is a single file, so
         // document 0 is that file (Enter/o open it). The step id is prefixed by
         // kind so identically-named files in different folders stay unique.
-        for other in load_others(planning) {
+        for other in load_others(planning, show_completed) {
             entries.push(StepEntry {
                 phase_id: String::new(),
                 step: Step {
@@ -464,7 +479,17 @@ impl App {
         quick_tasks: &[QuickTask],
         todos: &[Todo],
     ) -> HashMap<usize, usize> {
-        self.refresh_with_roadmap_row(planning, !phases.is_empty(), phases, quick_tasks, todos)
+        // Test-only wrapper: see `from_phases_and_todos` — completed captures
+        // stay hidden here; call `refresh_with_roadmap_row` directly to
+        // exercise the toggle.
+        self.refresh_with_roadmap_row(
+            planning,
+            !phases.is_empty(),
+            phases,
+            quick_tasks,
+            todos,
+            false,
+        )
     }
 
     /// `refresh` for callers listing only some of the phases — see
@@ -476,6 +501,7 @@ impl App {
         phases: &[Phase],
         quick_tasks: &[QuickTask],
         todos: &[Todo],
+        show_completed: bool,
     ) -> HashMap<usize, usize> {
         // `(phase_id, step.id)` is a stable identity: step ids are phase-scoped
         // and unique, todo entries carry their (unique) slug as the step id,
@@ -485,7 +511,14 @@ impl App {
         let selected = self.entries.get(self.current).map(&key);
         self.planning = planning.to_path_buf();
 
-        let new_entries = Self::build_entries(planning, has_roadmap, phases, quick_tasks, todos);
+        let new_entries = Self::build_entries(
+            planning,
+            has_roadmap,
+            phases,
+            quick_tasks,
+            todos,
+            show_completed,
+        );
         let new_index: HashMap<(String, String), usize> = new_entries
             .iter()
             .enumerate()
@@ -941,6 +974,10 @@ impl App {
             Some(crate::status_edit::StatusTarget::QuickTask {
                 planning: self.planning.clone(),
                 task_id: entry.step.id.clone(),
+            })
+        } else if entry.is_other() {
+            Some(crate::status_edit::StatusTarget::Other {
+                path: entry.step.plan_path.clone(),
             })
         } else if !entry.is_roadmap()
             && !entry.is_other()
@@ -2203,7 +2240,7 @@ mod tests {
     fn others_rows_are_appended_after_todos_and_default_skips_them() {
         let dir = planning_with_others();
         let phases = crate::planning::load_phases(dir.path());
-        let others = crate::planning::load_others(dir.path());
+        let others = crate::planning::load_others(dir.path(), false);
         let app = App::from_phases_and_todos(
             dir.path(),
             &phases,
@@ -2250,6 +2287,47 @@ mod tests {
         assert_eq!(app.current_copyable_title(), Some("Latte art"));
         let req = app.open_doc(0).expect("open the idea file");
         assert!(req.path.ends_with("latte.md"), "{}", req.path.display());
+    }
+
+    #[test]
+    fn the_navigable_rows_match_the_rendered_rows_for_both_toggle_states() {
+        // The class of bug this project exists to prevent: the navigable
+        // entry list and the rendered report rows must always agree on how
+        // many Others rows exist, for both values of the toggle.
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("notes")).unwrap();
+        std::fs::write(
+            p.join("notes/2026-07-10-grinder.md"),
+            "---\ntitle: Grinder\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("notes/2026-07-11-espresso.md"),
+            "---\ntitle: Espresso\nstatus: done\n---\nbody\n",
+        )
+        .unwrap();
+
+        for show_completed in [false, true] {
+            let app = App::with_roadmap_row(p, false, &[], &[], &[], show_completed);
+            let navigable_others = app.entries.iter().filter(|e| e.is_other()).count();
+
+            let mut buf = Vec::new();
+            crate::report::render(
+                &mut buf,
+                &crate::report::Report::new(p, &crate::model::StateMeta::default())
+                    .show_completed(show_completed),
+            )
+            .unwrap();
+            let out = String::from_utf8(buf).unwrap();
+            let rendered_others = out.lines().filter(|l| l.contains('◇')).count();
+
+            assert_eq!(
+                navigable_others, rendered_others,
+                "show_completed={show_completed}: navigable Others rows ({navigable_others}) \
+                 must match rendered Others rows ({rendered_others}):\n{out}"
+            );
+        }
     }
 
     #[test]
@@ -2421,5 +2499,22 @@ mod tests {
             phase_labels, task_labels,
             "phase and quick-task vocabularies must not be interchangeable"
         );
+    }
+
+    #[test]
+    fn status_dialog_on_a_note_row_offers_active_and_complete() {
+        let dir = planning_with_others();
+        let phases = crate::planning::load_phases(dir.path());
+        let mut app = App::from_phases_and_todos(dir.path(), &phases, &[], &[]);
+        app.current = app
+            .entries
+            .iter()
+            .position(|e| e.is_other())
+            .expect("a note row");
+
+        app.open_status_dialog();
+        let dialog = app.status_dialog().expect("status dialog open on a note");
+        let labels: Vec<&str> = dialog.items.iter().map(|(_, l)| l.as_str()).collect();
+        assert_eq!(labels, ["active", "complete"], "note vocabulary only");
     }
 }

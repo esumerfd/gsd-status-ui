@@ -1094,13 +1094,18 @@ pub(crate) fn discover_root_documents(planning: &Path) -> Vec<Document> {
 /// `.planning/ideas/`, and `.planning/seeds/` into a single list for the Others
 /// section. Grouped by kind in [`OtherKind::ALL`] order (Notes, Ideas, Seeds),
 /// each group sorted by filename (date- or `SEED-NNN`-prefixed, so effectively
-/// chronological). Missing folders contribute nothing.
-pub(crate) fn load_others(planning: &Path) -> Vec<Other> {
+/// chronological). Missing folders contribute nothing. A capture whose
+/// frontmatter `status:` marks it done/complete is filtered out unless
+/// `show_completed` is set — matching `load_todos`'s hide/show shape.
+pub(crate) fn load_others(planning: &Path, show_completed: bool) -> Vec<Other> {
     let mut out = Vec::new();
     for kind in OtherKind::ALL {
         let mut group = read_others_dir(&planning.join(kind.dir()), kind);
         group.sort_by(|a, b| a.slug.cmp(&b.slug));
         out.extend(group);
+    }
+    if !show_completed {
+        out.retain(|o| !o.completed);
     }
     out
 }
@@ -1123,6 +1128,7 @@ fn parse_other(path: &Path, kind: OtherKind) -> Option<Other> {
     let (front, rest) = split_frontmatter(&body);
 
     let mut title: Option<String> = None;
+    let mut completed = false;
     for raw in front.lines() {
         let line = raw.trim_end();
         if line.starts_with("  ") || line.starts_with('\t') {
@@ -1130,8 +1136,12 @@ fn parse_other(path: &Path, kind: OtherKind) -> Option<Other> {
         }
         if let Some((key, value)) = split_kv(line) {
             let value = strip_quotes(value.trim()).trim().to_string();
-            if !value.is_empty() && key.trim() == "title" {
-                title = Some(value);
+            match key.trim() {
+                "title" if !value.is_empty() => title = Some(value),
+                "status" => {
+                    completed = matches!(value.to_lowercase().as_str(), "done" | "complete");
+                }
+                _ => {}
             }
         }
     }
@@ -1144,6 +1154,7 @@ fn parse_other(path: &Path, kind: OtherKind) -> Option<Other> {
         kind,
         slug,
         path: path.to_path_buf(),
+        completed,
     })
 }
 
@@ -2237,7 +2248,7 @@ mod tests {
         )
         .unwrap();
 
-        let others = load_others(p);
+        let others = load_others(p, false);
 
         let rows: Vec<(&str, &str)> = others
             .iter()
@@ -2258,7 +2269,161 @@ mod tests {
     #[test]
     fn load_others_of_missing_folders_is_empty() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(load_others(dir.path()).is_empty());
+        assert!(load_others(dir.path(), false).is_empty());
+    }
+
+    #[test]
+    fn a_note_with_no_status_key_is_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("notes")).unwrap();
+        std::fs::write(
+            p.join("notes/2026-07-10-espresso.md"),
+            "---\ntitle: Espresso timing\n---\nbody\n",
+        )
+        .unwrap();
+
+        let others = load_others(p, false);
+
+        assert_eq!(others.len(), 1);
+        assert!(
+            !others[0].completed,
+            "no status key at all -> always active"
+        );
+    }
+
+    #[test]
+    fn a_note_with_no_frontmatter_at_all_is_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("notes")).unwrap();
+        std::fs::write(
+            p.join("notes/grinder.md"),
+            "# Grinder calibration\n\nnotes\n",
+        )
+        .unwrap();
+
+        let others = load_others(p, false);
+
+        assert_eq!(others.len(), 1);
+        assert!(!others[0].completed, "no frontmatter block -> active");
+    }
+
+    #[test]
+    fn status_done_and_status_complete_both_mark_a_note_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("notes")).unwrap();
+        std::fs::write(
+            p.join("notes/a-done.md"),
+            "---\ntitle: A\nstatus: Done\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("notes/b-complete.md"),
+            "---\ntitle: B\nstatus: COMPLETE\n---\nbody\n",
+        )
+        .unwrap();
+
+        let others = load_others(p, true);
+
+        assert_eq!(others.len(), 2);
+        assert!(
+            others.iter().all(|o| o.completed),
+            "both 'Done' and 'COMPLETE' mark a note completed, case-insensitively"
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_status_value_leaves_the_note_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("notes")).unwrap();
+        std::fs::write(
+            p.join("notes/a.md"),
+            "---\ntitle: A\nstatus: blocked\n---\nbody\n",
+        )
+        .unwrap();
+
+        let others = load_others(p, false);
+
+        assert_eq!(others.len(), 1);
+        assert!(
+            !others[0].completed,
+            "an unrecognized status word must not silently hide a note"
+        );
+    }
+
+    #[test]
+    fn load_others_hides_completed_notes_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("notes")).unwrap();
+        std::fs::write(
+            p.join("notes/active.md"),
+            "---\ntitle: Active one\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("notes/done.md"),
+            "---\ntitle: Done one\nstatus: done\n---\nbody\n",
+        )
+        .unwrap();
+
+        let others = load_others(p, false);
+
+        let titles: Vec<&str> = others.iter().map(|o| o.title.as_str()).collect();
+        assert_eq!(titles, ["Active one"], "completed note hidden by default");
+    }
+
+    #[test]
+    fn load_others_surfaces_completed_notes_when_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("notes")).unwrap();
+        std::fs::write(
+            p.join("notes/active.md"),
+            "---\ntitle: Active one\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("notes/done.md"),
+            "---\ntitle: Done one\nstatus: done\n---\nbody\n",
+        )
+        .unwrap();
+
+        let others = load_others(p, true);
+
+        let titles: Vec<&str> = others.iter().map(|o| o.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["Active one", "Done one"],
+            "with the toggle on, both show (sorted by filename)"
+        );
+    }
+
+    #[test]
+    fn hiding_applies_to_ideas_and_seeds_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("ideas")).unwrap();
+        std::fs::write(
+            p.join("ideas/latte-art.md"),
+            "---\ntitle: Latte art mode\nstatus: complete\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(p.join("seeds")).unwrap();
+        std::fs::write(
+            p.join("seeds/SEED-001-mobile-orders.md"),
+            "---\ntitle: Mobile orders\nstatus: done\n---\nbody\n",
+        )
+        .unwrap();
+
+        assert!(
+            load_others(p, false).is_empty(),
+            "completed ideas and seeds are hidden by default too"
+        );
+        assert_eq!(load_others(p, true).len(), 2);
     }
 
     #[test]

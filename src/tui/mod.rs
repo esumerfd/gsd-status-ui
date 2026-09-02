@@ -371,6 +371,7 @@ impl Ui {
             &navigable_phases(phases, self.show_completed),
             quick_tasks,
             todos,
+            self.show_completed,
         );
         let old_views = std::mem::take(&mut self.views);
         for ((old_idx, doc), view) in old_views {
@@ -956,6 +957,7 @@ pub(crate) fn run(
             &navigable_phases(phases, false),
             quick_tasks,
             todos,
+            false,
         ),
     );
 
@@ -1053,6 +1055,7 @@ mod tests {
                 &navigable_phases(&phases, false),
                 &quick_tasks,
                 &todos,
+                false,
             ),
         )
     }

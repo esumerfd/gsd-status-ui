@@ -356,7 +356,7 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
     // Others — notes, ideas, and seeds combined into a single section below the
     // Todos, above Next. One row per file, each tagged with its kind. Rendered
     // only when at least one of the three capture folders has files.
-    let others = crate::planning::load_others(planning);
+    let others = crate::planning::load_others(planning, show_completed);
     if !others.is_empty() {
         writeln!(
             out,
@@ -1216,6 +1216,65 @@ mod tests {
         assert!(
             !out.contains("Others"),
             "no Others section when folders absent:\n{out}"
+        );
+    }
+
+    #[test]
+    fn the_others_section_omits_completed_notes_until_the_toggle_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("notes")).unwrap();
+        std::fs::write(
+            p.join("notes/2026-07-10-grinder.md"),
+            "---\ntitle: Grinder\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join("notes/2026-07-11-espresso.md"),
+            "---\ntitle: Espresso\nstatus: done\n---\nbody\n",
+        )
+        .unwrap();
+
+        let mut hidden = Vec::new();
+        render(&mut hidden, &Report::new(p, &StateMeta::default())).unwrap();
+        let hidden = String::from_utf8(hidden).unwrap();
+        assert!(hidden.contains("Note: Grinder"), "{hidden}");
+        assert!(
+            !hidden.contains("Note: Espresso"),
+            "completed note hidden by default:\n{hidden}"
+        );
+
+        let mut shown = Vec::new();
+        render(
+            &mut shown,
+            &Report::new(p, &StateMeta::default()).show_completed(true),
+        )
+        .unwrap();
+        let shown = String::from_utf8(shown).unwrap();
+        assert!(shown.contains("Note: Grinder"), "{shown}");
+        assert!(
+            shown.contains("Note: Espresso"),
+            "completed note shown once the toggle is on:\n{shown}"
+        );
+    }
+
+    #[test]
+    fn the_others_section_disappears_when_every_note_is_completed_and_the_toggle_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("notes")).unwrap();
+        std::fs::write(
+            p.join("notes/2026-07-10-espresso.md"),
+            "---\ntitle: Espresso\nstatus: complete\n---\nbody\n",
+        )
+        .unwrap();
+
+        let mut buf = Vec::new();
+        render(&mut buf, &Report::new(p, &StateMeta::default())).unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            !out.contains("Others"),
+            "heading itself must go when every capture is hidden:\n{out}"
         );
     }
 

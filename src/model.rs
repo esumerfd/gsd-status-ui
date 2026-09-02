@@ -55,6 +55,10 @@ pub(crate) struct Other {
     pub(crate) slug: String,
     /// The capture's markdown file, opened when the row is selected.
     pub(crate) path: PathBuf,
+    /// True when the capture's frontmatter `status:` reads `done`/`complete`
+    /// (case-insensitive) — mirrors `Todo::completed`. Absent, empty, or
+    /// unrecognized values are always active (never silently hidden).
+    pub(crate) completed: bool,
 }
 
 /// The three capture folders combined into the single Others section.

@@ -638,6 +638,18 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + doe as i64 - 719_468
 }
 
+// Path-included at the file's own top level (not nested inside `mod tests`)
+// so its base directory resolves to `src/` — the real directory containing
+// this file. Nesting it inside `mod tests` instead makes rustc compute a
+// virtual base of `src/status_edit/tests/`, which does not exist on disk
+// (`status_edit.rs` is a file, not a directory), so no relative path from
+// there can ever resolve. This is the same support module
+// `tests/gsd_conformance.rs` path-includes, so the oracle-resolution and
+// JSON-parsing logic never drifts between the black-box and white-box sides.
+#[cfg(test)]
+#[path = "../tests/gsd_conformance_support.rs"]
+mod gsd_conformance_support;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1099,5 +1111,62 @@ mod tests {
         assert!(reverted.contains("tags: coffee, brewing"), "{reverted}");
         assert!(reverted.contains("# Espresso timing"), "{reverted}");
         assert!(reverted.contains("Some body text."), "{reverted}");
+    }
+
+    fn copy_sample(dst: &Path) {
+        fn copy_dir(src: &Path, dst: &Path) {
+            fs::create_dir_all(dst).unwrap();
+            for entry in fs::read_dir(src).unwrap() {
+                let entry = entry.unwrap();
+                let from = entry.path();
+                let to = dst.join(entry.file_name());
+                if from.is_dir() {
+                    copy_dir(&from, &to);
+                } else {
+                    fs::copy(&from, &to).unwrap();
+                }
+            }
+        }
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("sample");
+        copy_dir(&sample, dst);
+    }
+
+    #[test]
+    fn our_writer_leaves_a_workspace_gsd_tools_can_still_parse() {
+        let Some(tools) = gsd_conformance_support::oracle_available() else {
+            return;
+        };
+        let ws = tempfile::tempdir().unwrap();
+        copy_sample(ws.path());
+        let planning = ws.path().join(".planning");
+
+        let before = gsd_conformance_support::run_progress(&tools, ws.path())
+            .expect("oracle ran before the write");
+        let before_numbers = gsd_conformance_support::phase_numbers(&before);
+
+        let note_path = planning.join("notes/2026-07-08-grinder-timing.md");
+        let target = StatusTarget::Other {
+            path: note_path.clone(),
+        };
+        apply(&target, StatusChoice::OtherComplete).expect("apply the real writer");
+
+        let after = gsd_conformance_support::run_progress(&tools, ws.path())
+            .expect("oracle ran after the write");
+        assert!(
+            gsd_conformance_support::phase_scope_is_readable(&after),
+            "a real status_edit::apply write must leave the workspace readable:\n{after}"
+        );
+        assert_eq!(
+            before_numbers,
+            gsd_conformance_support::phase_numbers(&after),
+            "phase parsing must be unaffected by our writer"
+        );
+
+        let others = crate::planning::load_others(&planning, true);
+        let note = others
+            .iter()
+            .find(|o| o.path == note_path)
+            .expect("the note still parses");
+        assert!(note.completed, "and our own parser agrees it's completed");
     }
 }

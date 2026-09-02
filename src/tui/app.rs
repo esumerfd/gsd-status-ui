@@ -155,6 +155,16 @@ pub(crate) struct OpenDialog {
     pub(crate) selected: usize,
 }
 
+/// The `s` status-editing picker: the vocabulary the selected row's item type
+/// actually supports (see [`crate::status_edit::StatusTarget::choices`]),
+/// plus which target the eventual choice applies to.
+#[derive(Debug)]
+pub(crate) struct StatusDialog {
+    pub(crate) items: Vec<(crate::status_edit::StatusChoice, String)>,
+    pub(crate) selected: usize,
+    pub(crate) target: crate::status_edit::StatusTarget,
+}
+
 #[derive(Debug, Clone, Default)]
 struct TabSet {
     /// Open document indices (into the entry's `documents`), kept ascending so
@@ -169,6 +179,7 @@ pub(crate) struct App {
     pub(crate) current: usize,
     tabsets: Vec<TabSet>,
     dialog: Option<OpenDialog>,
+    status_dialog: Option<StatusDialog>,
     pub(crate) flash: Option<String>,
     pub(crate) quit: bool,
 }
@@ -194,6 +205,7 @@ impl App {
             current,
             tabsets,
             dialog: None,
+            status_dialog: None,
             flash: None,
             quit: false,
         }
@@ -896,6 +908,68 @@ impl App {
             let last = dialog.items.len().saturating_sub(1) as i32;
             dialog.selected = (dialog.selected as i32 + delta).clamp(0, last) as usize;
         }
+    }
+
+    /// Open the `s` status-editing picker for the current row. Only rows
+    /// whose item type this module knows how to write resolve to a target;
+    /// every other row (a phase step whose stage is disk-derived, a
+    /// docs-folder row, the roadmap row not yet extended, …) flashes instead
+    /// of opening — mirroring `open_dialog`'s "nothing to open" shape.
+    pub(crate) fn open_status_dialog(&mut self) {
+        self.flash = None;
+        let Some(entry) = self.entries.get(self.current) else {
+            self.flash = Some("no active phase step".into());
+            return;
+        };
+        let target = if entry.is_todo() {
+            let kind = crate::status_edit::detect_todo_kind(&entry.step.plan_path);
+            Some(crate::status_edit::StatusTarget::Todo {
+                path: entry.step.plan_path.clone(),
+                kind,
+            })
+        } else {
+            None
+        };
+        let Some(target) = target else {
+            self.flash = Some("this row has no editable status".into());
+            return;
+        };
+        let items = target.choices();
+        self.status_dialog = Some(StatusDialog {
+            items,
+            selected: 0,
+            target,
+        });
+    }
+
+    pub(crate) fn status_dialog(&self) -> Option<&StatusDialog> {
+        self.status_dialog.as_ref()
+    }
+
+    pub(crate) fn close_status_dialog(&mut self) {
+        self.status_dialog = None;
+    }
+
+    pub(crate) fn status_dialog_move(&mut self, delta: i32) {
+        if let Some(dialog) = self.status_dialog.as_mut() {
+            let last = dialog.items.len().saturating_sub(1) as i32;
+            dialog.selected = (dialog.selected as i32 + delta).clamp(0, last) as usize;
+        }
+    }
+
+    /// Take (consume) the status dialog's selected choice, along with the
+    /// target it applies to — the actual filesystem write happens one level
+    /// up (the shell), mirroring how `dialog_select` hands an `OpenRequest`
+    /// to the shell rather than opening the DocView itself.
+    pub(crate) fn status_dialog_take(
+        &mut self,
+    ) -> Option<(
+        crate::status_edit::StatusTarget,
+        crate::status_edit::StatusChoice,
+    )> {
+        let dialog = self.status_dialog.take()?;
+        let (choice, _) = dialog.items.get(dialog.selected)?.clone();
+        Some((dialog.target, choice))
     }
 
     /// Open the selected document and close the dialog. As with `open_doc`,
@@ -2197,5 +2271,42 @@ mod tests {
             req.path.display()
         );
         assert_eq!(app.selection(), Some(Selected::Roadmap));
+    }
+
+    #[test]
+    fn status_dialog_on_a_todo_lists_the_todo_vocabulary() {
+        let mut app =
+            App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &sample_todos());
+        app.current = app
+            .entries
+            .iter()
+            .position(|e| e.is_todo())
+            .expect("a todo row");
+
+        app.open_status_dialog();
+        let dialog = app.status_dialog().expect("status dialog open on a todo");
+        let labels: Vec<&str> = dialog.items.iter().map(|(_, l)| l.as_str()).collect();
+        assert_eq!(labels, ["pending", "complete"], "todo vocabulary only");
+    }
+
+    #[test]
+    fn status_dialog_on_an_unsupported_row_flashes_instead_of_opening() {
+        let mut app = sample_app();
+        app.current = app
+            .entries
+            .iter()
+            .position(|e| e.is_roadmap())
+            .expect("the roadmap row");
+
+        app.open_status_dialog();
+        assert!(
+            app.status_dialog().is_none(),
+            "no dialog on the roadmap row"
+        );
+        assert!(
+            app.flash.as_deref().unwrap().contains("no editable status"),
+            "{:?}",
+            app.flash
+        );
     }
 }

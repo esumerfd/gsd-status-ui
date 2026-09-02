@@ -24,7 +24,7 @@ use std::io;
 use std::path::Path;
 
 const STATUS_HINTS: &str =
-    "j/k step · Enter plan · o open · c copy todo · / find · ? help · q quit";
+    "j/k step · Enter plan · o open · s status · c copy todo · / find · ? help · q quit";
 const DOC_HINTS: &str = "j/k scroll · / find · ? help · q/Esc status";
 const SEARCH_HINTS: &str = "Enter find · Esc cancel";
 const HELP_HINTS: &str = "q/Esc close";
@@ -37,6 +37,7 @@ const HELP_TEXT: &str = "\
             J/K      next / prev phase
             Enter    open the step's plan
             o        open-document dialog
+            s        set status (todo/task/phase/note)
             c        copy selected todo's name
             /        find a requirement by ID
             q        quit
@@ -432,6 +433,10 @@ impl Ui {
             self.on_dialog_key(key.code, ctrl);
             return;
         }
+        if self.app.status_dialog().is_some() {
+            self.on_status_dialog_key(key.code);
+            return;
+        }
         if ctrl {
             self.on_shell_key(key.code);
         } else {
@@ -448,6 +453,31 @@ impl Ui {
             KeyCode::Enter => {
                 let request = self.app.dialog_select();
                 self.apply(request);
+            }
+            _ => {}
+        }
+    }
+
+    /// Drive the `s` status dialog: j/k select, Esc/q cancel, Enter applies
+    /// the selected choice via `status_edit::apply` and queues a reload —
+    /// mirrors `on_dialog_key`'s shape but writes to disk on Enter instead of
+    /// opening a document.
+    fn on_status_dialog_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => self.app.close_status_dialog(),
+            KeyCode::Char('j') | KeyCode::Down => self.app.status_dialog_move(1),
+            KeyCode::Char('k') | KeyCode::Up => self.app.status_dialog_move(-1),
+            KeyCode::Enter => {
+                let Some((target, choice)) = self.app.status_dialog_take() else {
+                    return;
+                };
+                match crate::status_edit::apply(&target, choice) {
+                    Ok(_) => {
+                        self.app.flash = Some(format!("status: {}", choice.label()));
+                        self.needs_reload = true;
+                    }
+                    Err(e) => self.app.flash = Some(format!("status edit failed: {e}")),
+                }
             }
             _ => {}
         }
@@ -581,6 +611,7 @@ impl Ui {
                     self.apply(req);
                 }
                 KeyCode::Char('o') => self.app.open_dialog(),
+                KeyCode::Char('s') => self.app.open_status_dialog(),
                 KeyCode::Char('c') => self.copy_selection(),
                 // Find a requirement by ID (D-01): opens a draft in the
                 // footer; Enter queues it for the event loop via `run_find`.
@@ -794,6 +825,43 @@ impl Ui {
             );
         }
 
+        // ── status dialog ──
+        if let Some(dialog) = self.app.status_dialog() {
+            let name_width = dialog
+                .items
+                .iter()
+                .map(|(_, n)| n.chars().count())
+                .max()
+                .unwrap_or(0)
+                .max(16);
+            let width = (name_width as u16 + 8).min(frame.area().width);
+            let height = (dialog.items.len() as u16 + 2).min(frame.area().height);
+            let popup = Rect {
+                x: frame.area().x + (frame.area().width.saturating_sub(width)) / 2,
+                y: frame.area().y + (frame.area().height.saturating_sub(height)) / 2,
+                width,
+                height,
+            };
+            frame.render_widget(Clear, popup);
+            let lines: Vec<Line> = dialog
+                .items
+                .iter()
+                .enumerate()
+                .map(|(i, (_, name))| {
+                    let style = if i == dialog.selected {
+                        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    Line::from(Span::styled(format!("   {name:<name_width$} "), style))
+                })
+                .collect();
+            frame.render_widget(
+                Paragraph::new(lines).block(Block::bordered().title(" Set status ")),
+                popup,
+            );
+        }
+
         // ── help overlay ──
         if self.help {
             let lines: Vec<&str> = HELP_TEXT.lines().collect();
@@ -841,7 +909,7 @@ impl Ui {
         };
         let right = if self.help {
             HELP_HINTS.to_string()
-        } else if self.app.dialog().is_some() {
+        } else if self.app.dialog().is_some() || self.app.status_dialog().is_some() {
             DIALOG_HINTS.to_string()
         } else if let Some(view) = doc_view.filter(|v| v.is_search_mode()) {
             format!("/{} · {SEARCH_HINTS}", view.search_draft())
@@ -2535,5 +2603,48 @@ mod tests {
             "viewer stepping auto-opens plan: {s}"
         );
         assert!(s.contains("Locate and Operate"), "{s}");
+    }
+
+    #[test]
+    fn s_then_enter_completes_the_selected_todo_and_requests_a_reload() {
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path().join(".planning");
+        std::fs::create_dir_all(planning.join("todos/pending")).unwrap();
+        std::fs::write(
+            planning.join("todos/pending/2026-09-02-fix-thing.md"),
+            "# Fix the thing\n\nDo the fix.\n",
+        )
+        .unwrap();
+
+        let todos = crate::planning::load_todos(&planning, false);
+        let mut ui = Ui::new(
+            Text::default(),
+            App::from_phases_and_todos(&planning, &[], &[], &todos),
+        );
+
+        ui.on_key(plain('s'));
+        assert!(
+            ui.app.status_dialog().is_some(),
+            "s opens the status dialog on a todo row"
+        );
+
+        // Vocabulary is [pending, complete]; move down once to select "complete".
+        ui.on_key(plain('j'));
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(
+            ui.app.status_dialog().is_none(),
+            "dialog closes after Enter"
+        );
+        assert!(
+            ui.take_needs_reload(),
+            "completing a todo requests a reload"
+        );
+        assert!(
+            planning
+                .join("todos/completed/2026-09-02-fix-thing.md")
+                .exists(),
+            "the todo file moved to completed/"
+        );
     }
 }

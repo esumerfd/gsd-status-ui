@@ -7,6 +7,7 @@ mod color;
 mod model;
 mod planning;
 mod report;
+mod status_edit;
 mod tui;
 
 fn main() -> ExitCode {
@@ -83,7 +84,9 @@ fn print_help() {
     println!();
     println!("Keys (TUI) — modal: q always backs out one level (doc -> status -> exit).");
     println!("  ?         in-app help dialog listing every key by mode");
-    println!("  [status]  j/k browse phase/steps · Enter open plan · o open-doc dialog · q quit");
+    println!(
+        "  [status]  j/k browse phase/steps · Enter open plan · o open-doc dialog · s set status · q quit"
+    );
     println!(
         "  [doc]     j/k/arrows scroll · d/u or PgDn/PgUp page · g/G top/bottom · q/Esc to status"
     );

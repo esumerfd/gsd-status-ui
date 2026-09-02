@@ -576,7 +576,7 @@ fn read_todo_dir(dir: &Path, completed: bool) -> Vec<Todo> {
         .collect()
 }
 
-fn parse_todo(path: &Path, completed: bool) -> Option<Todo> {
+pub(crate) fn parse_todo(path: &Path, completed: bool) -> Option<Todo> {
     let slug = path.file_stem()?.to_str()?.to_string();
     let body = fs::read_to_string(path).ok()?;
     let (front, rest) = split_frontmatter(&body);

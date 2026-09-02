@@ -39,6 +39,12 @@ fn open_renders_markdown_into_a_panel() {
 
 #[test]
 fn open_renders_gsd_style_bare_xml_tag_sections() {
+    let objective_tag_name = "objective";
+    let task_tag_name = "task";
+    let raw_objective_open = format!("<{objective_tag_name}>");
+    let raw_objective_close = format!("</{objective_tag_name}>");
+    let raw_task_open = format!("<{task_tag_name} type=\"auto\">");
+    let raw_task_close = format!("</{task_tag_name}>");
     let f = fixture(
         "# Plan\n\n<objective>\nClose out the ticket end to end.\n</objective>\n\n<task type=\"auto\">\nRecord the outcome.\n</task>\n",
     );
@@ -51,6 +57,22 @@ fn open_renders_gsd_style_bare_xml_tag_sections() {
     assert!(
         text.contains("Record the outcome."),
         "task body missing:\n{text}"
+    );
+    assert!(
+        text.contains("Objective"),
+        "converted objective heading text missing:\n{text}"
+    );
+    assert!(
+        text.contains("Task"),
+        "converted task heading text missing:\n{text}"
+    );
+    assert!(
+        !text.contains(&raw_objective_open) && !text.contains(&raw_objective_close),
+        "raw angle-bracketed objective tag should not appear:\n{text}"
+    );
+    assert!(
+        !text.contains(&raw_task_open) && !text.contains(&raw_task_close),
+        "raw angle-bracketed task tag should not appear:\n{text}"
     );
 }
 

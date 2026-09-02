@@ -239,7 +239,7 @@ pub(crate) fn load_phases(planning: &Path) -> Vec<Phase> {
 /// `[~]` is what a hand-written shutdown leaves behind, and dropping those rows
 /// was what made an abandoned roadmap render as six untouched phases.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PhaseMark {
+pub(crate) enum PhaseMark {
     Done,
     Open,
     Abandoned,
@@ -248,7 +248,7 @@ enum PhaseMark {
 /// Normalize a phase id for de-duplication across sources (index, detail
 /// headings, directory names): trim surrounding whitespace and leading zeros so
 /// `"03"` and `"3"` collapse to the same key.
-fn normalize_phase_id(id: &str) -> String {
+pub(crate) fn normalize_phase_id(id: &str) -> String {
     let trimmed = id.trim().trim_start_matches('0');
     if trimmed.is_empty() {
         "0".to_string()
@@ -308,7 +308,7 @@ fn parse_phase_index(body: &str) -> Vec<(String, String, PhaseMark)> {
     out
 }
 
-fn parse_phase_index_line(line: &str) -> Option<(String, String, PhaseMark)> {
+pub(crate) fn parse_phase_index_line(line: &str) -> Option<(String, String, PhaseMark)> {
     let rest = line.strip_prefix("- ")?;
     let (mark, rest) = if let Some(r) = rest
         .strip_prefix("[x] ")
@@ -733,20 +733,7 @@ fn parse_quick_completions(planning: &Path) -> HashMap<String, (Option<String>, 
     }
 
     let header_cells = split_table_row(table_rows[0]);
-    let id_col = header_cells
-        .iter()
-        .position(|c| {
-            let c = c.trim().to_lowercase();
-            c == "#" || c == "id"
-        })
-        .unwrap_or(0);
-    let status_col = header_cells
-        .iter()
-        .position(|c| c.trim().to_lowercase().contains("status"));
-    let directory_col = header_cells.iter().position(|c| {
-        let c = c.trim().to_lowercase();
-        c.contains("directory") || c.contains("path")
-    });
+    let (id_col, status_col, directory_col) = quick_task_columns(&header_cells);
 
     // Row 1 is the header; row 2 (if present and all-dashes) is the
     // separator — skip it defensively without assuming it's always there.
@@ -780,9 +767,31 @@ fn parse_quick_completions(planning: &Path) -> HashMap<String, (Option<String>, 
     map
 }
 
+/// Resolve the id/status/directory column indices from a Quick Tasks table's
+/// header row, by fuzzy name — shared by the reader (`parse_quick_completions`)
+/// and the writer (`status_edit`), so both agree on which column is which
+/// (constraint: the table is not column-stable across projects).
+pub(crate) fn quick_task_columns(header_cells: &[String]) -> (usize, Option<usize>, Option<usize>) {
+    let id_col = header_cells
+        .iter()
+        .position(|c| {
+            let c = c.trim().to_lowercase();
+            c == "#" || c == "id"
+        })
+        .unwrap_or(0);
+    let status_col = header_cells
+        .iter()
+        .position(|c| c.trim().to_lowercase().contains("status"));
+    let directory_col = header_cells.iter().position(|c| {
+        let c = c.trim().to_lowercase();
+        c.contains("directory") || c.contains("path")
+    });
+    (id_col, status_col, directory_col)
+}
+
 /// Split a markdown table row on `|`, trimming each cell. Tolerates leading
 /// and trailing `|` (e.g. `| a | b |`) and rows without them (`a | b`).
-fn split_table_row(row: &str) -> Vec<String> {
+pub(crate) fn split_table_row(row: &str) -> Vec<String> {
     row.trim()
         .trim_start_matches('|')
         .trim_end_matches('|')
@@ -794,7 +803,7 @@ fn split_table_row(row: &str) -> Vec<String> {
 /// Minimal allowlist of Status values that count as "passing" (D-02) — this
 /// deliberately does not try to interpret the failing value's meaning (D-04);
 /// it only gates the hide/show decision.
-fn is_passing_status(s: &str) -> bool {
+pub(crate) fn is_passing_status(s: &str) -> bool {
     matches!(
         s.trim().to_lowercase().as_str(),
         "pass"

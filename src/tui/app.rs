@@ -182,6 +182,12 @@ pub(crate) struct App {
     status_dialog: Option<StatusDialog>,
     pub(crate) flash: Option<String>,
     pub(crate) quit: bool,
+    /// The workspace's `.planning` directory, needed by `open_status_dialog`
+    /// to build a `StatusTarget::Phase`/`QuickTask` (which write to
+    /// ROADMAP.md/STATE.md at this root, not to a per-entry file). Empty for
+    /// the bare `App::new(entries)` test constructor, which never exercises
+    /// those two arms.
+    planning: PathBuf,
 }
 
 impl App {
@@ -208,6 +214,7 @@ impl App {
             status_dialog: None,
             flash: None,
             quit: false,
+            planning: PathBuf::new(),
         }
     }
 
@@ -249,13 +256,15 @@ impl App {
         quick_tasks: &[QuickTask],
         todos: &[Todo],
     ) -> Self {
-        Self::new(Self::build_entries(
+        let mut app = Self::new(Self::build_entries(
             planning,
             has_roadmap,
             phases,
             quick_tasks,
             todos,
-        ))
+        ));
+        app.planning = planning.to_path_buf();
+        app
     }
 
     /// The flattened roadmap-then-steps-then-tasks-then-todos entry list.
@@ -474,6 +483,7 @@ impl App {
         // single Roadmap entry is the unique `("", "")`.
         let key = |e: &StepEntry| (e.phase_id.clone(), e.step.id.clone());
         let selected = self.entries.get(self.current).map(&key);
+        self.planning = planning.to_path_buf();
 
         let new_entries = Self::build_entries(planning, has_roadmap, phases, quick_tasks, todos);
         let new_index: HashMap<(String, String), usize> = new_entries
@@ -926,6 +936,20 @@ impl App {
             Some(crate::status_edit::StatusTarget::Todo {
                 path: entry.step.plan_path.clone(),
                 kind,
+            })
+        } else if entry.is_task() {
+            Some(crate::status_edit::StatusTarget::QuickTask {
+                planning: self.planning.clone(),
+                task_id: entry.step.id.clone(),
+            })
+        } else if !entry.is_roadmap()
+            && !entry.is_other()
+            && entry.docs_folder().is_none()
+            && !entry.phase_id.is_empty()
+        {
+            Some(crate::status_edit::StatusTarget::Phase {
+                planning: self.planning.clone(),
+                phase_id: entry.phase_id.clone(),
             })
         } else {
             None
@@ -2307,6 +2331,95 @@ mod tests {
             app.flash.as_deref().unwrap().contains("no editable status"),
             "{:?}",
             app.flash
+        );
+    }
+
+    #[test]
+    fn status_dialog_on_a_phase_row_offers_only_the_three_roadmap_marks() {
+        let mut app = sample_app();
+        app.current = app
+            .entries
+            .iter()
+            .position(|e| e.step.id == "01-01")
+            .expect("a phase step row");
+
+        app.open_status_dialog();
+        let dialog = app.status_dialog().expect("status dialog open on a phase");
+        let labels: Vec<&str> = dialog.items.iter().map(|(_, l)| l.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["verified", "open (disk-inferred stage)", "abandoned"],
+            "only the three roadmap-index marks, never a disk-inferred stage"
+        );
+    }
+
+    #[test]
+    fn status_dialog_on_a_quick_task_row_offers_the_task_vocabulary() {
+        let mut app = App::from_phases_and_todos(
+            sample_planning(),
+            &sample_phases(),
+            &sample_quick_tasks(),
+            &[],
+        );
+        app.current = app
+            .entries
+            .iter()
+            .position(|e| e.is_task())
+            .expect("a quick-task row");
+
+        app.open_status_dialog();
+        let dialog = app
+            .status_dialog()
+            .expect("status dialog open on a quick task");
+        let labels: Vec<&str> = dialog.items.iter().map(|(_, l)| l.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["in-progress", "complete", "failed"],
+            "quick-task vocabulary only"
+        );
+    }
+
+    #[test]
+    fn phase_and_task_vocabularies_differ() {
+        let mut app = App::from_phases_and_todos(
+            sample_planning(),
+            &sample_phases(),
+            &sample_quick_tasks(),
+            &[],
+        );
+
+        app.current = app
+            .entries
+            .iter()
+            .position(|e| e.step.id == "01-01")
+            .expect("a phase step row");
+        app.open_status_dialog();
+        let phase_labels: Vec<String> = app
+            .status_dialog()
+            .expect("phase dialog")
+            .items
+            .iter()
+            .map(|(_, l)| l.clone())
+            .collect();
+        app.close_status_dialog();
+
+        app.current = app
+            .entries
+            .iter()
+            .position(|e| e.is_task())
+            .expect("a quick-task row");
+        app.open_status_dialog();
+        let task_labels: Vec<String> = app
+            .status_dialog()
+            .expect("task dialog")
+            .items
+            .iter()
+            .map(|(_, l)| l.clone())
+            .collect();
+
+        assert_ne!(
+            phase_labels, task_labels,
+            "phase and quick-task vocabularies must not be interchangeable"
         );
     }
 }

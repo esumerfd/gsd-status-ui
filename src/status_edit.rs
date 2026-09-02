@@ -21,7 +21,23 @@ pub(crate) enum TodoKind {
 /// the choice back to disk.
 #[derive(Debug, Clone)]
 pub(crate) enum StatusTarget {
-    Todo { path: PathBuf, kind: TodoKind },
+    Todo {
+        path: PathBuf,
+        kind: TodoKind,
+    },
+    /// A `## Phases` roadmap-index row, identified by its phase id. Only the
+    /// three marks `parse_phase_index_line` accepts are ever offered — a
+    /// phase's disk-derived stage (planned/executing/executed) can't be
+    /// fabricated here.
+    Phase {
+        planning: PathBuf,
+        phase_id: String,
+    },
+    /// A `Quick Tasks Completed` STATE.md table row, identified by task id.
+    QuickTask {
+        planning: PathBuf,
+        task_id: String,
+    },
 }
 
 /// A choice offered in the status dialog. Which choices are offered for a
@@ -30,6 +46,12 @@ pub(crate) enum StatusTarget {
 pub(crate) enum StatusChoice {
     TodoPending,
     TodoComplete,
+    PhaseVerified,
+    PhaseOpen,
+    PhaseAbandoned,
+    QuickTaskInProgress,
+    QuickTaskCompleted,
+    QuickTaskFailed,
 }
 
 impl StatusChoice {
@@ -37,6 +59,12 @@ impl StatusChoice {
         match self {
             StatusChoice::TodoPending => "pending",
             StatusChoice::TodoComplete => "complete",
+            StatusChoice::PhaseVerified => "verified",
+            StatusChoice::PhaseOpen => "open (disk-inferred stage)",
+            StatusChoice::PhaseAbandoned => "abandoned",
+            StatusChoice::QuickTaskInProgress => "in-progress",
+            StatusChoice::QuickTaskCompleted => "complete",
+            StatusChoice::QuickTaskFailed => "failed",
         }
     }
 }
@@ -57,6 +85,34 @@ impl StatusTarget {
                     StatusChoice::TodoComplete.label().to_string(),
                 ),
             ],
+            StatusTarget::Phase { .. } => vec![
+                (
+                    StatusChoice::PhaseVerified,
+                    StatusChoice::PhaseVerified.label().to_string(),
+                ),
+                (
+                    StatusChoice::PhaseOpen,
+                    StatusChoice::PhaseOpen.label().to_string(),
+                ),
+                (
+                    StatusChoice::PhaseAbandoned,
+                    StatusChoice::PhaseAbandoned.label().to_string(),
+                ),
+            ],
+            StatusTarget::QuickTask { .. } => vec![
+                (
+                    StatusChoice::QuickTaskInProgress,
+                    StatusChoice::QuickTaskInProgress.label().to_string(),
+                ),
+                (
+                    StatusChoice::QuickTaskCompleted,
+                    StatusChoice::QuickTaskCompleted.label().to_string(),
+                ),
+                (
+                    StatusChoice::QuickTaskFailed,
+                    StatusChoice::QuickTaskFailed.label().to_string(),
+                ),
+            ],
         }
     }
 }
@@ -72,10 +128,15 @@ pub(crate) fn detect_todo_kind(path: &Path) -> TodoKind {
     }
 }
 
-/// Write `choice` for `target`, returning the file's new path.
+/// Write `choice` for `target`, returning the file that was written (the
+/// todo/debug file itself, or ROADMAP.md / STATE.md for a phase / quick task).
 pub(crate) fn apply(target: &StatusTarget, choice: StatusChoice) -> io::Result<PathBuf> {
     match target {
         StatusTarget::Todo { path, kind } => apply_todo(path, *kind, choice),
+        StatusTarget::Phase { planning, phase_id } => apply_phase(planning, phase_id, choice),
+        StatusTarget::QuickTask { planning, task_id } => {
+            apply_quick_task(planning, task_id, choice)
+        }
     }
 }
 
@@ -89,6 +150,10 @@ fn apply_todo(path: &Path, kind: TodoKind, choice: StatusChoice) -> io::Result<P
     match choice {
         StatusChoice::TodoComplete => complete_todo(path, kind),
         StatusChoice::TodoPending => reopen_todo(path, kind),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{other:?} is not a todo choice"),
+        )),
     }
 }
 
@@ -183,6 +248,228 @@ fn reopen_todo(path: &Path, kind: TodoKind) -> io::Result<PathBuf> {
     fs::write(&dest, reverted)?;
     fs::remove_file(path)?;
     Ok(dest)
+}
+
+// ───────────────────────────────────────────────────────────────── phase ──
+
+/// Rewrite the `## Phases` index line for `phase_id` in ROADMAP.md, replacing
+/// only its 3-character bracket mark and leaving the rest of the line — and
+/// every other line in the file — byte-identical. Errors if `phase_id` has no
+/// row in the index; this never silently no-ops.
+fn apply_phase(planning: &Path, phase_id: &str, choice: StatusChoice) -> io::Result<PathBuf> {
+    let mark = match choice {
+        StatusChoice::PhaseVerified => "[x]",
+        StatusChoice::PhaseOpen => "[ ]",
+        StatusChoice::PhaseAbandoned => "[~]",
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{other:?} is not a phase choice"),
+            ));
+        }
+    };
+
+    let path = planning.join("ROADMAP.md");
+    let body = fs::read_to_string(&path)?;
+    let target_key = crate::planning::normalize_phase_id(phase_id);
+
+    let mut in_phases = false;
+    let mut found = false;
+    let mut new_lines: Vec<String> = Vec::new();
+
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("## ") {
+            in_phases = trimmed.eq_ignore_ascii_case("## Phases");
+            new_lines.push(line.to_string());
+            continue;
+        }
+        if !found && in_phases {
+            if let Some((id, _, _)) = crate::planning::parse_phase_index_line(trimmed) {
+                if crate::planning::normalize_phase_id(&id) == target_key {
+                    found = true;
+                    new_lines.push(replace_phase_mark(line, mark));
+                    continue;
+                }
+            }
+        }
+        new_lines.push(line.to_string());
+    }
+
+    if !found {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("phase {phase_id:?} not found in ROADMAP.md's ## Phases index"),
+        ));
+    }
+
+    let mut out = new_lines.join("\n");
+    if body.ends_with('\n') {
+        out.push('\n');
+    }
+    fs::write(&path, out)?;
+    Ok(path)
+}
+
+/// Splice a new 3-character bracket mark into a `## Phases` index line,
+/// leaving everything else — including leading whitespace and trailing
+/// content — untouched. `line` is expected to match `- [x] **Phase N: ...**`
+/// (any of the three marks) once leading whitespace is skipped.
+fn replace_phase_mark(line: &str, mark: &str) -> String {
+    let leading_ws = line.len() - line.trim_start().len();
+    let mark_start = leading_ws + 2; // past "- "
+    let mut out = String::with_capacity(line.len());
+    out.push_str(&line[..mark_start]);
+    out.push_str(mark);
+    out.push_str(&line[mark_start + 3..]);
+    out
+}
+
+// ─────────────────────────────────────────────────────────── quick task ──
+
+/// Upsert or remove `task_id`'s row in STATE.md's `Quick Tasks Completed`
+/// table. Columns are resolved by fuzzy header name via
+/// `planning::quick_task_columns` (shared with the reader), so this never
+/// assumes Status/Directory sit at a fixed position. Errors if the heading or
+/// its table is missing; never silently no-ops on a malformed workspace.
+fn apply_quick_task(planning: &Path, task_id: &str, choice: StatusChoice) -> io::Result<PathBuf> {
+    let path = planning.join("STATE.md");
+    let body = fs::read_to_string(&path)?;
+    let lines: Vec<&str> = body.lines().collect();
+
+    let mut heading_idx = None;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            let heading_text = trimmed.trim_start_matches('#').trim();
+            if heading_text.eq_ignore_ascii_case("Quick Tasks Completed") {
+                heading_idx = Some(i);
+                break;
+            }
+        }
+    }
+    let Some(heading_idx) = heading_idx else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no 'Quick Tasks Completed' heading in STATE.md",
+        ));
+    };
+
+    let mut idx = heading_idx + 1;
+    while idx < lines.len() && lines[idx].trim().is_empty() {
+        idx += 1;
+    }
+    let table_start = idx;
+    let mut table_end = table_start;
+    while table_end < lines.len() && lines[table_end].trim_start().starts_with('|') {
+        table_end += 1;
+    }
+    if table_start == table_end {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no table found under 'Quick Tasks Completed' heading in STATE.md",
+        ));
+    }
+
+    let header_cells = crate::planning::split_table_row(lines[table_start]);
+    let (id_col, status_col, directory_col) = crate::planning::quick_task_columns(&header_cells);
+    let width = header_cells.len();
+
+    let mut existing_row_idx: Option<usize> = None;
+    for (i, line) in lines
+        .iter()
+        .enumerate()
+        .take(table_end)
+        .skip(table_start + 1)
+    {
+        let cells = crate::planning::split_table_row(line);
+        let is_separator = cells
+            .iter()
+            .all(|c| !c.trim().is_empty() && c.trim().chars().all(|ch| ch == '-' || ch == ':'));
+        if is_separator {
+            continue;
+        }
+        if cells.get(id_col).map(|c| c.trim()) == Some(task_id) {
+            existing_row_idx = Some(i);
+            break;
+        }
+    }
+
+    let mut out_lines: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+
+    match choice {
+        StatusChoice::QuickTaskInProgress => {
+            if let Some(row_idx) = existing_row_idx {
+                out_lines.remove(row_idx);
+            }
+        }
+        StatusChoice::QuickTaskCompleted | StatusChoice::QuickTaskFailed => {
+            let status_value = choice.label().to_string();
+            if let Some(row_idx) = existing_row_idx {
+                let mut cells = crate::planning::split_table_row(&out_lines[row_idx]);
+                if let Some(sc) = status_col {
+                    if sc < cells.len() {
+                        cells[sc] = status_value;
+                    }
+                }
+                out_lines[row_idx] = render_table_row(&cells);
+            } else {
+                let mut cells = vec![String::new(); width];
+                if id_col < width {
+                    cells[id_col] = task_id.to_string();
+                }
+                if let Some(sc) = status_col {
+                    cells[sc] = status_value;
+                }
+                if let Some(dc) = directory_col {
+                    cells[dc] = resolve_quick_task_dir_name(planning, task_id)
+                        .map(|d| format!("`{d}`"))
+                        .unwrap_or_default();
+                }
+                out_lines.insert(table_end, render_table_row(&cells));
+            }
+        }
+        other => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{other:?} is not a quick-task choice"),
+            ));
+        }
+    }
+
+    let mut out = out_lines.join("\n");
+    if body.ends_with('\n') {
+        out.push('\n');
+    }
+    fs::write(&path, out)?;
+    Ok(path)
+}
+
+/// Render a rectangular table row in the `| a | b | c |` convention every
+/// fixture in this file uses (leading and trailing pipe).
+fn render_table_row(cells: &[String]) -> String {
+    format!("| {} |", cells.join(" | "))
+}
+
+/// Find `task_id`'s directory under `.planning/quick/`, by exact match or
+/// `"{task_id}-"` prefix, for filling a new row's Directory column. Returns a
+/// `.planning`-relative path (mirroring the convention in existing rows),
+/// not `planning`'s own (possibly differently-named) absolute path.
+fn resolve_quick_task_dir_name(planning: &Path, task_id: &str) -> Option<String> {
+    let quick_dir = planning.join("quick");
+    let entries = fs::read_dir(&quick_dir).ok()?;
+    let prefix = format!("{task_id}-");
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path.file_name()?.to_str()?.to_string();
+        if name == task_id || name.starts_with(&prefix) {
+            return Some(format!(".planning/quick/{name}"));
+        }
+    }
+    None
 }
 
 // ─────────────────────────────────────────────────── frontmatter surgery ──
@@ -417,5 +704,250 @@ mod tests {
             kind: TodoKind::Todo,
         };
         assert!(apply(&target, StatusChoice::TodoComplete).is_err());
+    }
+
+    // ──────────────────────────────────────────────────── phase writer ──
+
+    const ROADMAP_TWO_PHASES: &str = "\
+# ROADMAP: Sample
+
+## Phases
+
+- [ ] **Phase 1: Navigation Skeleton**
+- [ ] **Phase 2: Coffee Acquisition**
+";
+
+    fn phase_target(planning: &Path, phase_id: &str) -> StatusTarget {
+        StatusTarget::Phase {
+            planning: planning.to_path_buf(),
+            phase_id: phase_id.to_string(),
+        }
+    }
+
+    #[test]
+    fn setting_a_phase_verified_checks_its_roadmap_box() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "ROADMAP.md", ROADMAP_TWO_PHASES);
+        let target = phase_target(tmp.path(), "2");
+        apply(&target, StatusChoice::PhaseVerified).expect("apply");
+        let phases = crate::planning::load_phases(tmp.path());
+        let phase2 = phases.iter().find(|p| p.id == "2").expect("phase 2");
+        assert_eq!(phase2.stage, crate::model::Stage::Verified);
+    }
+
+    #[test]
+    fn setting_a_phase_abandoned_uses_the_tilde_mark() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "ROADMAP.md", ROADMAP_TWO_PHASES);
+        let target = phase_target(tmp.path(), "2");
+        apply(&target, StatusChoice::PhaseAbandoned).expect("apply");
+        let body = fs::read_to_string(tmp.path().join("ROADMAP.md")).unwrap();
+        assert!(
+            body.contains("- [~] **Phase 2: Coffee Acquisition**"),
+            "expected tilde mark: {body}"
+        );
+        let phases = crate::planning::load_phases(tmp.path());
+        let phase2 = phases.iter().find(|p| p.id == "2").expect("phase 2");
+        assert_eq!(phase2.stage, crate::model::Stage::Abandoned);
+    }
+
+    #[test]
+    fn reopening_a_phase_returns_it_to_the_disk_inferred_stage() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "ROADMAP.md",
+            "\
+# ROADMAP: Sample
+
+## Phases
+
+- [x] **Phase 1: Navigation Skeleton**
+",
+        );
+        // A phase dir with a plan and a matching summary: infer_stage would
+        // call this Executed once the roadmap checkbox stops overriding it.
+        write(tmp.path(), "phases/01-nav/01-01-PLAN.md", "plan");
+        write(tmp.path(), "phases/01-nav/01-01-SUMMARY.md", "summary");
+
+        let target = phase_target(tmp.path(), "1");
+        apply(&target, StatusChoice::PhaseOpen).expect("apply");
+        let phases = crate::planning::load_phases(tmp.path());
+        let phase1 = phases.iter().find(|p| p.id == "1").expect("phase 1");
+        assert_eq!(phase1.stage, crate::model::Stage::Executed);
+    }
+
+    #[test]
+    fn writing_one_phase_leaves_every_other_roadmap_line_byte_identical() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "ROADMAP.md", ROADMAP_TWO_PHASES);
+        let target = phase_target(tmp.path(), "2");
+        apply(&target, StatusChoice::PhaseVerified).expect("apply");
+        let body = fs::read_to_string(tmp.path().join("ROADMAP.md")).unwrap();
+        let before: Vec<&str> = ROADMAP_TWO_PHASES.lines().collect();
+        let after: Vec<&str> = body.lines().collect();
+        assert_eq!(before.len(), after.len(), "line count must not change");
+        for (i, (b, a)) in before.iter().zip(after.iter()).enumerate() {
+            if i == 5 {
+                // the Phase 2 line: only this one may change.
+                assert_ne!(b, a, "phase 2's line should have changed");
+                continue;
+            }
+            assert_eq!(b, a, "line {i} changed unexpectedly: {b:?} -> {a:?}");
+        }
+    }
+
+    #[test]
+    fn a_phase_absent_from_the_roadmap_index_is_an_error_not_a_silent_no_op() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "ROADMAP.md", ROADMAP_TWO_PHASES);
+        let target = phase_target(tmp.path(), "99");
+        assert!(apply(&target, StatusChoice::PhaseVerified).is_err());
+    }
+
+    // ────────────────────────────────────────────────── quick task writer ──
+
+    const STATE_SIX_COLUMN: &str = "\
+# STATE
+
+## Quick Tasks Completed
+
+| # | Description | Date | Commit | Status | Directory |
+|---|---|---|---|---|---|
+| 260101-abc | An older task | 2026-01-01 | abc123 | complete | `.planning/quick/260101-abc-an-older-task` |
+";
+
+    const STATE_FOUR_COLUMN: &str = "\
+# STATE
+
+## Quick Tasks Completed
+
+| id | task | status | directory |
+|---|---|---|---|
+| 260101-abc | An older task | complete | `.planning/quick/260101-abc-an-older-task` |
+";
+
+    fn quick_task_target(planning: &Path, task_id: &str) -> StatusTarget {
+        StatusTarget::QuickTask {
+            planning: planning.to_path_buf(),
+            task_id: task_id.to_string(),
+        }
+    }
+
+    fn setup_quick_task_workspace(state_body: &str, task_id: &str) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "STATE.md", state_body);
+        write(
+            tmp.path(),
+            &format!("quick/{task_id}-brand-new-task/{task_id}-PLAN.md"),
+            "# New task\n",
+        );
+        tmp
+    }
+
+    #[test]
+    fn marking_a_task_complete_adds_a_row_whose_status_is_passing() {
+        for state_body in [STATE_SIX_COLUMN, STATE_FOUR_COLUMN] {
+            let tmp = setup_quick_task_workspace(state_body, "260902-new");
+            let target = quick_task_target(tmp.path(), "260902-new");
+            apply(&target, StatusChoice::QuickTaskCompleted).expect("apply");
+            let tasks = crate::planning::load_quick_tasks(tmp.path(), true);
+            let task = tasks
+                .iter()
+                .find(|t| t.id == "260902-new")
+                .expect("new task");
+            assert_eq!(task.status, crate::model::QuickTaskStatus::Completed);
+        }
+    }
+
+    #[test]
+    fn marking_a_task_failed_writes_a_non_passing_status() {
+        for state_body in [STATE_SIX_COLUMN, STATE_FOUR_COLUMN] {
+            let tmp = setup_quick_task_workspace(state_body, "260902-new");
+            let target = quick_task_target(tmp.path(), "260902-new");
+            apply(&target, StatusChoice::QuickTaskFailed).expect("apply");
+            let tasks = crate::planning::load_quick_tasks(tmp.path(), false);
+            let task = tasks
+                .iter()
+                .find(|t| t.id == "260902-new")
+                .expect("new task");
+            match &task.status {
+                crate::model::QuickTaskStatus::Failed(raw) => {
+                    assert!(!raw.trim().is_empty());
+                }
+                other => panic!("expected Failed, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn marking_a_task_in_progress_removes_its_row() {
+        for state_body in [STATE_SIX_COLUMN, STATE_FOUR_COLUMN] {
+            let tmp = tempfile::tempdir().unwrap();
+            write(tmp.path(), "STATE.md", state_body);
+            write(
+                tmp.path(),
+                "quick/260101-abc-an-older-task/260101-abc-PLAN.md",
+                "# Old task\n",
+            );
+            let target = quick_task_target(tmp.path(), "260101-abc");
+            apply(&target, StatusChoice::QuickTaskInProgress).expect("apply");
+            let tasks = crate::planning::load_quick_tasks(tmp.path(), false);
+            let task = tasks
+                .iter()
+                .find(|t| t.id == "260101-abc")
+                .expect("the task still lists (in progress, unfiltered)");
+            assert_eq!(task.status, crate::model::QuickTaskStatus::InProgress);
+        }
+    }
+
+    #[test]
+    fn the_status_cell_lands_in_the_column_named_by_the_header() {
+        // The 6-column sample table: Status is column 4, Directory is column 5.
+        // A positional writer (assuming Status is last) corrupts the Directory
+        // cell; this test only passes when columns are resolved by header name.
+        let tmp = setup_quick_task_workspace(STATE_SIX_COLUMN, "260902-new");
+        let target = quick_task_target(tmp.path(), "260902-new");
+        apply(&target, StatusChoice::QuickTaskCompleted).expect("apply");
+        let body = fs::read_to_string(tmp.path().join("STATE.md")).unwrap();
+        let new_row = body
+            .lines()
+            .find(|l| l.contains("260902-new"))
+            .expect("new row");
+        let cells = crate::planning::split_table_row(new_row);
+        assert_eq!(
+            cells[4].trim(),
+            "complete",
+            "status in Status column: {cells:?}"
+        );
+        assert!(
+            cells[5].contains("quick"),
+            "directory column still holds a directory: {cells:?}"
+        );
+    }
+
+    #[test]
+    fn an_existing_row_is_updated_rather_than_duplicated() {
+        for state_body in [STATE_SIX_COLUMN, STATE_FOUR_COLUMN] {
+            let tmp = tempfile::tempdir().unwrap();
+            write(tmp.path(), "STATE.md", state_body);
+            write(
+                tmp.path(),
+                "quick/260101-abc-an-older-task/260101-abc-PLAN.md",
+                "# Old task\n",
+            );
+            let target = quick_task_target(tmp.path(), "260101-abc");
+            apply(&target, StatusChoice::QuickTaskFailed).expect("apply");
+            let body = fs::read_to_string(tmp.path().join("STATE.md")).unwrap();
+            // The fixture's Directory cell embeds the task id as a substring
+            // of the directory name, so a correctly-updated single row always
+            // shows the id twice (id cell + directory cell) — duplicating
+            // the row would show it four times.
+            let occurrences = body.matches("260101-abc").count();
+            assert_eq!(
+                occurrences, 2,
+                "row updated in place, not duplicated: {body}"
+            );
+        }
     }
 }

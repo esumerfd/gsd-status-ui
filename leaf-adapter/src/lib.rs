@@ -49,6 +49,65 @@ pub struct DocView {
     search: SearchState,
 }
 
+/// GSD planning documents mark up their sections with bare structural tags
+/// (`<objective>`, `<task type="auto">`, and the like). pulldown-cmark
+/// classifies a whole-line `<tag>` as an HTML block, and leaf renders HTML
+/// blocks as raw literal text by design — vendor/leaf stays untouched by
+/// this project, so that raw-text behavior can't be changed at the source.
+/// This pass rewrites those bare tag lines into markdown headings before
+/// the text ever reaches `leaf::viewer::parse`, so a planning document
+/// reads as a structured outline instead of a wall of angle-bracket markup.
+fn headingify_structural_tags(src: &str) -> String {
+    let mut out = String::new();
+    for line in src.lines() {
+        let trimmed = line.trim();
+        if let Some(inner) = trimmed.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
+            if let Some(name) = inner.strip_prefix('/') {
+                let _ = name;
+                ensure_blank_line(&mut out);
+                continue;
+            }
+            let name = inner.split_whitespace().next().unwrap_or(inner);
+            ensure_blank_line(&mut out);
+            out.push_str("# ");
+            out.push_str(&title_case(name));
+            out.push('\n');
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Emit a blank line before/after a heading, unless there's nothing
+/// emitted yet or the most recently emitted line is already blank.
+fn ensure_blank_line(out: &mut String) {
+    if out.is_empty() {
+        return;
+    }
+    if !out.ends_with("\n\n") {
+        out.push('\n');
+    }
+}
+
+/// Split a tag name on underscore/hyphen/period/colon, uppercase only the
+/// first character of each segment (leaving the rest untouched so acronyms
+/// and camelCase survive), and join with single spaces.
+fn title_case(name: &str) -> String {
+    name.split(['_', '-', '.', ':'])
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Read and parse a file into rendered lines plus their searchable text.
 /// The mtime is taken before the read so a write racing the read shows
 /// up as stale on the next check rather than being missed.
@@ -58,7 +117,8 @@ fn load(path: &Path, width: u16) -> Result<LoadedDoc, DocViewError> {
         path: path.to_path_buf(),
         source,
     })?;
-    let mut doc = leaf::viewer::parse(&src, width as usize);
+    let preprocessed = headingify_structural_tags(&src);
+    let mut doc = leaf::viewer::parse(&preprocessed, width as usize);
     // Drop trailing blank lines so to_bottom lands on content, not padding.
     while doc
         .lines

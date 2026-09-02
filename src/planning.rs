@@ -875,7 +875,10 @@ fn parse_quick_task(dir: &Path) -> Option<QuickTask> {
             }
         }
     }
-    let title = title.unwrap_or_else(|| title_from_slug(&name));
+    let title = title.unwrap_or_else(|| {
+        let slug = name.strip_prefix(&format!("{id}-")).unwrap_or(&name);
+        title_from_slug(slug)
+    });
     let title = strip_repeated_id(&title, &id).to_string();
 
     Some(QuickTask {
@@ -1792,6 +1795,34 @@ mod tests {
             .find(|t| t.id == "260711-dd4")
             .expect("260711-dd4 present");
         assert_eq!(task.title, "Add search history");
+    }
+
+    #[test]
+    fn falls_back_title_drops_the_task_id_prefix() {
+        // When the plan has neither a frontmatter `title` nor an H1, the title
+        // falls back to the directory slug. That slug always starts with the
+        // task's own id (`YYMMDD-shortid-`), which is already shown as the
+        // task's id elsewhere — it shouldn't also open every fallback title.
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::create_dir_all(
+            planning.join("quick/260901-k7r-stk-38055-lang-control-extend-client-fea"),
+        )
+        .unwrap();
+        std::fs::write(
+            planning.join(
+                "quick/260901-k7r-stk-38055-lang-control-extend-client-fea/260901-k7r-PLAN.md",
+            ),
+            "---\nphase: quick\nplan: 260901-k7r\n---\n",
+        )
+        .unwrap();
+
+        let tasks = load_quick_tasks(planning, false);
+        let task = tasks
+            .iter()
+            .find(|t| t.id == "260901-k7r")
+            .expect("260901-k7r present");
+        assert_eq!(task.title, "stk 38055 lang control extend client fea");
     }
 
     #[test]

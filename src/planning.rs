@@ -789,6 +789,18 @@ pub(crate) fn quick_task_columns(header_cells: &[String]) -> (usize, Option<usiz
     (id_col, status_col, directory_col)
 }
 
+/// Resolve a Quick Tasks table's description column, if it has one (by fuzzy
+/// name — "task" or "description"), for backfilling a re-inserted row's
+/// human-readable text. Separate from [`quick_task_columns`] since the reader
+/// never needs it; only the writer does, when a row was previously removed
+/// (in-progress) and is now being re-added (complete/failed).
+pub(crate) fn quick_task_description_column(header_cells: &[String]) -> Option<usize> {
+    header_cells.iter().position(|c| {
+        let c = c.trim().to_lowercase();
+        c.contains("task") || c.contains("description")
+    })
+}
+
 /// Split a markdown table row on `|`, trimming each cell. Tolerates leading
 /// and trailing `|` (e.g. `| a | b |`) and rows without them (`a | b`).
 pub(crate) fn split_table_row(row: &str) -> Vec<String> {
@@ -840,7 +852,7 @@ fn strip_repeated_id<'a>(title: &'a str, id: &str) -> &'a str {
     }
 }
 
-fn parse_quick_task(dir: &Path) -> Option<QuickTask> {
+pub(crate) fn parse_quick_task(dir: &Path) -> Option<QuickTask> {
     let name = dir.file_name()?.to_str()?.to_string();
     let mut parts = name.splitn(3, '-');
     let id = match (parts.next(), parts.next()) {

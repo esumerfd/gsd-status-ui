@@ -446,6 +446,11 @@ fn apply_quick_task(planning: &Path, task_id: &str, choice: StatusChoice) -> io:
                         .map(|d| format!("`{d}`"))
                         .unwrap_or_default();
                 }
+                if let Some(tc) = crate::planning::quick_task_description_column(&header_cells) {
+                    if tc < width {
+                        cells[tc] = resolve_quick_task_title(planning, task_id).unwrap_or_default();
+                    }
+                }
                 out_lines.insert(table_end, render_table_row(&cells));
             }
         }
@@ -472,10 +477,10 @@ fn render_table_row(cells: &[String]) -> String {
 }
 
 /// Find `task_id`'s directory under `.planning/quick/`, by exact match or
-/// `"{task_id}-"` prefix, for filling a new row's Directory column. Returns a
-/// `.planning`-relative path (mirroring the convention in existing rows),
-/// not `planning`'s own (possibly differently-named) absolute path.
-fn resolve_quick_task_dir_name(planning: &Path, task_id: &str) -> Option<String> {
+/// `"{task_id}-"` prefix — shared by [`resolve_quick_task_dir_name`] and
+/// [`resolve_quick_task_title`] so both agree on which directory a task id
+/// resolves to.
+fn find_quick_task_dir(planning: &Path, task_id: &str) -> Option<PathBuf> {
     let quick_dir = planning.join("quick");
     let entries = fs::read_dir(&quick_dir).ok()?;
     let prefix = format!("{task_id}-");
@@ -486,10 +491,31 @@ fn resolve_quick_task_dir_name(planning: &Path, task_id: &str) -> Option<String>
         }
         let name = path.file_name()?.to_str()?.to_string();
         if name == task_id || name.starts_with(&prefix) {
-            return Some(format!(".planning/quick/{name}"));
+            return Some(path);
         }
     }
     None
+}
+
+/// `task_id`'s directory under `.planning/quick/`, for filling a new row's
+/// Directory column. Returns a `.planning`-relative path (mirroring the
+/// convention in existing rows), not `planning`'s own (possibly
+/// differently-named) absolute path.
+fn resolve_quick_task_dir_name(planning: &Path, task_id: &str) -> Option<String> {
+    let path = find_quick_task_dir(planning, task_id)?;
+    let name = path.file_name()?.to_str()?.to_string();
+    Some(format!(".planning/quick/{name}"))
+}
+
+/// `task_id`'s human-readable title, read the same way `load_quick_tasks`
+/// reads it (PLAN.md frontmatter `title:`, falling back to its first `# `
+/// heading) — for backfilling a Quick Tasks table row's description column
+/// when the row is being re-inserted after having been removed (D-06: a task
+/// marked in-progress loses its row; re-completing it must not leave the
+/// description blank forever).
+fn resolve_quick_task_title(planning: &Path, task_id: &str) -> Option<String> {
+    let dir = find_quick_task_dir(planning, task_id)?;
+    crate::planning::parse_quick_task(&dir).map(|task| task.title)
 }
 
 // ─────────────────────────────────────────────────────────────── other ──
@@ -1009,6 +1035,37 @@ mod tests {
             assert_eq!(
                 occurrences, 2,
                 "row updated in place, not duplicated: {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn recompleting_after_in_progress_restores_the_task_description() {
+        // Reproduces a real data-loss report: marking a completed task
+        // in-progress removes its row (by design — the table only lists
+        // completed work); marking it complete again must re-insert a row
+        // whose description is resolved from the task's own PLAN.md title,
+        // not left permanently blank.
+        for state_body in [STATE_SIX_COLUMN, STATE_FOUR_COLUMN] {
+            let tmp = tempfile::tempdir().unwrap();
+            write(tmp.path(), "STATE.md", state_body);
+            write(
+                tmp.path(),
+                "quick/260101-abc-an-older-task/260101-abc-PLAN.md",
+                "# An older task\n",
+            );
+            let target = quick_task_target(tmp.path(), "260101-abc");
+            apply(&target, StatusChoice::QuickTaskInProgress).expect("apply in-progress");
+            apply(&target, StatusChoice::QuickTaskCompleted).expect("apply complete");
+
+            let body = fs::read_to_string(tmp.path().join("STATE.md")).unwrap();
+            let row = body
+                .lines()
+                .find(|l| l.contains("260101-abc"))
+                .expect("row still present after re-completing");
+            assert!(
+                row.contains("An older task"),
+                "description should be restored from the task's PLAN.md title, got: {row}"
             );
         }
     }

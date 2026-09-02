@@ -6,6 +6,12 @@ A terminal status view for [GSD](https://github.com/open-gsd/gsd-core) planning
 workspaces — point it at a project directory and it reports which phase you're
 on, how many plans are done, and what to run next.
 
+## Features
+
+* Instant review of current status.
+* Review all generated documents with a keystroke.
+* Update status when GSD/agent gets it wrong.
+
 ## What it reads
 
 GSD ([open-gsd/gsd-core](https://github.com/open-gsd/gsd-core)) is a slash-command

@@ -20,10 +20,10 @@ a project moves through discussion, planning, execution, and verification, GSD
 writes and updates a `.planning/` directory: `PROJECT.md`, `ROADMAP.md`,
 `STATE.md`, and per-phase `PLAN.md` / `SUMMARY.md` / `VERIFICATION.md` documents.
 
-`gsd-status-ui` doesn't drive that workflow — it's a read-only viewer over the
+`gsd-status-ui` doesn't drive that workflow — it's a viewer of the
 `.planning/` tree GSD produces. It parses those files and renders a summary of
 project progress and a suggested next command, without needing gsd-core itself
-installed.
+installed. It does have the ability to update status of a task.
 
 ## Usage
 

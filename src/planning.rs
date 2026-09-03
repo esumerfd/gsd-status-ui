@@ -712,8 +712,10 @@ fn parse_quick_completions(planning: &Path) -> HashMap<String, (Option<String>, 
     for line in lines.by_ref() {
         let is_heading = line.trim_start().starts_with('#');
         if is_heading {
-            let heading_text = line.trim_start_matches('#').trim();
-            if heading_text.eq_ignore_ascii_case("Quick Tasks Completed") {
+            let heading_text = line.trim_start_matches('#').trim().to_lowercase();
+            // Tolerate a trailing annotation on the heading (e.g. "... (carried
+            // forward from prior STATE.md)") rather than requiring an exact match.
+            if heading_text.starts_with("quick tasks completed") {
                 found_heading = true;
                 break;
             }
@@ -776,7 +778,7 @@ pub(crate) fn quick_task_columns(header_cells: &[String]) -> (usize, Option<usiz
         .iter()
         .position(|c| {
             let c = c.trim().to_lowercase();
-            c == "#" || c == "id"
+            c == "#" || c == "id" || c == "slug"
         })
         .unwrap_or(0);
     let status_col = header_cells
@@ -1940,6 +1942,45 @@ mod tests {
             .iter()
             .find(|t| t.id == "260713-ff6")
             .expect("260713-ff6 present when show_completed");
+        assert_eq!(task.status, QuickTaskStatus::Completed);
+    }
+
+    #[test]
+    fn recognizes_heading_suffix_and_slug_column_as_completed() {
+        // Real-world drift seen in wk-i18n's STATE.md: the heading carries a
+        // trailing parenthetical ("... (carried forward from prior
+        // STATE.md)") and the id column is named "Slug" with no Status or
+        // Directory column at all. Today this is never recognized as a match,
+        // so the task is stuck showing InProgress forever even though
+        // STATE.md records it as done.
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::create_dir_all(planning.join("quick/260901-k7r-extend-client")).unwrap();
+        std::fs::write(
+            planning.join("quick/260901-k7r-extend-client/260901-k7r-PLAN.md"),
+            "---\ntitle: Extend client\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            planning.join("STATE.md"),
+            "# STATE\n\n## Quick Tasks Completed (carried forward from prior STATE.md)\n\n\
+             | Date | Slug | Ticket | Summary |\n\
+             |------|------|--------|---------|\n\
+             | 2026-09-01 | 260901-k7r | STK-38055 | Extend client |\n",
+        )
+        .unwrap();
+
+        let hidden = load_quick_tasks(planning, false);
+        assert!(
+            !hidden.iter().any(|t| t.id == "260901-k7r"),
+            "completed task must be hidden by default, not stuck InProgress"
+        );
+
+        let shown = load_quick_tasks(planning, true);
+        let task = shown
+            .iter()
+            .find(|t| t.id == "260901-k7r")
+            .expect("260901-k7r present when show_completed");
         assert_eq!(task.status, QuickTaskStatus::Completed);
     }
 

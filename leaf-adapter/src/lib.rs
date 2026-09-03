@@ -367,3 +367,92 @@ impl DocView {
         self.scroll = self.scroll.min(max);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nesting_depth_increases_heading_level_and_resets_on_close() {
+        let input = "<foo>\na\n<bar>\nb\n<baz>\nc\n</baz>\n</bar>\n</foo>\n";
+        let expected = "# Foo\na\n\n## Bar\nb\n\n### Baz\nc\n\n";
+        assert_eq!(headingify_structural_tags(input), expected);
+    }
+
+    #[test]
+    fn sibling_top_level_tags_both_yield_one_hash() {
+        let input = "<foo>\na\n</foo>\n<bar>\nb\n</bar>\n";
+        let expected = "# Foo\na\n\n# Bar\nb\n\n";
+        assert_eq!(headingify_structural_tags(input), expected);
+    }
+
+    #[test]
+    fn seven_levels_of_nesting_cap_heading_level_at_six() {
+        let input = "<t1>\n<t2>\n<t3>\n<t4>\n<t5>\n<t6>\n<t7>\n";
+        let expected =
+            "# T1\n\n## T2\n\n### T3\n\n#### T4\n\n##### T5\n\n###### T6\n\n###### T7\n";
+        let output = headingify_structural_tags(input);
+        assert_eq!(output, expected);
+        assert!(
+            !output.contains("#######"),
+            "no seven-hash heading should ever be emitted:\n{output}"
+        );
+    }
+
+    #[test]
+    fn tag_names_convert_to_spaced_title_case() {
+        assert_eq!(
+            headingify_structural_tags("<deploy_target>\n"),
+            "# Deploy Target\n"
+        );
+        assert_eq!(
+            headingify_structural_tags("<read-me-first>\n"),
+            "# Read Me First\n"
+        );
+        assert_eq!(headingify_structural_tags("<step.one>\n"), "# Step One\n");
+        assert_eq!(headingify_structural_tags("<ns:step>\n"), "# Ns Step\n");
+        // A segment's non-leading characters survive untouched (acronyms/camelCase).
+        assert_eq!(headingify_structural_tags("<stepUAT>\n"), "# StepUAT\n");
+    }
+
+    #[test]
+    fn attributes_never_reach_the_heading_text() {
+        let input = "<foo bar=\"baz qux\" other='thing'>\n";
+        let output = headingify_structural_tags(input);
+        assert_eq!(output, "# Foo\n");
+        assert!(!output.contains("bar"));
+        assert!(!output.contains("baz"));
+        assert!(!output.contains("qux"));
+        assert!(!output.contains("other"));
+        assert!(!output.contains("thing"));
+    }
+
+    #[test]
+    fn self_closing_tag_emits_heading_without_deepening_what_follows() {
+        let input = "<foo/>\n<bar>\nb\n</bar>\n";
+        let expected = "# Foo\n\n# Bar\nb\n\n";
+        assert_eq!(headingify_structural_tags(input), expected);
+    }
+
+    #[test]
+    fn self_closing_tag_with_attributes_and_space_before_slash() {
+        let input = "<foo attr=\"x\" />\n";
+        assert_eq!(headingify_structural_tags(input), "# Foo\n");
+    }
+
+    #[test]
+    fn unmatched_close_tag_passes_through_unchanged() {
+        let input = "a\n</foo>\nb\n";
+        assert_eq!(headingify_structural_tags(input), input);
+    }
+
+    #[test]
+    fn heading_is_preceded_by_blank_line_but_not_doubled_when_one_already_exists() {
+        // The blank line is already in the source between "a" and "<bar>";
+        // the preprocessor must not add a second one before the heading,
+        // and the close tags below must not stack up blank lines either.
+        let input = "<foo>\na\n\n<bar>\nb\n</bar>\n</foo>\n";
+        let expected = "# Foo\na\n\n## Bar\nb\n\n";
+        assert_eq!(headingify_structural_tags(input), expected);
+    }
+}

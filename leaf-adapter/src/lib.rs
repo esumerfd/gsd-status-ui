@@ -486,8 +486,7 @@ mod tests {
     #[test]
     fn seven_levels_of_nesting_cap_heading_level_at_six() {
         let input = "<t1>\n<t2>\n<t3>\n<t4>\n<t5>\n<t6>\n<t7>\n";
-        let expected =
-            "# T1\n\n## T2\n\n### T3\n\n#### T4\n\n##### T5\n\n###### T6\n\n###### T7\n";
+        let expected = "# T1\n\n## T2\n\n### T3\n\n#### T4\n\n##### T5\n\n###### T6\n\n###### T7\n";
         let output = headingify_structural_tags(input);
         assert_eq!(output, expected);
         assert!(

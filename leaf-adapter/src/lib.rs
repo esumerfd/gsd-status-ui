@@ -59,25 +59,76 @@ pub struct DocView {
 /// reads as a structured outline instead of a wall of angle-bracket markup.
 fn headingify_structural_tags(src: &str) -> String {
     let mut out = String::new();
+    let mut stack: Vec<String> = Vec::new();
     for line in src.lines() {
         let trimmed = line.trim();
-        if let Some(inner) = trimmed.strip_prefix('<').and_then(|s| s.strip_suffix('>')) {
-            if let Some(name) = inner.strip_prefix('/') {
-                let _ = name;
-                ensure_blank_line(&mut out);
-                continue;
+        match classify_tag(trimmed) {
+            Some(TagShape::Close(name)) => {
+                // Truncate to just below the topmost (deepest, i.e. most
+                // recently pushed) occurrence of this name. A name that
+                // was never opened isn't ours to convert.
+                if let Some(pos) = stack.iter().rposition(|n| n == name) {
+                    stack.truncate(pos);
+                    ensure_blank_line(&mut out);
+                } else {
+                    out.push_str(line);
+                    out.push('\n');
+                }
             }
-            let name = inner.split_whitespace().next().unwrap_or(inner);
-            ensure_blank_line(&mut out);
-            out.push_str("# ");
-            out.push_str(&title_case(name));
-            out.push('\n');
-            continue;
+            Some(TagShape::Open(name)) => {
+                emit_heading(&mut out, stack.len(), name);
+                stack.push(name.to_string());
+            }
+            Some(TagShape::SelfClosing(name)) => {
+                // No push, no depth change — the tags that follow are
+                // siblings of this one, not children.
+                emit_heading(&mut out, stack.len(), name);
+            }
+            None => {
+                out.push_str(line);
+                out.push('\n');
+            }
         }
-        out.push_str(line);
-        out.push('\n');
     }
     out
+}
+
+/// The three whole-line tag shapes this preprocessor recognizes. Anything
+/// else (prose, an inline tag fragment, a non-tag line) classifies as
+/// `None` at the call site and is passed through untouched.
+enum TagShape<'a> {
+    Open(&'a str),
+    SelfClosing(&'a str),
+    Close(&'a str),
+}
+
+/// Classify a trimmed line as an open/self-closing/close structural tag,
+/// extracting the tag name with any attributes discarded. Returns `None`
+/// for anything that isn't a single whole-line tag.
+fn classify_tag(trimmed: &str) -> Option<TagShape<'_>> {
+    let inner = trimmed.strip_prefix('<')?.strip_suffix('>')?;
+    if let Some(name) = inner.strip_prefix('/') {
+        return Some(TagShape::Close(name.trim()));
+    }
+    if let Some(rest) = inner.strip_suffix('/') {
+        let rest = rest.trim();
+        let name = rest.split_whitespace().next().unwrap_or(rest);
+        return Some(TagShape::SelfClosing(name));
+    }
+    let name = inner.split_whitespace().next().unwrap_or(inner);
+    Some(TagShape::Open(name))
+}
+
+/// Emit a heading for `name` at the level implied by `depth` (the current
+/// stack length before this tag), inserting the blank-line separator
+/// first.
+fn emit_heading(out: &mut String, depth: usize, name: &str) {
+    let level = (depth + 1).min(6);
+    ensure_blank_line(out);
+    out.push_str(&"#".repeat(level));
+    out.push(' ');
+    out.push_str(&title_case(name));
+    out.push('\n');
 }
 
 /// Emit a blank line before/after a heading, unless there's nothing

@@ -1,15 +1,18 @@
 # ROADMAP: Robot Coffee Service
 
 **Milestone:** v0.1 — Coffee Delivery MVP
-**Status:** executing (Phase 2 of 8)
+**Status:** executing (Phase 2 of 9)
 
 A build toward a robot that can navigate the office, acquire a fresh cup of
 coffee, and deliver it to the requester without incident. Each phase is an
 end-to-end, demoable capability rather than a horizontal technical layer.
 
-The phases deliberately sit at eight different maturities — one per stage the
+Phases 1-8 deliberately sit at eight different maturities — one per stage the
 status panel can paint, so every stage colour is on screen at once. Phases 4-7
-were worked out of order while Phase 3 waited on a hardware part.
+were worked out of order while Phase 3 waited on a hardware part. Phase 9
+doubles up on the planned stage on purpose: it exists to exercise the status
+viewer's structural-tag heading conversion, not to add a ninth maturity — there
+are only eight stages the panel can paint.
 
 ## Phases
 
@@ -21,6 +24,7 @@ were worked out of order while Phase 3 waited on a hardware part.
 - [ ] **Phase 6: Order Queue**
 - [ ] **Phase 7: Multi-Floor Delivery**
 - [~] **Phase 8: Voice Ordering**
+- [ ] **Phase 9: XML Rendering**
 
 ## Phase Details
 
@@ -81,6 +85,13 @@ were worked out of order while Phase 3 waited on a hardware part.
 Dropped: the kitchen is far too loud for the mic array, and the chat ordering
 surface from Phase 6 covers the same need for a fraction of the work.
 
+### Phase 9: XML Rendering
+**Goal:** The status viewer renders this project's own bare structural tags as a nested heading outline.
+**Success Criteria**:
+1. Heading level tracks nesting depth and caps at six.
+2. A tag's attributes never reach the rendered heading text.
+3. Tags inside a fenced code block stay literal instead of becoming headings.
+
 ## Plan Index
 
 ### Phase 1: Navigation Skeleton
@@ -110,3 +121,6 @@ _(discussion still open)_
 
 ### Phase 8: Voice Ordering
 _(abandoned before planning)_
+
+### Phase 9: XML Rendering
+- [ ] 09-01-PLAN.md — structural tags as a nested heading outline

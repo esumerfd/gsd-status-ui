@@ -12,12 +12,13 @@ What it exercises:
 
 | Thing | Where |
 |---|---|
-| One phase per stage, so every stage colour is on screen | Phases 1-8 (below) |
+| One phase per stage, so every stage colour is on screen | Phases 1-9 (below) |
 | Steps to browse with `j`/`k` (open with `Enter`) | `02-01`, `02-02`, `02-03` |
 | All document tab kinds | `02-{RESEARCH,VALIDATION,UAT,CONTEXT,DISCUSSION-LOG}.md` + per-step plans |
 | Missing-doc flash message | Phase 1 has no research/uat/etc. docs |
 | Scroll testing (long doc, tables, code fences) | `02-02-PLAN.md` |
 | Bare structural tags (`<objective>`, `<task>`) don't vanish | `02-02-PLAN.md` (GSD-style tagged appendix) |
+| Structural tags convert to a nested heading outline — nesting depth, attribute stripping, name casing, the six-level cap, and the fenced contrast | `09-01-PLAN.md` (GSD-style tagged appendix) |
 | Root docs behind the Roadmap row (`o` picker) | `PROJECT.md`, `REQUIREMENTS.md`, `STATE.md` |
 
 ## One phase per stage
@@ -25,6 +26,10 @@ What it exercises:
 Each stage paints its row a different colour, so the sample keeps one phase
 sitting in every stage — a colour with no phase behind it is a colour nobody can
 eyeball. `sample_workspace_has_a_phase_in_every_stage` guards the arrangement.
+Phase 9 shares the planned stage with Phase 5 on purpose: it earns its place
+by exercising the document viewer's structural-tag heading conversion, not by
+adding a colour, so the eight-row stage table below stays one phase per stage
+and needs no new row.
 
 | Stage | Colour | Icon | Phase | What puts it there |
 |---|---|---|---|---|
@@ -38,7 +43,7 @@ eyeball. `sample_workspace_has_a_phase_in_every_stage` guards the arrangement.
 | Abandoned | grey | `⊘` | 8 Voice Ordering | roadmap `[~]` |
 
 Verified and abandoned phases are settled, so 1 and 8 are hidden until you press
-`H` — that also makes the Roadmap row read `Phases 2/8`. Phase 2 stays the first
+`H` — that also makes the Roadmap row read `Phases 2/9`. Phase 2 stays the first
 unsettled phase, so it remains the "current" one.
 
 The Tasks section covers its three status colours the same way (in progress =

@@ -1007,9 +1007,10 @@ mod tests {
     /// Rows from the default landing row (02-02) down to the first Tasks row.
     /// The sample holds a phase in every stage, so the tail of the Phases
     /// section is long: 02-03, the phase-3 placeholder, 04-01/02, 05-01/02,
-    /// then the phase-6 and phase-7 placeholders. Verified Phase 1 and
-    /// abandoned Phase 8 are hidden until `H`, so neither is counted.
-    const ROWS_02_02_TO_FIRST_TASK: usize = 9;
+    /// then the phase-6 and phase-7 placeholders, then phase 9's single
+    /// unsettled step (09-01). Verified Phase 1 and abandoned Phase 8 are
+    /// hidden until `H`, so neither is counted.
+    const ROWS_02_02_TO_FIRST_TASK: usize = 10;
 
     /// Same walk, carried past the four Tasks rows onto the first todo.
     const ROWS_02_02_TO_FIRST_TODO: usize = ROWS_02_02_TO_FIRST_TASK + 4;
@@ -1477,9 +1478,9 @@ mod tests {
     #[test]
     fn select_phase_moves_single_rows_within_the_tasks_section() {
         let mut ui = sample_ui();
-        // J jumps phase to phase: 02-02 -> ph3 -> ph4 -> ph5 -> ph6 -> ph7, the
-        // last navigable phase.
-        for _ in 0..5 {
+        // J jumps phase to phase: 02-02 -> ph3 -> ph4 -> ph5 -> ph6 -> ph7 ->
+        // phase 9 (09-01), the last navigable phase.
+        for _ in 0..6 {
             ui.on_key(plain('J'));
         }
         ui.on_key(plain('J')); // no next phase: flows down into the first Task row
@@ -2307,13 +2308,13 @@ mod tests {
             status_text(planning, &state, &phases, false),
             App::from_phases_and_todos(planning, &navigable, &[], &[]),
         );
-        // Step to the last navigable phase row — the phase-7 placeholder.
-        // Nothing sits between it and where a fresh todo would land.
+        // Step to the last navigable phase row — phase 9's single step,
+        // 09-01. Nothing sits between it and where a fresh todo would land.
         for _ in 0..(ROWS_02_02_TO_FIRST_TASK - 1) {
             ui.on_key(ctrl('j'));
         }
         let s = screen(&mut ui);
-        assert!(s.contains("Phase 7"), "at the last phase row: {s}");
+        assert!(s.contains("Phase 9"), "at the last phase row: {s}");
 
         // A periodic reload picks up a freshly captured todo.
         let todos = vec![crate::model::Todo {

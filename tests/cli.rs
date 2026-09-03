@@ -53,7 +53,7 @@ fn plain_report_renders_sample_workspace() {
     assert!(stdout.contains("Phase 2"), "{stdout}");
     assert!(stdout.contains("executing"), "{stdout}");
     // The phase count now lives only in the Roadmap row, not the banner.
-    assert!(stdout.contains("Phases 2/8"), "{stdout}");
+    assert!(stdout.contains("Phases 2/9"), "{stdout}");
     assert!(
         !stdout.contains("phases · "),
         "banner must not duplicate the phase/plan counts:\n{stdout}"

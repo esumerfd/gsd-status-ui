@@ -60,8 +60,42 @@ pub struct DocView {
 fn headingify_structural_tags(src: &str) -> String {
     let mut out = String::new();
     let mut stack: Vec<String> = Vec::new();
+    // While `Some`, every line is inside a fenced code block and passes
+    // through untouched until a matching closing fence is seen. The fence
+    // marker itself is checked with 0-3 leading spaces, matching the
+    // indentation rule for structural tag lines.
+    let mut fence: Option<&'static str> = None;
     for line in src.lines() {
         let trimmed = line.trim();
+        if let Some(marker) = fence {
+            out.push_str(line);
+            out.push('\n');
+            if trimmed.starts_with(marker) {
+                fence = None;
+            }
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent < 4 {
+            if trimmed.starts_with("```") {
+                fence = Some("```");
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+            if trimmed.starts_with("~~~") {
+                fence = Some("~~~");
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+        }
+        if indent >= 4 {
+            // Indented code block — never a structural tag line.
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
         match classify_tag(trimmed) {
             Some(TagShape::Close(name)) => {
                 // Truncate to just below the topmost (deepest, i.e. most
@@ -104,19 +138,31 @@ enum TagShape<'a> {
 
 /// Classify a trimmed line as an open/self-closing/close structural tag,
 /// extracting the tag name with any attributes discarded. Returns `None`
-/// for anything that isn't a single whole-line tag.
+/// for anything that isn't a single whole-line tag with a valid name —
+/// including HTML comments (`<!--`), doctypes (`<!DOCTYPE`), and
+/// processing instructions (`<?xml`), whose names begin with `!` or `?`
+/// rather than an ASCII letter.
 fn classify_tag(trimmed: &str) -> Option<TagShape<'_>> {
     let inner = trimmed.strip_prefix('<')?.strip_suffix('>')?;
     if let Some(name) = inner.strip_prefix('/') {
-        return Some(TagShape::Close(name.trim()));
+        let name = name.trim();
+        return is_valid_tag_name(name).then_some(TagShape::Close(name));
     }
     if let Some(rest) = inner.strip_suffix('/') {
         let rest = rest.trim();
         let name = rest.split_whitespace().next().unwrap_or(rest);
-        return Some(TagShape::SelfClosing(name));
+        return is_valid_tag_name(name).then_some(TagShape::SelfClosing(name));
     }
     let name = inner.split_whitespace().next().unwrap_or(inner);
-    Some(TagShape::Open(name))
+    is_valid_tag_name(name).then_some(TagShape::Open(name))
+}
+
+/// A tag name must begin with an ASCII letter and continue with ASCII
+/// alphanumerics, underscore, hyphen, period, or colon.
+fn is_valid_tag_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
 }
 
 /// Emit a heading for `name` at the level implied by `depth` (the current

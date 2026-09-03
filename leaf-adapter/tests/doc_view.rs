@@ -77,6 +77,23 @@ fn open_renders_gsd_style_bare_xml_tag_sections() {
 }
 
 #[test]
+fn tag_shaped_lines_inside_a_fenced_code_block_render_as_literal_code() {
+    let f = fixture(
+        "<objective>\nDo the thing end to end.\n</objective>\n\n```\n<not-a-heading>\n```\n",
+    );
+    let mut view = DocView::open(f.path(), 80).expect("open");
+    let text = rendered_text(&mut view, 80, 20);
+    assert!(
+        text.contains("Objective"),
+        "surrounding structural tag should still render as a heading:\n{text}"
+    );
+    assert!(
+        text.contains("<not-a-heading>"),
+        "tag-shaped line inside a fenced code block should render literally:\n{text}"
+    );
+}
+
+#[test]
 fn title_is_the_file_name() {
     let f = fixture("# T\n");
     let view = DocView::open(f.path(), 40).expect("open");

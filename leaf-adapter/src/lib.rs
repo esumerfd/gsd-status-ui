@@ -506,4 +506,43 @@ mod tests {
         let expected = "# Foo\na\n\n## Bar\nb\n\n";
         assert_eq!(headingify_structural_tags(input), expected);
     }
+
+    #[test]
+    fn tag_shaped_line_inside_a_backtick_fenced_code_block_passes_through_unchanged() {
+        let input = "```\n<foo>\n```\n";
+        assert_eq!(headingify_structural_tags(input), input);
+    }
+
+    #[test]
+    fn tag_shaped_line_inside_a_tilde_fenced_code_block_passes_through_unchanged() {
+        let input = "~~~\n<foo>\n~~~\n";
+        assert_eq!(headingify_structural_tags(input), input);
+    }
+
+    #[test]
+    fn tag_shaped_fragment_mid_sentence_is_left_alone() {
+        let input = "See the <foo> tag for details.\n";
+        assert_eq!(headingify_structural_tags(input), input);
+    }
+
+    #[test]
+    fn indented_tag_shaped_line_passes_through_unchanged() {
+        // Four or more leading spaces means an indented code block.
+        let input = "    <foo>\n";
+        assert_eq!(headingify_structural_tags(input), input);
+    }
+
+    #[test]
+    fn html_comment_and_doctype_lines_pass_through_unchanged() {
+        // Names beginning with '!' or '?' (comments, doctypes, processing
+        // instructions) don't begin with an ASCII letter, so they're not ours.
+        let input = "<!-- a comment -->\n<!DOCTYPE html>\n";
+        assert_eq!(headingify_structural_tags(input), input);
+    }
+
+    #[test]
+    fn document_with_no_structural_tags_round_trips_unchanged() {
+        let input = "# Heading\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- item one\n- item two\n\n```\ncode here\n```\n\n> a quote\n";
+        assert_eq!(headingify_structural_tags(input), input);
+    }
 }

@@ -60,42 +60,14 @@ pub struct DocView {
 fn headingify_structural_tags(src: &str) -> String {
     let mut out = String::new();
     let mut stack: Vec<String> = Vec::new();
-    // While `Some`, every line is inside a fenced code block and passes
-    // through untouched until a matching closing fence is seen. The fence
-    // marker itself is checked with 0-3 leading spaces, matching the
-    // indentation rule for structural tag lines.
-    let mut fence: Option<&'static str> = None;
+    let mut fence = CodeFence::new();
     for line in src.lines() {
+        if fence.is_passthrough(line) {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
         let trimmed = line.trim();
-        if let Some(marker) = fence {
-            out.push_str(line);
-            out.push('\n');
-            if trimmed.starts_with(marker) {
-                fence = None;
-            }
-            continue;
-        }
-        let indent = line.len() - line.trim_start().len();
-        if indent < 4 {
-            if trimmed.starts_with("```") {
-                fence = Some("```");
-                out.push_str(line);
-                out.push('\n');
-                continue;
-            }
-            if trimmed.starts_with("~~~") {
-                fence = Some("~~~");
-                out.push_str(line);
-                out.push('\n');
-                continue;
-            }
-        }
-        if indent >= 4 {
-            // Indented code block — never a structural tag line.
-            out.push_str(line);
-            out.push('\n');
-            continue;
-        }
         match classify_tag(trimmed) {
             Some(TagShape::Close(name)) => {
                 // Truncate to just below the topmost (deepest, i.e. most
@@ -125,6 +97,54 @@ fn headingify_structural_tags(src: &str) -> String {
         }
     }
     out
+}
+
+/// Shared fenced-code-block tracker used by every preprocessor pass. A
+/// line inside an open fence, or a line that is itself a fence delimiter,
+/// passes through untouched either way — `is_passthrough` reports that and
+/// updates the open/closed state as a side effect, so a caller need only
+/// forward the line verbatim on `true` and otherwise proceed normally.
+///
+/// Semantics match what `headingify_structural_tags` always did: while
+/// open, every line passes through and a line whose trimmed form starts
+/// with the same marker closes the fence; while closed, a line indented
+/// fewer than four spaces whose trimmed form starts with three backticks
+/// or three tildes opens the fence and passes through; a line indented
+/// four or more spaces is an indented code block and always passes
+/// through, fence state untouched.
+struct CodeFence {
+    marker: Option<&'static str>,
+}
+
+impl CodeFence {
+    fn new() -> Self {
+        CodeFence { marker: None }
+    }
+
+    fn is_passthrough(&mut self, line: &str) -> bool {
+        let trimmed = line.trim();
+        if let Some(marker) = self.marker {
+            if trimmed.starts_with(marker) {
+                self.marker = None;
+            }
+            return true;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent < 4 {
+            if trimmed.starts_with("```") {
+                self.marker = Some("```");
+                return true;
+            }
+            if trimmed.starts_with("~~~") {
+                self.marker = Some("~~~");
+                return true;
+            }
+        }
+        if indent >= 4 {
+            return true;
+        }
+        false
+    }
 }
 
 /// The three whole-line tag shapes this preprocessor recognizes. Anything
@@ -227,7 +247,7 @@ fn title_case(name: &str) -> String {
 fn strip_html_comments(src: &str) -> String {
     let mut out = String::new();
     let mut pending_gap = false;
-    let mut fence: Option<&'static str> = None;
+    let mut fence = CodeFence::new();
     let mut open: Option<OpenComment> = None;
 
     for line in src.lines() {
@@ -244,9 +264,7 @@ fn strip_html_comments(src: &str) -> String {
                         let full_survivor = format!("{prefix}{survivor}");
                         emit_stripped_line(&mut out, &mut pending_gap, line, true, &full_survivor);
                     }
-                    SpanScan::StillOpen {
-                        prefix: new_prefix,
-                    } => {
+                    SpanScan::StillOpen { prefix: new_prefix } => {
                         open = Some(OpenComment {
                             prefix: format!("{prefix}{new_prefix}"),
                             raw_lines: vec![line.to_string()],
@@ -257,31 +275,7 @@ fn strip_html_comments(src: &str) -> String {
             continue;
         }
 
-        let trimmed = line.trim();
-        if let Some(marker) = fence {
-            out.push_str(line);
-            out.push('\n');
-            if trimmed.starts_with(marker) {
-                fence = None;
-            }
-            continue;
-        }
-        let indent = line.len() - line.trim_start().len();
-        if indent < 4 {
-            if trimmed.starts_with("```") {
-                fence = Some("```");
-                out.push_str(line);
-                out.push('\n');
-                continue;
-            }
-            if trimmed.starts_with("~~~") {
-                fence = Some("~~~");
-                out.push_str(line);
-                out.push('\n');
-                continue;
-            }
-        }
-        if indent >= 4 {
+        if fence.is_passthrough(line) {
             out.push_str(line);
             out.push('\n');
             continue;
@@ -815,7 +809,10 @@ mod tests {
     fn comment_removal_blank_line_hygiene_matches_worked_expectations() {
         // Each assertion is one row of the worked-expectations table in
         // conversion_rules, `[C]` written out as a real single-line comment.
-        assert_eq!(strip_html_comments("# H\n\n<!-- c -->\n\nBody\n"), "# H\n\nBody\n");
+        assert_eq!(
+            strip_html_comments("# H\n\n<!-- c -->\n\nBody\n"),
+            "# H\n\nBody\n"
+        );
         assert_eq!(strip_html_comments("A\n<!-- c -->\nB\n"), "A\nB\n");
         assert_eq!(strip_html_comments("A\n\n<!-- c -->\nB\n"), "A\n\nB\n");
         assert_eq!(strip_html_comments("A\n<!-- c -->\n\nB\n"), "A\n\nB\n");

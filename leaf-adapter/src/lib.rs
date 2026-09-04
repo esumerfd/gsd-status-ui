@@ -389,17 +389,23 @@ fn emit_stripped_line(
     *pending_gap = false;
 }
 
+// TODO(Task 2 RED): real implementation lands in the GREEN commit, at
+// which point it also gets wired into preprocess_markdown below.
+fn emphasize_inline_tags(src: &str) -> String {
+    src.to_string()
+}
+
 /// Compose the preprocessor pipeline that runs ahead of
 /// `leaf::viewer::parse`. Order is load-bearing:
 ///
 /// 1. `strip_html_comments` runs first — a comment spanning several lines
 ///    can contain a whole-line bare tag, and if the heading pass ran
 ///    first, that commented-out tag would surface as a real heading.
-/// 2. (Task 2) `emphasize_inline_tags` runs second — a whole-line
-///    attributed open+text+close tag would otherwise be classified by
-///    `classify_tag` as a heading-worthy open tag, silently discarding the
-///    value. Running the inline pass first turns it into ordinary prose
-///    before the heading pass ever sees it.
+/// 2. `emphasize_inline_tags` runs second — a whole-line attributed
+///    open+text+close tag would otherwise be classified by `classify_tag`
+///    as a heading-worthy open tag, silently discarding the value. Running
+///    the inline pass first turns it into ordinary prose before the
+///    heading pass ever sees it.
 /// 3. `headingify_structural_tags` runs last, unchanged from 260902-rej.
 fn preprocess_markdown(src: &str) -> String {
     headingify_structural_tags(&strip_html_comments(src))
@@ -887,5 +893,125 @@ mod tests {
         );
         assert!(output.contains("Intro."));
         assert!(output.contains("Outro."));
+    }
+
+    // -- Rule B: emphasize_inline_tags ------------------------------------
+
+    #[test]
+    fn pair_alone_on_a_line_becomes_asterisk_wrapped_inner_text() {
+        assert_eq!(emphasize_inline_tags("<a>value</a>\n"), "*value*\n");
+    }
+
+    #[test]
+    fn pair_embedded_mid_sentence_preserves_surrounding_prose_exactly() {
+        assert_eq!(
+            emphasize_inline_tags("Owner is <owner>Ed</owner> today.\n"),
+            "Owner is *Ed* today.\n"
+        );
+    }
+
+    #[test]
+    fn attributed_open_tag_yields_emphasis_with_no_attribute_leaking_through() {
+        let input = "<a href=\"x\">value</a>\n";
+        let output = emphasize_inline_tags(input);
+        assert_eq!(output, "*value*\n");
+        assert!(!output.contains("href"));
+        assert!(!output.contains('x'));
+    }
+
+    #[test]
+    fn several_different_tag_names_all_convert_identically() {
+        assert_eq!(emphasize_inline_tags("<a>v</a>\n"), "*v*\n");
+        assert_eq!(emphasize_inline_tags("<b>v</b>\n"), "*v*\n");
+        assert_eq!(emphasize_inline_tags("<em>v</em>\n"), "*v*\n");
+        assert_eq!(emphasize_inline_tags("<owner>v</owner>\n"), "*v*\n");
+        assert_eq!(
+            emphasize_inline_tags("<due-date>Friday</due-date>\n"),
+            "*Friday*\n"
+        );
+    }
+
+    #[test]
+    fn inner_whitespace_is_trimmed_before_asterisks_are_applied() {
+        assert_eq!(emphasize_inline_tags("<a> value </a>\n"), "*value*\n");
+    }
+
+    #[test]
+    fn mismatched_close_tag_name_is_left_literal() {
+        let input = "<a>value</b>\n";
+        assert_eq!(emphasize_inline_tags(input), input);
+    }
+
+    #[test]
+    fn nested_pair_is_left_literal() {
+        let input = "<a><b>value</b></a>\n";
+        assert_eq!(emphasize_inline_tags(input), input);
+    }
+
+    #[test]
+    fn empty_pair_is_left_literal() {
+        let input = "<a></a>\n";
+        assert_eq!(emphasize_inline_tags(input), input);
+    }
+
+    #[test]
+    fn pair_inside_backtick_and_tilde_fenced_blocks_is_left_literal() {
+        let backtick = "```\n<a>value</a>\n```\n";
+        assert_eq!(emphasize_inline_tags(backtick), backtick);
+        let tilde = "~~~\n<a>value</a>\n~~~\n";
+        assert_eq!(emphasize_inline_tags(tilde), tilde);
+    }
+
+    #[test]
+    fn pair_on_an_indented_line_is_left_literal() {
+        let input = "    <a>value</a>\n";
+        assert_eq!(emphasize_inline_tags(input), input);
+    }
+
+    #[test]
+    fn two_pairs_on_one_line_are_both_converted() {
+        assert_eq!(
+            emphasize_inline_tags("<a>one</a> and <b>two</b>\n"),
+            "*one* and *two*\n"
+        );
+    }
+
+    #[test]
+    fn document_with_no_pairs_round_trips_byte_for_byte_unchanged() {
+        let input = "# Heading\n\nJust prose, no inline pairs here.\n";
+        assert_eq!(emphasize_inline_tags(input), input);
+    }
+
+    #[test]
+    fn whole_line_bare_tag_is_not_claimed_by_this_pass() {
+        // Rule 1's territory: no same-line close, so Rule B never fires,
+        // and headingify_structural_tags still sees it untouched.
+        let input = "<objective>\n";
+        assert_eq!(emphasize_inline_tags(input), input);
+    }
+
+    // -- preprocess_markdown pipeline: Rule B vs Rule 1 collision guard --
+
+    #[test]
+    fn attributed_pair_alone_on_its_line_becomes_emphasis_not_a_heading_with_a_discarded_value() {
+        let input = "<owner ref=\"x\">Ed</owner>\n";
+        let output = preprocess_markdown(input);
+        assert!(
+            output.contains("Ed"),
+            "value must survive, not be discarded by the heading pass:\n{output}"
+        );
+        assert!(
+            !output.trim_start().starts_with('#'),
+            "an attributed same-line pair must not become a heading:\n{output}"
+        );
+    }
+
+    #[test]
+    fn all_three_rules_apply_at_once_in_one_document() {
+        let input = "<objective>\nOwner is <owner>Ed</owner>.\n<!-- reviewer note -->\n</objective>\n";
+        let output = preprocess_markdown(input);
+        assert!(output.contains('#'), "bare tag should still heading:\n{output}");
+        assert!(output.contains("Owner is *Ed*."), "inline pair should emphasize:\n{output}");
+        assert!(!output.contains("reviewer note"), "comment should vanish:\n{output}");
     }
 }

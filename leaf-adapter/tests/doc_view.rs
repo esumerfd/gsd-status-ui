@@ -152,6 +152,21 @@ fn comment_inside_a_fenced_code_block_renders_literally_while_comment_outside_is
 }
 
 #[test]
+fn open_renders_a_same_line_inline_pair_as_emphasis_not_raw_angle_brackets() {
+    let tag_name = "owner";
+    let raw_open = format!("<{tag_name}>");
+    let raw_close = format!("</{tag_name}>");
+    let f = fixture("Status update: <owner>Ed</owner> is on point today.\n");
+    let mut view = DocView::open(f.path(), 80).expect("open");
+    let text = rendered_text(&mut view, 80, 20);
+    assert!(text.contains("Ed"), "inner value missing:\n{text}");
+    assert!(
+        !text.contains(&raw_open) && !text.contains(&raw_close),
+        "raw angle-bracketed inline tag should not appear:\n{text}"
+    );
+}
+
+#[test]
 fn title_is_the_file_name() {
     let f = fixture("# T\n");
     let view = DocView::open(f.path(), 40).expect("open");

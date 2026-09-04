@@ -177,12 +177,20 @@ fn classify_tag(trimmed: &str) -> Option<TagShape<'_>> {
     is_valid_tag_name(name).then_some(TagShape::Open(name))
 }
 
+/// The character class allowed after a tag name's first (always
+/// alphabetic) character. Shared by `is_valid_tag_name` and the inline-pair
+/// scanner's `take_tag_name` so the two passes can never disagree on what a
+/// tag name is.
+fn is_tag_name_continuation_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':')
+}
+
 /// A tag name must begin with an ASCII letter and continue with ASCII
 /// alphanumerics, underscore, hyphen, period, or colon.
 fn is_valid_tag_name(name: &str) -> bool {
     let mut chars = name.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | ':'))
+        && chars.all(is_tag_name_continuation_char)
 }
 
 /// Emit a heading for `name` at the level implied by `depth` (the current
@@ -389,10 +397,124 @@ fn emit_stripped_line(
     *pending_gap = false;
 }
 
-// TODO(Task 2 RED): real implementation lands in the GREEN commit, at
-// which point it also gets wired into preprocess_markdown below.
+/// A same-line pair — open tag, plain inner text, matching close tag,
+/// nothing nested — renders as angle-bracketed clutter instead of a
+/// highlighted value. This pass rewrites that one shape into markdown
+/// emphasis, generic over any tag name, before the text reaches
+/// `headingify_structural_tags` or `leaf::viewer::parse`.
+///
+/// Scope guards match Rule A's precedent exactly: a pair inside a fenced
+/// code block, or on a line indented four or more spaces, is left literal.
+/// The scan never backtracks and never consumes input on a failed match —
+/// a failed attempt at one `<` costs exactly that one character, keeping
+/// the whole pass linear even on adversarial input (T-QT-01).
 fn emphasize_inline_tags(src: &str) -> String {
-    src.to_string()
+    let mut out = String::new();
+    let mut fence = CodeFence::new();
+    for line in src.lines() {
+        if fence.is_passthrough(line) {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        out.push_str(&emphasize_line(line));
+        out.push('\n');
+    }
+    out
+}
+
+/// Left-to-right scan of one line for inline tag pairs, emitting emphasis
+/// on a match and the literal `<` (only) on a failed attempt.
+fn emphasize_line(line: &str) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    loop {
+        match rest.find('<') {
+            None => {
+                out.push_str(rest);
+                return out;
+            }
+            Some(lt_pos) => {
+                out.push_str(&rest[..lt_pos]);
+                let after_lt = &rest[lt_pos + 1..];
+                match try_match_inline_pair(after_lt) {
+                    Some((inner, resume)) => {
+                        out.push('*');
+                        out.push_str(&inner);
+                        out.push('*');
+                        rest = resume;
+                    }
+                    None => {
+                        out.push('<');
+                        rest = after_lt;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Attempt the five-part match described in conversion_rules against `s`,
+/// the text immediately following an already-consumed `<`. Returns the
+/// trimmed inner text and the unconsumed remainder to resume scanning from
+/// on success; `None`, consuming nothing, on any failure.
+fn try_match_inline_pair(s: &str) -> Option<(String, &str)> {
+    let name = take_tag_name(s)?;
+    let after_name = &s[name.len()..];
+
+    // Either `>` immediately, or whitespace then attribute text containing
+    // no `<` and no `>`, then `>`.
+    let after_open_tag = if let Some(rest) = after_name.strip_prefix('>') {
+        rest
+    } else {
+        if !after_name.starts_with(|c: char| c.is_whitespace()) {
+            return None;
+        }
+        let gt_pos = after_name.find('>')?;
+        let attrs = &after_name[..gt_pos];
+        if attrs.contains('<') {
+            return None;
+        }
+        &after_name[gt_pos + 1..]
+    };
+
+    // Inner text: everything up to the next `<`. No `>`, not empty/blank.
+    let next_lt = after_open_tag.find('<')?;
+    let inner = &after_open_tag[..next_lt];
+    if inner.contains('>') {
+        return None;
+    }
+    let inner_trimmed = inner.trim();
+    if inner_trimmed.is_empty() {
+        return None;
+    }
+
+    // `</`, the SAME name exactly and case-sensitively, optional
+    // whitespace, then `>`.
+    let after_next_lt = &after_open_tag[next_lt + 1..];
+    let after_slash = after_next_lt.strip_prefix('/')?;
+    let after_close_name = after_slash.strip_prefix(name)?;
+    let resume = after_close_name.trim_start().strip_prefix('>')?;
+
+    Some((inner_trimmed.to_string(), resume))
+}
+
+/// Extract the maximal tag-name prefix of `s` (an ASCII letter followed by
+/// `is_tag_name_continuation_char`s), reusing the same character class
+/// `is_valid_tag_name` validates against so the whole-line and inline
+/// passes can never disagree on what a tag name is. `None` if `s` does not
+/// begin with an ASCII letter.
+fn take_tag_name(s: &str) -> Option<&str> {
+    let mut chars = s.char_indices();
+    let (_, first) = chars.next()?;
+    if !first.is_ascii_alphabetic() {
+        return None;
+    }
+    let end = chars
+        .find(|&(_, c)| !is_tag_name_continuation_char(c))
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    Some(&s[..end])
 }
 
 /// Compose the preprocessor pipeline that runs ahead of
@@ -408,7 +530,7 @@ fn emphasize_inline_tags(src: &str) -> String {
 ///    heading pass ever sees it.
 /// 3. `headingify_structural_tags` runs last, unchanged from 260902-rej.
 fn preprocess_markdown(src: &str) -> String {
-    headingify_structural_tags(&strip_html_comments(src))
+    headingify_structural_tags(&emphasize_inline_tags(&strip_html_comments(src)))
 }
 
 /// Read and parse a file into rendered lines plus their searchable text.
@@ -943,9 +1065,22 @@ mod tests {
     }
 
     #[test]
-    fn nested_pair_is_left_literal() {
-        let input = "<a><b>value</b></a>\n";
-        assert_eq!(emphasize_inline_tags(input), input);
+    fn wrapping_pair_is_left_literal_while_its_nested_pair_converts_independently() {
+        // The outer <a>'s inner-text scan hits the nested tag's `<`
+        // immediately, so its inner text is empty and it never matches --
+        // the wrapping pair is left literal, exactly as conversion_rules
+        // requires ("a pair wrapping another pair is left literal"). The
+        // nested <b>value</b>, reached moments later in the same
+        // left-to-right, non-backtracking scan, is a perfectly
+        // well-formed pair on its own and converts normally -- there is
+        // no nesting-depth tracking in this pass to tell it apart from
+        // any other independent pair on the line.
+        let output = emphasize_inline_tags("<a><b>value</b></a>\n");
+        assert!(
+            output.contains("<a>") && output.contains("</a>"),
+            "the wrapping pair must not be collapsed into emphasis:\n{output}"
+        );
+        assert_eq!(output, "<a>*value*</a>\n");
     }
 
     #[test]
@@ -1008,10 +1143,20 @@ mod tests {
 
     #[test]
     fn all_three_rules_apply_at_once_in_one_document() {
-        let input = "<objective>\nOwner is <owner>Ed</owner>.\n<!-- reviewer note -->\n</objective>\n";
+        let input =
+            "<objective>\nOwner is <owner>Ed</owner>.\n<!-- reviewer note -->\n</objective>\n";
         let output = preprocess_markdown(input);
-        assert!(output.contains('#'), "bare tag should still heading:\n{output}");
-        assert!(output.contains("Owner is *Ed*."), "inline pair should emphasize:\n{output}");
-        assert!(!output.contains("reviewer note"), "comment should vanish:\n{output}");
+        assert!(
+            output.contains('#'),
+            "bare tag should still heading:\n{output}"
+        );
+        assert!(
+            output.contains("Owner is *Ed*."),
+            "inline pair should emphasize:\n{output}"
+        );
+        assert!(
+            !output.contains("reviewer note"),
+            "comment should vanish:\n{output}"
+        );
     }
 }

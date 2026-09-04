@@ -205,6 +205,16 @@ fn title_case(name: &str) -> String {
         .join(" ")
 }
 
+// TODO(Task 1 RED): real implementation lands in the GREEN commit.
+fn strip_html_comments(src: &str) -> String {
+    src.to_string()
+}
+
+// TODO(Task 1 RED): the inline-pair pass slots in here in Task 2.
+fn preprocess_markdown(src: &str) -> String {
+    headingify_structural_tags(&strip_html_comments(src))
+}
+
 /// Read and parse a file into rendered lines plus their searchable text.
 /// The mtime is taken before the read so a write racing the read shows
 /// up as stale on the next check rather than being missed.
@@ -214,7 +224,7 @@ fn load(path: &Path, width: u16) -> Result<LoadedDoc, DocViewError> {
         path: path.to_path_buf(),
         source,
     })?;
-    let preprocessed = headingify_structural_tags(&src);
+    let preprocessed = preprocess_markdown(&src);
     let mut doc = leaf::viewer::parse(&preprocessed, width as usize);
     // Drop trailing blank lines so to_bottom lands on content, not padding.
     while doc
@@ -589,5 +599,100 @@ mod tests {
     fn document_with_no_structural_tags_round_trips_unchanged() {
         let input = "# Heading\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- item one\n- item two\n\n```\ncode here\n```\n\n> a quote\n";
         assert_eq!(headingify_structural_tags(input), input);
+    }
+
+    // -- Rule A: strip_html_comments -------------------------------------
+
+    #[test]
+    fn comment_only_line_disappears_entirely() {
+        let input = "A\n<!-- c -->\nB\n";
+        assert_eq!(strip_html_comments(input), "A\nB\n");
+    }
+
+    #[test]
+    fn comment_spanning_several_lines_is_removed_in_full() {
+        let input = "Para one.\n\n<!--\nmiddle line one\nmiddle line two\n-->\n\nPara two.\n";
+        assert_eq!(strip_html_comments(input), "Para one.\n\nPara two.\n");
+    }
+
+    #[test]
+    fn comment_removal_blank_line_hygiene_matches_worked_expectations() {
+        // Each assertion is one row of the worked-expectations table in
+        // conversion_rules, `[C]` written out as a real single-line comment.
+        assert_eq!(strip_html_comments("# H\n\n<!-- c -->\n\nBody\n"), "# H\n\nBody\n");
+        assert_eq!(strip_html_comments("A\n<!-- c -->\nB\n"), "A\nB\n");
+        assert_eq!(strip_html_comments("A\n\n<!-- c -->\nB\n"), "A\n\nB\n");
+        assert_eq!(strip_html_comments("A\n<!-- c -->\n\nB\n"), "A\n\nB\n");
+        assert_eq!(
+            strip_html_comments("A\n\n<!-- c -->\n<!-- c -->\n\nB\n"),
+            "A\n\nB\n"
+        );
+        assert_eq!(strip_html_comments("<!-- c -->\n\n# H\n"), "# H\n");
+    }
+
+    #[test]
+    fn trailing_comment_leaves_prose_with_no_trailing_whitespace() {
+        let input = "Some prose. <!-- note -->\n";
+        let output = strip_html_comments(input);
+        assert_eq!(output, "Some prose.\n");
+        assert!(
+            !output.ends_with(" \n"),
+            "trailing whitespace left behind:\n{output:?}"
+        );
+    }
+
+    #[test]
+    fn two_comments_on_one_line_are_both_removed() {
+        let input = "A <!--one--> B <!--two--> C\n";
+        let output = strip_html_comments(input);
+        assert!(!output.contains("<!--") && !output.contains("-->"));
+        assert!(output.contains('A') && output.contains('B') && output.contains('C'));
+    }
+
+    #[test]
+    fn comment_inside_backtick_and_tilde_fenced_blocks_survives_unchanged() {
+        let backtick = "```\n<!-- inside -->\n```\n";
+        assert_eq!(strip_html_comments(backtick), backtick);
+        let tilde = "~~~\n<!-- inside -->\n~~~\n";
+        assert_eq!(strip_html_comments(tilde), tilde);
+    }
+
+    #[test]
+    fn comment_line_indented_four_or_more_spaces_survives_unchanged() {
+        let input = "    <!-- indented -->\n";
+        assert_eq!(strip_html_comments(input), input);
+    }
+
+    #[test]
+    fn unterminated_comment_restores_the_rest_of_the_document_verbatim() {
+        let input = "Some text.\n<!-- opens but never closes\nmore text\n";
+        assert_eq!(strip_html_comments(input), input);
+    }
+
+    #[test]
+    fn document_with_no_comments_round_trips_through_strip_html_comments_unchanged() {
+        let input = "# Heading\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- item one\n- item two\n\n```\ncode here\n```\n\n> a quote\n";
+        assert_eq!(strip_html_comments(input), input);
+    }
+
+    // -- preprocess_markdown pipeline ordering ----------------------------
+
+    #[test]
+    fn preprocess_markdown_round_trips_a_document_with_no_comments_and_no_tags() {
+        let input = "# Heading\n\nJust prose, no tags and no comments.\n";
+        assert_eq!(preprocess_markdown(input), input);
+    }
+
+    #[test]
+    fn preprocess_markdown_strips_comments_before_headingify_so_a_commented_tag_produces_no_heading(
+    ) {
+        let input = "Intro.\n\n<!--\n<objective>\n-->\n\nOutro.\n";
+        let output = preprocess_markdown(input);
+        assert!(
+            !output.contains('#'),
+            "a commented-out tag must not surface as a heading:\n{output}"
+        );
+        assert!(output.contains("Intro."));
+        assert!(output.contains("Outro."));
     }
 }

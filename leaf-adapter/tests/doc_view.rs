@@ -94,6 +94,64 @@ fn tag_shaped_lines_inside_a_fenced_code_block_render_as_literal_code() {
 }
 
 #[test]
+fn open_strips_html_comments_from_the_rendered_document() {
+    let comment_open: String = ['<', '!', '-', '-'].iter().collect();
+    let comment_close: String = ['-', '-', '>'].iter().collect();
+    let f = fixture(
+        "Intro paragraph.\n\n<!-- a single-line note -->\n\n<!--\nspans\nthree lines\n-->\n\nOutro paragraph.\n",
+    );
+    let mut view = DocView::open(f.path(), 80).expect("open");
+    let text = rendered_text(&mut view, 80, 20);
+    assert!(
+        text.contains("Intro paragraph."),
+        "prose before comments missing:\n{text}"
+    );
+    assert!(
+        text.contains("Outro paragraph."),
+        "prose after comments missing:\n{text}"
+    );
+    assert!(
+        !text.contains(&comment_open),
+        "comment open delimiter leaked into the render:\n{text}"
+    );
+    assert!(
+        !text.contains(&comment_close),
+        "comment close delimiter leaked into the render:\n{text}"
+    );
+    assert!(
+        !text.contains("a single-line note"),
+        "single-line comment body leaked into the render:\n{text}"
+    );
+    assert!(
+        !text.contains("spans") && !text.contains("three lines"),
+        "multi-line comment body leaked into the render:\n{text}"
+    );
+}
+
+#[test]
+fn comment_inside_a_fenced_code_block_renders_literally_while_comment_outside_is_stripped() {
+    let comment_open: String = ['<', '!', '-', '-'].iter().collect();
+    let comment_close: String = ['-', '-', '>'].iter().collect();
+    let content = format!(
+        "Before.\n\n{comment_open} hidden note {comment_close}\n\n```\n{comment_open} visible in code {comment_close}\n```\n\nAfter.\n"
+    );
+    let f = fixture(&content);
+    let mut view = DocView::open(f.path(), 80).expect("open");
+    let text = rendered_text(&mut view, 80, 20);
+    assert!(text.contains("Before."), "prose before missing:\n{text}");
+    assert!(text.contains("After."), "prose after missing:\n{text}");
+    assert!(
+        !text.contains("hidden note"),
+        "comment outside the fence should be stripped:\n{text}"
+    );
+    let literal_fenced_comment = format!("{comment_open} visible in code {comment_close}");
+    assert!(
+        text.contains(&literal_fenced_comment),
+        "comment inside the fence should render literally, delimiters and all:\n{text}"
+    );
+}
+
+#[test]
 fn title_is_the_file_name() {
     let f = fixture("# T\n");
     let view = DocView::open(f.path(), 40).expect("open");

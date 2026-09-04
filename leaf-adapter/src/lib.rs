@@ -205,12 +205,208 @@ fn title_case(name: &str) -> String {
         .join(" ")
 }
 
-// TODO(Task 1 RED): real implementation lands in the GREEN commit.
+/// GSD planning documents sometimes carry HTML/XML comments as
+/// instructions-to-the-author that a reader of the rendered document never
+/// wants to see. This pass removes every comment span — the four
+/// characters `<`, `!`, `-`, `-` through the first following `-`, `-`, `>`
+/// — before the text reaches `headingify_structural_tags` or
+/// `leaf::viewer::parse`. Single-line or spanning many lines, anywhere on
+/// a line, any number of spans per line: every comment in the document is
+/// removed, with no keyword or convention filter.
+///
+/// Scope guards match `headingify_structural_tags`'s precedent exactly: a
+/// comment inside a fenced code block, or on a line indented four or more
+/// spaces, is left literal. Once a comment is open, comment scanning wins
+/// over fence tracking — a fence marker inside an open comment is comment
+/// text, not a fence.
+///
+/// If a comment is opened but never closed before end of input, every
+/// line held since it opened is restored verbatim rather than swallowing
+/// the rest of the document — a stray opening delimiter in prose must
+/// never blank out real content (T-QT-02).
 fn strip_html_comments(src: &str) -> String {
-    src.to_string()
+    let mut out = String::new();
+    let mut pending_gap = false;
+    let mut fence: Option<&'static str> = None;
+    let mut open: Option<OpenComment> = None;
+
+    for line in src.lines() {
+        if let Some(state) = open.as_mut() {
+            // Comment scanning wins over fence tracking while a comment is
+            // open: this line's only fate is "still comment" or "closes."
+            state.raw_lines.push(line.to_string());
+            if let Some(close_rel) = line.find("-->") {
+                let after = &line[close_rel + 3..];
+                let prefix = std::mem::take(&mut state.prefix);
+                open = None;
+                match scan_comment_spans(after) {
+                    SpanScan::Closed { survivor, .. } => {
+                        let full_survivor = format!("{prefix}{survivor}");
+                        emit_stripped_line(&mut out, &mut pending_gap, line, true, &full_survivor);
+                    }
+                    SpanScan::StillOpen {
+                        prefix: new_prefix,
+                    } => {
+                        open = Some(OpenComment {
+                            prefix: format!("{prefix}{new_prefix}"),
+                            raw_lines: vec![line.to_string()],
+                        });
+                    }
+                }
+            }
+            continue;
+        }
+
+        let trimmed = line.trim();
+        if let Some(marker) = fence {
+            out.push_str(line);
+            out.push('\n');
+            if trimmed.starts_with(marker) {
+                fence = None;
+            }
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent < 4 {
+            if trimmed.starts_with("```") {
+                fence = Some("```");
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+            if trimmed.starts_with("~~~") {
+                fence = Some("~~~");
+                out.push_str(line);
+                out.push('\n');
+                continue;
+            }
+        }
+        if indent >= 4 {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+
+        match scan_comment_spans(line) {
+            SpanScan::Closed { survivor, removed } => {
+                emit_stripped_line(&mut out, &mut pending_gap, line, removed, &survivor);
+            }
+            SpanScan::StillOpen { prefix } => {
+                open = Some(OpenComment {
+                    prefix,
+                    raw_lines: vec![line.to_string()],
+                });
+            }
+        }
+    }
+
+    if let Some(state) = open {
+        for raw in state.raw_lines {
+            out.push_str(&raw);
+            out.push('\n');
+        }
+    }
+
+    out
 }
 
-// TODO(Task 1 RED): the inline-pair pass slots in here in Task 2.
+/// Buffered state while a multi-line comment is open: the survivor text
+/// already known to precede it on the line that opened it, and every raw
+/// line seen since then — restored verbatim if the comment never closes.
+struct OpenComment {
+    prefix: String,
+    raw_lines: Vec<String>,
+}
+
+/// The result of scanning a string for zero or more comment spans, none of
+/// which is open coming in.
+enum SpanScan {
+    /// No comment is left open at the end of the scanned text.
+    Closed { survivor: String, removed: bool },
+    /// The text ends inside an unterminated comment; `prefix` is
+    /// everything known to survive before that final, still-open span.
+    StillOpen { prefix: String },
+}
+
+/// Scan `s` left to right for comment-open/comment-close spans, removing
+/// every complete one. Never backtracks and never consumes past what it
+/// finds — each byte is visited at most once.
+fn scan_comment_spans(s: &str) -> SpanScan {
+    let mut survivor = String::new();
+    let mut removed = false;
+    let mut rest = s;
+    loop {
+        match rest.find("<!--") {
+            None => {
+                survivor.push_str(rest);
+                return SpanScan::Closed { survivor, removed };
+            }
+            Some(open_pos) => {
+                survivor.push_str(&rest[..open_pos]);
+                let after_open = &rest[open_pos + 4..];
+                match after_open.find("-->") {
+                    None => {
+                        return SpanScan::StillOpen { prefix: survivor };
+                    }
+                    Some(close_pos) => {
+                        removed = true;
+                        rest = &after_open[close_pos + 3..];
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Apply Rule A's line-level output rule: an untouched line is emitted
+/// byte-for-byte; a line that lost content is emitted trimmed of trailing
+/// whitespace, or dropped entirely (raising `pending_gap`) if nothing but
+/// whitespace survived. A genuinely blank source line is swallowed instead
+/// of doubling a gap a dropped comment already left behind, but only while
+/// that gap is still open at the tail of the output.
+fn emit_stripped_line(
+    out: &mut String,
+    pending_gap: &mut bool,
+    original_line: &str,
+    removed: bool,
+    survivor: &str,
+) {
+    if !removed {
+        if original_line.trim().is_empty() {
+            if *pending_gap && (out.is_empty() || out.ends_with("\n\n")) {
+                return;
+            }
+            out.push_str(original_line);
+            out.push('\n');
+            *pending_gap = false;
+            return;
+        }
+        out.push_str(original_line);
+        out.push('\n');
+        return;
+    }
+
+    if survivor.trim().is_empty() {
+        *pending_gap = true;
+        return;
+    }
+    out.push_str(survivor.trim_end());
+    out.push('\n');
+    *pending_gap = false;
+}
+
+/// Compose the preprocessor pipeline that runs ahead of
+/// `leaf::viewer::parse`. Order is load-bearing:
+///
+/// 1. `strip_html_comments` runs first — a comment spanning several lines
+///    can contain a whole-line bare tag, and if the heading pass ran
+///    first, that commented-out tag would surface as a real heading.
+/// 2. (Task 2) `emphasize_inline_tags` runs second — a whole-line
+///    attributed open+text+close tag would otherwise be classified by
+///    `classify_tag` as a heading-worthy open tag, silently discarding the
+///    value. Running the inline pass first turns it into ordinary prose
+///    before the heading pass ever sees it.
+/// 3. `headingify_structural_tags` runs last, unchanged from 260902-rej.
 fn preprocess_markdown(src: &str) -> String {
     headingify_structural_tags(&strip_html_comments(src))
 }

@@ -263,9 +263,19 @@ fn phase_sort_key(id: &str) -> f64 {
     id.trim().parse::<f64>().unwrap_or(f64::MAX)
 }
 
+/// The on-disk phase directory matching `phase_id`, if one exists — the same
+/// resolution `load_phases` uses to attach a `Phase`'s `dir` field. Exposed for
+/// `status_edit`, which needs the real directory to backfill completion
+/// artifacts into (not just the parsed `Phase` struct).
+pub(crate) fn find_phase_dir(planning: &Path, phase_id: &str) -> Option<PathBuf> {
+    scan_phase_dirs(planning)
+        .into_iter()
+        .find(|p| dir_matches_phase(p, phase_id))
+}
+
 /// The phase id encoded in a directory name, i.e. the leading alphanumeric run
 /// (`"03-apply-fix"` → `"03"`). Returns None for names with no leading id.
-fn phase_id_from_dir(dir: &Path) -> Option<String> {
+pub(crate) fn phase_id_from_dir(dir: &Path) -> Option<String> {
     let name = dir.file_name().and_then(|n| n.to_str())?;
     let leading: String = name
         .chars()

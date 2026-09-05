@@ -275,7 +275,12 @@ fn reopen_todo(path: &Path, kind: TodoKind) -> io::Result<PathBuf> {
 /// Rewrite the `## Phases` index line for `phase_id` in ROADMAP.md, replacing
 /// only its 3-character bracket mark and leaving the rest of the line — and
 /// every other line in the file — byte-identical. Errors if `phase_id` has no
-/// row in the index; this never silently no-ops.
+/// row in the index and is otherwise unknown; this never silently no-ops.
+///
+/// `PhaseVerified` also backfills the phase's on-disk completion artifacts
+/// (see [`backfill_phase_completion`]) — some phases (a backlog item like the
+/// real project's Phase 7) have no `## Phases` row at all, so disk state is
+/// the only thing this mark can actually change for them.
 fn apply_phase(planning: &Path, phase_id: &str, choice: StatusChoice) -> io::Result<PathBuf> {
     let mark = match choice {
         StatusChoice::PhaseVerified => "[x]",
@@ -288,6 +293,10 @@ fn apply_phase(planning: &Path, phase_id: &str, choice: StatusChoice) -> io::Res
             ));
         }
     };
+
+    if choice == StatusChoice::PhaseVerified {
+        backfill_phase_completion(planning, phase_id)?;
+    }
 
     let path = planning.join("ROADMAP.md");
     let body = fs::read_to_string(&path)?;
@@ -317,6 +326,18 @@ fn apply_phase(planning: &Path, phase_id: &str, choice: StatusChoice) -> io::Res
     }
 
     if !found {
+        // A `PhaseVerified` mark on a phase known only via a `### Phase N:`
+        // detail heading or an on-disk directory (no `## Phases` row) has no
+        // checkbox to flip — `backfill_phase_completion` above already did
+        // everything this mark can do for it. Only a phase unknown to every
+        // source is a real error.
+        let recognized_without_index_row = choice == StatusChoice::PhaseVerified
+            && crate::planning::load_phases(planning)
+                .iter()
+                .any(|p| crate::planning::normalize_phase_id(&p.id) == target_key);
+        if recognized_without_index_row {
+            return Ok(path);
+        }
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("phase {phase_id:?} not found in ROADMAP.md's ## Phases index"),
@@ -329,6 +350,90 @@ fn apply_phase(planning: &Path, phase_id: &str, choice: StatusChoice) -> io::Res
     }
     fs::write(&path, out)?;
     Ok(path)
+}
+
+/// Make a phase's on-disk artifacts agree with "complete", not just its
+/// roadmap checkbox: back-fills a `-SUMMARY.md` for every `-PLAN.md` that
+/// doesn't already have one, and a `-VERIFICATION.md` if the phase has none.
+/// Never overwrites a file that already exists — this only fills gaps, it
+/// never second-guesses real work. A no-op when the phase has no on-disk
+/// directory at all (nothing to back-fill against).
+fn backfill_phase_completion(planning: &Path, phase_id: &str) -> io::Result<()> {
+    let Some(dir) = crate::planning::find_phase_dir(planning, phase_id) else {
+        return Ok(());
+    };
+    let prefix = crate::planning::phase_id_from_dir(&dir).unwrap_or_else(|| phase_id.to_string());
+    let today = today_string();
+
+    let entries: Vec<String> = fs::read_dir(&dir)?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.file_name().to_str().map(String::from))
+        .collect();
+
+    for name in &entries {
+        let Some(stem) = name.strip_suffix("-PLAN.md") else {
+            continue;
+        };
+        let summary_name = format!("{stem}-SUMMARY.md");
+        if entries.iter().any(|n| n == &summary_name) {
+            continue;
+        }
+        fs::write(dir.join(&summary_name), manual_summary_stub(stem, &today))?;
+    }
+
+    let has_verification = entries.iter().any(|n| n.ends_with("-VERIFICATION.md"));
+    if !has_verification {
+        fs::write(
+            dir.join(format!("{prefix}-VERIFICATION.md")),
+            manual_verification_stub(&prefix, &today),
+        )?;
+    }
+
+    Ok(())
+}
+
+/// A `-SUMMARY.md` stub for a plan that was never actually executed, written
+/// when a phase is force-marked complete. `status: complete` and `completed:`
+/// match GSD's own minimal summary template so real GSD tooling reads it the
+/// same as a normal one; `manually_completed: true` is the honesty marker —
+/// it says plainly that no execution happened, rather than fabricating one.
+fn manual_summary_stub(stem: &str, today: &str) -> String {
+    format!(
+        "---\n\
+plan: {stem}\n\
+status: complete\n\
+completed: {today}\n\
+manually_completed: true\n\
+---\n\
+\n\
+# {stem} — Manually Completed\n\
+\n\
+This plan was marked complete by hand via gsd-status-ui on {today}, not through \
+normal GSD execution. No automated summary was generated for it.\n"
+    )
+}
+
+/// A `-VERIFICATION.md` stub for a phase force-marked complete with no real
+/// verification report. `status: passed` so downstream GSD tooling (e.g.
+/// `/gsd-progress`) treats the phase as done rather than stuck awaiting
+/// verification; `manually_completed: true` plus the prose keep that assertion
+/// honest — it was asserted by a human, not proven by an automated pass.
+fn manual_verification_stub(prefix: &str, today: &str) -> String {
+    format!(
+        "---\n\
+phase: {prefix}\n\
+verified: {today}\n\
+status: passed\n\
+manually_completed: true\n\
+---\n\
+\n\
+# Phase {prefix} Verification Report — Manually Completed\n\
+\n\
+**Status:** passed (manually asserted)\n\
+\n\
+This phase was marked complete by hand via gsd-status-ui on {today}, not through \
+GSD's automated goal-backward verification. See ROADMAP.md for the human rationale.\n"
+    )
 }
 
 /// Splice a new 3-character bracket mark into a `## Phases` index line,
@@ -891,6 +996,193 @@ mod tests {
         write(tmp.path(), "ROADMAP.md", ROADMAP_TWO_PHASES);
         let target = phase_target(tmp.path(), "99");
         assert!(apply(&target, StatusChoice::PhaseVerified).is_err());
+    }
+
+    // ────────────────────────────────── manual-completion backfill (verified) ──
+
+    // A backlog phase like the real project's Phase 7: it has a `### Phase 7:`
+    // detail heading (so `load_phases` lists it) but no row in the `## Phases`
+    // index at all — there is no checkbox for `PhaseVerified` to flip.
+    const ROADMAP_PHASE_ONLY_IN_DETAILS: &str = "\
+# ROADMAP: Sample
+
+## Phases
+
+- [ ] **Phase 1: Navigation Skeleton**
+
+## Phase Details
+
+### Phase 7: Add Homebrew formula
+
+**Goal:** installable via brew
+";
+
+    #[test]
+    fn marking_verified_backfills_missing_summaries_and_verification_for_a_phase_with_no_index_row()
+    {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "ROADMAP.md", ROADMAP_PHASE_ONLY_IN_DETAILS);
+        write(tmp.path(), "phases/07-homebrew/07-01-PLAN.md", "plan 1");
+        write(
+            tmp.path(),
+            "phases/07-homebrew/07-01-SUMMARY.md",
+            "real summary 1",
+        );
+        write(tmp.path(), "phases/07-homebrew/07-02-PLAN.md", "plan 2");
+        write(tmp.path(), "phases/07-homebrew/07-03-PLAN.md", "plan 3");
+
+        let target = phase_target(tmp.path(), "7");
+        apply(&target, StatusChoice::PhaseVerified).expect("apply must succeed with no index row");
+
+        // The plan that already had a real summary is untouched.
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("phases/07-homebrew/07-01-SUMMARY.md")).unwrap(),
+            "real summary 1"
+        );
+
+        // The two unexecuted plans get a manually-completed stub summary each.
+        for stem in ["07-02", "07-03"] {
+            let body = fs::read_to_string(
+                tmp.path()
+                    .join(format!("phases/07-homebrew/{stem}-SUMMARY.md")),
+            )
+            .unwrap_or_else(|_| panic!("{stem}-SUMMARY.md should have been backfilled"));
+            assert!(
+                body.contains("manually_completed: true"),
+                "{stem} summary must disclose manual completion: {body}"
+            );
+        }
+
+        // A VERIFICATION.md is created since none existed.
+        let verification =
+            fs::read_to_string(tmp.path().join("phases/07-homebrew/07-VERIFICATION.md"))
+                .expect("VERIFICATION.md should have been backfilled");
+        assert!(verification.contains("status: passed"), "{verification}");
+        assert!(
+            verification.contains("manually_completed: true"),
+            "{verification}"
+        );
+
+        // No index row was fabricated — ROADMAP.md's `## Phases` section is
+        // untouched; only the disk artifacts changed.
+        let roadmap = fs::read_to_string(tmp.path().join("ROADMAP.md")).unwrap();
+        assert!(roadmap.contains("- [ ] **Phase 1: Navigation Skeleton**"));
+        assert!(!roadmap.contains("Phase 7:**"));
+
+        let phases = crate::planning::load_phases(tmp.path());
+        let phase7 = phases.iter().find(|p| p.id == "7").expect("phase 7 listed");
+        assert_eq!(phase7.stage, crate::model::Stage::Verified);
+    }
+
+    #[test]
+    fn marking_verified_never_overwrites_a_real_verification_report() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "ROADMAP.md", ROADMAP_PHASE_ONLY_IN_DETAILS);
+        write(tmp.path(), "phases/07-homebrew/07-01-PLAN.md", "plan 1");
+        write(
+            tmp.path(),
+            "phases/07-homebrew/07-01-SUMMARY.md",
+            "real summary",
+        );
+        write(
+            tmp.path(),
+            "phases/07-homebrew/07-VERIFICATION.md",
+            "REAL VERIFICATION CONTENT",
+        );
+
+        let target = phase_target(tmp.path(), "7");
+        apply(&target, StatusChoice::PhaseVerified).expect("apply");
+
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("phases/07-homebrew/07-VERIFICATION.md")).unwrap(),
+            "REAL VERIFICATION CONTENT"
+        );
+    }
+
+    #[test]
+    fn marking_verified_never_overwrites_a_real_summary() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "ROADMAP.md", ROADMAP_PHASE_ONLY_IN_DETAILS);
+        write(tmp.path(), "phases/07-homebrew/07-01-PLAN.md", "plan 1");
+        write(
+            tmp.path(),
+            "phases/07-homebrew/07-01-SUMMARY.md",
+            "real summary, hand-authored",
+        );
+
+        let target = phase_target(tmp.path(), "7");
+        apply(&target, StatusChoice::PhaseVerified).expect("apply");
+
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("phases/07-homebrew/07-01-SUMMARY.md")).unwrap(),
+            "real summary, hand-authored"
+        );
+    }
+
+    #[test]
+    fn marking_open_or_abandoned_never_backfills_files() {
+        for choice in [StatusChoice::PhaseOpen, StatusChoice::PhaseAbandoned] {
+            let tmp = tempfile::tempdir().unwrap();
+            write(
+                tmp.path(),
+                "ROADMAP.md",
+                "\
+# ROADMAP: Sample
+
+## Phases
+
+- [x] **Phase 1: Navigation Skeleton**
+",
+            );
+            write(tmp.path(), "phases/01-nav/01-01-PLAN.md", "plan");
+
+            let target = phase_target(tmp.path(), "1");
+            apply(&target, choice).expect("apply");
+
+            assert!(
+                !tmp.path().join("phases/01-nav/01-01-SUMMARY.md").exists(),
+                "{choice:?} must not backfill a summary"
+            );
+            assert!(
+                fs::read_dir(tmp.path().join("phases/01-nav"))
+                    .unwrap()
+                    .filter_map(|e| e.ok())
+                    .all(|e| !e
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with("-VERIFICATION.md")),
+                "{choice:?} must not backfill a verification report"
+            );
+        }
+    }
+
+    #[test]
+    fn marking_verified_still_checks_the_box_when_a_phase_has_both_an_index_row_and_a_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "ROADMAP.md",
+            "\
+# ROADMAP: Sample
+
+## Phases
+
+- [ ] **Phase 1: Navigation Skeleton**
+",
+        );
+        write(tmp.path(), "phases/01-nav/01-01-PLAN.md", "plan");
+
+        let target = phase_target(tmp.path(), "1");
+        apply(&target, StatusChoice::PhaseVerified).expect("apply");
+
+        let roadmap = fs::read_to_string(tmp.path().join("ROADMAP.md")).unwrap();
+        assert!(roadmap.contains("- [x] **Phase 1: Navigation Skeleton**"));
+        assert!(
+            fs::read_to_string(tmp.path().join("phases/01-nav/01-01-SUMMARY.md"))
+                .unwrap()
+                .contains("manually_completed: true"),
+            "the checkbox path must also backfill the missing summary"
+        );
     }
 
     // ────────────────────────────────────────────────── quick task writer ──

@@ -1020,15 +1020,33 @@ mod tests {
     // -- Rule B: emphasize_inline_tags ------------------------------------
 
     #[test]
-    fn pair_alone_on_a_line_becomes_asterisk_wrapped_inner_text() {
-        assert_eq!(emphasize_inline_tags("<a>value</a>\n"), "*value*\n");
+    fn pair_alone_on_a_line_becomes_emphasized_name_colon_then_plain_value() {
+        assert_eq!(emphasize_inline_tags("<a>value</a>\n"), "*a:* value\n");
+    }
+
+    #[test]
+    fn inline_pair_core_format_pins_name_as_label_before_value() {
+        assert_eq!(emphasize_inline_tags("<a>b</a>\n"), "*a:* b\n");
+    }
+
+    #[test]
+    fn tag_name_is_reproduced_verbatim_never_title_cased_unlike_the_heading_rule() {
+        let output = emphasize_inline_tags("<due-date>Friday</due-date>\n");
+        assert_eq!(output, "*due-date:* Friday\n");
+        assert!(
+            !output.contains("Due Date") && !output.contains("Due-Date"),
+            "inline-pair label must never be title-cased like the heading rule:\n{output}"
+        );
+        // The whole-line heading rule (Sections A/B territory) still title-cases
+        // the very same name — the two rules disagree on casing on purpose.
+        assert_eq!(headingify_structural_tags("<due-date>\n"), "# Due Date\n");
     }
 
     #[test]
     fn pair_embedded_mid_sentence_preserves_surrounding_prose_exactly() {
         assert_eq!(
             emphasize_inline_tags("Owner is <owner>Ed</owner> today.\n"),
-            "Owner is *Ed* today.\n"
+            "Owner is *owner:* Ed today.\n"
         );
     }
 
@@ -1036,26 +1054,26 @@ mod tests {
     fn attributed_open_tag_yields_emphasis_with_no_attribute_leaking_through() {
         let input = "<a href=\"x\">value</a>\n";
         let output = emphasize_inline_tags(input);
-        assert_eq!(output, "*value*\n");
+        assert_eq!(output, "*a:* value\n");
         assert!(!output.contains("href"));
         assert!(!output.contains('x'));
     }
 
     #[test]
-    fn several_different_tag_names_all_convert_identically() {
-        assert_eq!(emphasize_inline_tags("<a>v</a>\n"), "*v*\n");
-        assert_eq!(emphasize_inline_tags("<b>v</b>\n"), "*v*\n");
-        assert_eq!(emphasize_inline_tags("<em>v</em>\n"), "*v*\n");
-        assert_eq!(emphasize_inline_tags("<owner>v</owner>\n"), "*v*\n");
+    fn several_tag_names_each_label_with_their_own_verbatim_name() {
+        assert_eq!(emphasize_inline_tags("<a>v</a>\n"), "*a:* v\n");
+        assert_eq!(emphasize_inline_tags("<b>v</b>\n"), "*b:* v\n");
+        assert_eq!(emphasize_inline_tags("<em>v</em>\n"), "*em:* v\n");
+        assert_eq!(emphasize_inline_tags("<owner>v</owner>\n"), "*owner:* v\n");
         assert_eq!(
             emphasize_inline_tags("<due-date>Friday</due-date>\n"),
-            "*Friday*\n"
+            "*due-date:* Friday\n"
         );
     }
 
     #[test]
-    fn inner_whitespace_is_trimmed_before_asterisks_are_applied() {
-        assert_eq!(emphasize_inline_tags("<a> value </a>\n"), "*value*\n");
+    fn inner_whitespace_is_trimmed_before_the_value_follows_the_label() {
+        assert_eq!(emphasize_inline_tags("<a> value </a>\n"), "*a:* value\n");
     }
 
     #[test]
@@ -1080,7 +1098,7 @@ mod tests {
             output.contains("<a>") && output.contains("</a>"),
             "the wrapping pair must not be collapsed into emphasis:\n{output}"
         );
-        assert_eq!(output, "<a>*value*</a>\n");
+        assert_eq!(output, "<a>*b:* value</a>\n");
     }
 
     #[test]
@@ -1107,7 +1125,7 @@ mod tests {
     fn two_pairs_on_one_line_are_both_converted() {
         assert_eq!(
             emphasize_inline_tags("<a>one</a> and <b>two</b>\n"),
-            "*one* and *two*\n"
+            "*a:* one and *b:* two\n"
         );
     }
 
@@ -1151,8 +1169,8 @@ mod tests {
             "bare tag should still heading:\n{output}"
         );
         assert!(
-            output.contains("Owner is *Ed*."),
-            "inline pair should emphasize:\n{output}"
+            output.contains("Owner is *owner:* Ed."),
+            "inline pair should emphasize with the name as a label:\n{output}"
         );
         assert!(
             !output.contains("reviewer note"),

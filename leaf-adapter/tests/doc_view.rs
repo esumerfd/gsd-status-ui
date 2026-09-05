@@ -152,17 +152,28 @@ fn comment_inside_a_fenced_code_block_renders_literally_while_comment_outside_is
 }
 
 #[test]
-fn open_renders_a_same_line_inline_pair_as_emphasis_not_raw_angle_brackets() {
-    let tag_name = "owner";
-    let raw_open = format!("<{tag_name}>");
-    let raw_close = format!("</{tag_name}>");
-    let f = fixture("Status update: <owner>Ed</owner> is on point today.\n");
+fn open_renders_a_same_line_inline_pair_as_emphasized_name_then_plain_value() {
+    let f = fixture(
+        "Status update: <owner>Ed</owner> is on point, review due <due-date>Friday</due-date>.\n",
+    );
     let mut view = DocView::open(f.path(), 80).expect("open");
     let text = rendered_text(&mut view, 80, 20);
-    assert!(text.contains("Ed"), "inner value missing:\n{text}");
+    assert!(text.contains("owner: Ed"), "owner label missing:\n{text}");
     assert!(
-        !text.contains(&raw_open) && !text.contains(&raw_close),
-        "raw angle-bracketed inline tag should not appear:\n{text}"
+        text.contains("due-date: Friday"),
+        "due-date label missing:\n{text}"
+    );
+    assert!(
+        !text.contains("<owner>") && !text.contains("</owner>"),
+        "raw angle-bracketed owner tag should not appear:\n{text}"
+    );
+    assert!(
+        !text.contains("<due-date>") && !text.contains("</due-date>"),
+        "raw angle-bracketed due-date tag should not appear:\n{text}"
+    );
+    assert!(
+        !text.contains("Due Date") && !text.contains("Due-Date"),
+        "the inline-pair label must never be title-cased like the heading rule:\n{text}"
     );
 }
 

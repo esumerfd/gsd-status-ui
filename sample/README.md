@@ -19,6 +19,8 @@ What it exercises:
 | Scroll testing (long doc, tables, code fences) | `02-02-PLAN.md` |
 | Bare structural tags (`<objective>`, `<task>`) don't vanish | `02-02-PLAN.md` (GSD-style tagged appendix) |
 | Structural tags convert to a nested heading outline — nesting depth, attribute stripping, name casing, the six-level cap, and the fenced contrast | `09-01-PLAN.md` (GSD-style tagged appendix) |
+| HTML/XML comments vanish — single-line, multi-line, and trailing a sentence — with no doubled blank line or lost paragraph break | `09-01-PLAN.md` (GSD-style tagged appendix) |
+| Simple same-line tag pairs render as emphasized values for any tag name, attributes discarded, while empty and mismatched pairs stay literal | `09-01-PLAN.md` (GSD-style tagged appendix) |
 | Root docs behind the Roadmap row (`o` picker) | `PROJECT.md`, `REQUIREMENTS.md`, `STATE.md` |
 
 ## One phase per stage
@@ -27,7 +29,8 @@ Each stage paints its row a different colour, so the sample keeps one phase
 sitting in every stage — a colour with no phase behind it is a colour nobody can
 eyeball. `sample_workspace_has_a_phase_in_every_stage` guards the arrangement.
 Phase 9 shares the planned stage with Phase 5 on purpose: it earns its place
-by exercising the document viewer's structural-tag heading conversion, not by
+by exercising the document viewer's XML preprocessing rules — structural-tag
+heading conversion, comment removal, and inline-pair emphasis — not by
 adding a colour, so the eight-row stage table below stays one phase per stage
 and needs no new row.
 

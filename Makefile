@@ -7,9 +7,11 @@ INSTALL_PATH := $(INSTALL_DIR)/$(BIN_NAME)
 
 all: release
 
-build release: $(RELEASE_BIN)
-
-$(RELEASE_BIN): $(shell find src -name '*.rs') Cargo.toml
+# Cargo owns the dependency graph for the whole workspace (root crate,
+# leaf-adapter, and the vendored leaf path dependency). Make cannot enumerate
+# those sources correctly, so it must not try: always invoke cargo and let
+# cargo decide whether a rebuild is actually needed.
+build release:
 	cargo build --release
 
 debug:

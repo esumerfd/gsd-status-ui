@@ -20,7 +20,7 @@ What it exercises:
 | Bare structural tags (`<objective>`, `<task>`) don't vanish | `02-02-PLAN.md` (GSD-style tagged appendix) |
 | Structural tags convert to a nested heading outline — nesting depth, attribute stripping, name casing, the six-level cap, and the fenced contrast | `09-01-PLAN.md` (GSD-style tagged appendix) |
 | HTML/XML comments vanish — single-line, multi-line, and trailing a sentence — with no doubled blank line or lost paragraph break | `09-01-PLAN.md` (GSD-style tagged appendix) |
-| Simple same-line tag pairs render as emphasized values for any tag name, attributes discarded, while empty and mismatched pairs stay literal | `09-01-PLAN.md` (GSD-style tagged appendix) |
+| Simple same-line tag pairs render as an emphasized tag-name label — verbatim, never title-cased like a heading — then a colon, then the plain value, for any tag name, attributes discarded, while empty and mismatched pairs stay literal | `09-01-PLAN.md` (GSD-style tagged appendix) |
 | Root docs behind the Roadmap row (`o` picker) | `PROJECT.md`, `REQUIREMENTS.md`, `STATE.md` |
 
 ## One phase per stage

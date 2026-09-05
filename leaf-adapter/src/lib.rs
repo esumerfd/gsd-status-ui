@@ -438,10 +438,11 @@ fn emphasize_line(line: &str) -> String {
                 out.push_str(&rest[..lt_pos]);
                 let after_lt = &rest[lt_pos + 1..];
                 match try_match_inline_pair(after_lt) {
-                    Some((inner, resume)) => {
+                    Some((name, inner, resume)) => {
                         out.push('*');
+                        out.push_str(name);
+                        out.push_str(":* ");
                         out.push_str(&inner);
-                        out.push('*');
                         rest = resume;
                     }
                     None => {
@@ -458,7 +459,7 @@ fn emphasize_line(line: &str) -> String {
 /// the text immediately following an already-consumed `<`. Returns the
 /// trimmed inner text and the unconsumed remainder to resume scanning from
 /// on success; `None`, consuming nothing, on any failure.
-fn try_match_inline_pair(s: &str) -> Option<(String, &str)> {
+fn try_match_inline_pair(s: &str) -> Option<(&str, String, &str)> {
     let name = take_tag_name(s)?;
     let after_name = &s[name.len()..];
 
@@ -496,7 +497,7 @@ fn try_match_inline_pair(s: &str) -> Option<(String, &str)> {
     let after_close_name = after_slash.strip_prefix(name)?;
     let resume = after_close_name.trim_start().strip_prefix('>')?;
 
-    Some((inner_trimmed.to_string(), resume))
+    Some((name, inner_trimmed.to_string(), resume))
 }
 
 /// Extract the maximal tag-name prefix of `s` (an ASCII letter followed by

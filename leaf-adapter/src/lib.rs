@@ -398,10 +398,12 @@ fn emit_stripped_line(
 }
 
 /// A same-line pair — open tag, plain inner text, matching close tag,
-/// nothing nested — renders as angle-bracketed clutter instead of a
-/// highlighted value. This pass rewrites that one shape into markdown
-/// emphasis, generic over any tag name, before the text reaches
-/// `headingify_structural_tags` or `leaf::viewer::parse`.
+/// nothing nested — renders as angle-bracketed clutter that throws the tag
+/// name away, leaving a value with no indication of what it labels. This
+/// pass rewrites that one shape into an emphasized tag name carrying a
+/// trailing colon, then a space, then the value as plain text, generic over
+/// any tag name, before the text reaches `headingify_structural_tags` or
+/// `leaf::viewer::parse`.
 ///
 /// Scope guards match Rule A's precedent exactly: a pair inside a fenced
 /// code block, or on a line indented four or more spaces, is left literal.
@@ -423,8 +425,9 @@ fn emphasize_inline_tags(src: &str) -> String {
     out
 }
 
-/// Left-to-right scan of one line for inline tag pairs, emitting emphasis
-/// on a match and the literal `<` (only) on a failed attempt.
+/// Left-to-right scan of one line for inline tag pairs, emitting an
+/// emphasized tag-name label followed by the plain value on a match, and
+/// the literal `<` (only) on a failed attempt.
 fn emphasize_line(line: &str) -> String {
     let mut out = String::new();
     let mut rest = line;
@@ -456,9 +459,10 @@ fn emphasize_line(line: &str) -> String {
 }
 
 /// Attempt the five-part match described in conversion_rules against `s`,
-/// the text immediately following an already-consumed `<`. Returns the
-/// trimmed inner text and the unconsumed remainder to resume scanning from
-/// on success; `None`, consuming nothing, on any failure.
+/// the text immediately following an already-consumed `<`. On success,
+/// returns three pieces, in order: the tag name, the trimmed inner text,
+/// and the slice remaining to resume scanning from; `None`, consuming
+/// nothing, on any failure.
 fn try_match_inline_pair(s: &str) -> Option<(&str, String, &str)> {
     let name = take_tag_name(s)?;
     let after_name = &s[name.len()..];

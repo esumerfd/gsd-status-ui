@@ -242,6 +242,17 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
         )?;
     }
 
+    // The id column sizes to the widest id actually on show (min 3 so single
+    // digits keep their usual gutter, hard-capped at 8) — decimal backlog ids
+    // like `999.1` stay readable, and a malformed id can never push the columns
+    // to its right out of line the way an unbounded `{id:<3}` did.
+    let id_width = visible_phases
+        .iter()
+        .map(|ph| ph.id.chars().count())
+        .max()
+        .unwrap_or(3)
+        .clamp(3, 8);
+
     for ph in &visible_phases {
         let (icon, icon_color) = phase_icon(ph);
         let total = ph.plans.len();
@@ -254,11 +265,12 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
         let title = truncate(&ph.title, 34);
         writeln!(
             out,
-            "  {ic}{icon}{reset}  {bold}Phase {id:<3}{reset} {title:<34}  {pc}  {sc}{stage}{reset}",
+            "  {ic}{icon}{reset}  {bold}Phase {id:<id_width$}{reset} {title:<34}  {pc}  {sc}{stage}{reset}",
             ic = c(icon_color),
             icon = icon,
             bold = c(color::BOLD),
-            id = ph.id,
+            id = truncate(&ph.id, id_width),
+            id_width = id_width,
             title = title,
             pc = plan_col,
             sc = c(ph.stage.color()),
@@ -1302,5 +1314,59 @@ mod tests {
         let todos_idx = out.find("Todos").expect("todos heading");
         let next_idx = out.find("Next").expect("next heading");
         assert!(todos_idx < next_idx, "Todos must sit above Next:\n{out}");
+    }
+
+    #[test]
+    fn phase_rows_align_their_columns_whatever_the_id_and_title_length() {
+        // The stage column is the last one, so if every row agrees on where it
+        // starts, everything to its left lined up too. A long id (a parse that
+        // swallowed the title) and an empty title are the two shapes that used
+        // to blow the layout apart — `{id:<3}` is a minimum, not a maximum, and
+        // an empty title still gets padded to its full column width.
+        let phases = vec![
+            Phase {
+                id: "1".into(),
+                title: "POCs: prove each area's risky assumption".into(),
+                roadmap_checked: false,
+                plans: vec![],
+                dir: None,
+                stage: Stage::NotStarted,
+            },
+            Phase {
+                id: "12".into(),
+                title: "".into(),
+                roadmap_checked: false,
+                plans: vec![],
+                dir: None,
+                stage: Stage::NotStarted,
+            },
+            Phase {
+                id: "2 — Decisions, spikes and the enablement flag".into(),
+                title: "".into(),
+                roadmap_checked: false,
+                plans: vec![],
+                dir: None,
+                stage: Stage::NotStarted,
+            },
+        ];
+
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            &Report::new(Path::new("sample/.planning"), &StateMeta::default()).phases(&phases),
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+
+        let offsets: Vec<usize> = out
+            .lines()
+            .filter(|l| l.contains("not started"))
+            .map(|l| l.chars().take_while(|c| *c != 'n').count())
+            .collect();
+        assert_eq!(offsets.len(), 3, "three phase rows rendered:\n{out}");
+        assert!(
+            offsets.windows(2).all(|w| w[0] == w[1]),
+            "stage column starts at the same offset on every row, got {offsets:?}:\n{out}"
+        );
     }
 }

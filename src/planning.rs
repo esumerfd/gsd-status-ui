@@ -299,6 +299,34 @@ fn title_from_dir(dir: &Path) -> String {
         .replace('-', " ")
 }
 
+/// Split the body of a `Phase ...` heading into its id and title.
+///
+/// GSD roadmaps write the separator either way — `Phase 3: Stop the bleeding`
+/// and `Phase 3 — Stop the bleeding` are both idiomatic — so the id is the
+/// leading token up to the first whitespace or `:`, and the title is whatever
+/// follows once one separator (`:`, em dash, en dash, or hyphen) is stripped.
+/// Splitting on the first `:` alone lost the em-dash form entirely and, when a
+/// colon appeared later in the heading, cut the title in half.
+fn split_phase_heading(rest: &str) -> Option<(String, String)> {
+    let rest = rest.trim();
+    let id_len = rest
+        .find(|c: char| c.is_whitespace() || c == ':')
+        .unwrap_or(rest.len());
+    let id = rest[..id_len].trim();
+    if id.is_empty() {
+        return None;
+    }
+    let tail = rest[id_len..].trim_start();
+    let title = tail
+        .strip_prefix(':')
+        .or_else(|| tail.strip_prefix('\u{2014}'))
+        .or_else(|| tail.strip_prefix('\u{2013}'))
+        .or_else(|| tail.strip_prefix('-'))
+        .unwrap_or(tail)
+        .trim();
+    Some((id.to_string(), title.to_string()))
+}
+
 fn parse_phase_index(body: &str) -> Vec<(String, String, PhaseMark)> {
     let mut out = Vec::new();
     let mut in_phases = false;
@@ -336,9 +364,7 @@ pub(crate) fn parse_phase_index_line(line: &str) -> Option<(String, String, Phas
     let end = bold.find("**")?;
     let header = &bold[..end];
     let phase_part = header.strip_prefix("Phase ")?;
-    let colon = phase_part.find(':')?;
-    let id = phase_part[..colon].trim().to_string();
-    let title = phase_part[colon + 1..].trim().to_string();
+    let (id, title) = split_phase_heading(phase_part)?;
     Some((id, title, mark))
 }
 
@@ -352,14 +378,7 @@ fn parse_phase_details(body: &str) -> Vec<(String, String)> {
         let Some(rest) = trimmed.strip_prefix("### Phase ") else {
             continue;
         };
-        let (id, title) = match rest.find(':') {
-            Some(c) => (
-                rest[..c].trim().to_string(),
-                rest[c + 1..].trim().to_string(),
-            ),
-            None => (rest.trim().to_string(), String::new()),
-        };
-        if !id.is_empty() {
+        if let Some((id, title)) = split_phase_heading(rest) {
             out.push((id, title));
         }
     }
@@ -372,9 +391,7 @@ fn parse_phase_plans(body: &str) -> HashMap<String, Vec<Plan>> {
     for line in body.lines() {
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix("### Phase ") {
-            let colon = rest.find(':').unwrap_or(rest.len());
-            let id = rest[..colon].trim().to_string();
-            current = Some(id);
+            current = split_phase_heading(rest).map(|(id, _)| id);
             continue;
         }
         if trimmed.starts_with("## ") {
@@ -2730,5 +2747,84 @@ mod tests {
             find_requirement_definition(dir.path(), "DEEP-01"),
             Some(deep)
         );
+    }
+
+    // --- Em-dash phase headings -------------------------------------------
+    //
+    // GSD roadmaps name phases `Phase N — Title` as often as `Phase N: Title`.
+    // Every parser below used to split on the first `:`, which silently dropped
+    // the index (no colon at all), swallowed the title into the id, and
+    // detached plans from their phase.
+
+    #[test]
+    fn phase_index_line_accepts_an_em_dash_separator() {
+        assert_eq!(
+            parse_phase_index_line("- [ ] **Phase 1 — POCs** (STK-37477) · resolved"),
+            Some(("1".to_string(), "POCs".to_string(), PhaseMark::Open))
+        );
+        assert_eq!(
+            parse_phase_index_line("- [x] **Phase 11 — Login-page language seed (conditional)**"),
+            Some((
+                "11".to_string(),
+                "Login-page language seed (conditional)".to_string(),
+                PhaseMark::Done
+            ))
+        );
+    }
+
+    #[test]
+    fn phase_index_line_still_accepts_a_colon_separator() {
+        assert_eq!(
+            parse_phase_index_line("- [ ] **Phase 2.1: Polish and ship**"),
+            Some((
+                "2.1".to_string(),
+                "Polish and ship".to_string(),
+                PhaseMark::Open
+            ))
+        );
+    }
+
+    #[test]
+    fn phase_details_keep_the_whole_title_after_an_em_dash() {
+        let body = "\
+## Phase Details
+
+### Phase 1 — POCs: prove each area's risky assumption before scaling
+
+### Phase 2 — Decisions, spikes and the enablement flag
+
+### Phase 3: Stop the bleeding
+";
+        assert_eq!(
+            parse_phase_details(body),
+            vec![
+                (
+                    "1".to_string(),
+                    "POCs: prove each area's risky assumption before scaling".to_string()
+                ),
+                (
+                    "2".to_string(),
+                    "Decisions, spikes and the enablement flag".to_string()
+                ),
+                ("3".to_string(), "Stop the bleeding".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn plans_attach_to_an_em_dash_phase_heading() {
+        let body = "\
+### Phase 5 — Foundations: language column, .NET seam
+
+- [x] 05-01-PLAN.md — Add the language column
+- [ ] 05-02-PLAN.md — Wire the .NET seam
+";
+        let plans = parse_phase_plans(body);
+        let for_five = plans
+            .get("5")
+            .expect("plans attach to phase 5, not to a title-shaped id");
+        assert_eq!(for_five.len(), 2);
+        assert!(for_five[0].checked);
+        assert!(!for_five[1].checked);
     }
 }

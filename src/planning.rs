@@ -2,6 +2,7 @@ use crate::model::{
     DocKind, Document, Other, OtherKind, Phase, Plan, QuickTask, QuickTaskStatus, Stage, StateMeta,
     Step, Todo,
 };
+use crate::workstream;
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -20,6 +21,26 @@ pub(crate) fn find_planning_dir(start: &Path) -> Option<PathBuf> {
     }
 }
 
+// ──────────────────────────────────────────────── workstream federation ──
+//
+// One rule, applied uniformly, so a focused workstream is never a truncated
+// view: `todos/` and the shared doc folders (`notes/`, `ideas/`, `seeds/`,
+// `research/`, `intel/`, ...) are strictly root-scoped; `STATE.md`,
+// `ROADMAP.md`, `REQUIREMENTS.md`, `phases/`, `quick/`, `debug/` are strictly
+// scoped; everything else (`PROJECT.md`, `config.json`, ...) is scoped-first
+// with a root fallback. In flat mode `workstream::root_of` returns the same
+// path, so every rule collapses to today's single-root behavior byte for
+// byte.
+
+/// A single file, read from the scoped directory first and the workspace
+/// root as a fallback (the "PROJECT.md, config.json, and everything else"
+/// federation rule). Returns `None` when neither copy exists.
+fn read_scoped_or_root(planning: &Path, file: &str) -> Option<String> {
+    fs::read_to_string(planning.join(file))
+        .ok()
+        .or_else(|| fs::read_to_string(workstream::root_of(planning).join(file)).ok())
+}
+
 // ───────────────────────────────────────────────────────────── STATE.md ──
 
 pub(crate) fn load_state(planning: &Path) -> StateMeta {
@@ -34,8 +55,11 @@ pub(crate) fn load_state(planning: &Path) -> StateMeta {
     meta.next_action = extract_section(rest, "Next Action");
 
     // Prefer PROJECT.md for the human-readable title; fall back to STATE.md's H1
-    // with its leading "STATE:" / "ROADMAP:" tag stripped.
-    if let Ok(p) = fs::read_to_string(planning.join("PROJECT.md")) {
+    // with its leading "STATE:" / "ROADMAP:" tag stripped. In workstream mode,
+    // PROJECT.md is "scoped-first with root fallback": a workstream rarely has
+    // its own PROJECT.md, so the root copy supplies the title.
+    let project_md = read_scoped_or_root(planning, "PROJECT.md");
+    if let Some(p) = project_md {
         for line in p.lines() {
             if let Some(t) = line.strip_prefix("# ") {
                 meta.project_title = strip_md(t).trim().to_string();
@@ -512,8 +536,12 @@ fn infer_stage(dir: Option<&Path>, plans: &[Plan], roadmap_checked: bool) -> Sta
 /// chronological). Pending todos come from `.planning/todos/pending/`; when
 /// `show_completed` is set, resolved todos from `.planning/todos/completed/`
 /// are appended (marked `completed`). Missing dirs yield an empty group.
+///
+/// `todos/` is deliberately root-scoped even in workstream mode (gsd-core
+/// issue #4256), so this resolves unconditionally against the workspace
+/// root rather than the scoped `planning` directory it's handed.
 pub(crate) fn load_todos(planning: &Path, show_completed: bool) -> Vec<Todo> {
-    let base = planning.join("todos");
+    let base = workstream::root_of(planning).join("todos");
     let mut todos = read_todo_dir(&base.join("pending"), false);
     if show_completed {
         todos.extend(read_todo_dir(&base.join("completed"), true));
@@ -1110,10 +1138,28 @@ pub(crate) fn discover_documents(phase_dir: &Path, prefix: &str, step: &Step) ->
 /// of `*.md`) rather than a hard-coded list, so new root docs appear
 /// automatically. Subdirectories and non-markdown files are ignored; a missing
 /// directory yields an empty `Vec`.
+///
+/// In workstream mode this is a union of the scoped directory's top-level
+/// markdown and the workspace root's, de-duplicated by filename with the
+/// scoped copy winning a collision. In flat mode the scoped directory and the
+/// root are the same directory, so this collapses to the single-directory
+/// scan above byte for byte.
 pub(crate) fn discover_root_documents(planning: &Path) -> Vec<Document> {
+    let root = workstream::root_of(planning);
+    let dirs: Vec<&Path> = if root.as_path() == planning {
+        vec![planning]
+    } else {
+        vec![planning, root.as_path()]
+    };
+
     let mut others: Vec<(String, Document)> = Vec::new();
     let mut roadmap: Option<Document> = None;
-    if let Ok(entries) = fs::read_dir(planning) {
+    let mut seen_names: HashSet<String> = HashSet::new();
+
+    for dir in dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
             if !path.is_file() {
@@ -1125,6 +1171,11 @@ pub(crate) fn discover_root_documents(planning: &Path) -> Vec<Document> {
             let Some(stem) = name.strip_suffix(".md") else {
                 continue;
             };
+            // The scoped directory is scanned first, so a name already seen
+            // here came from there and wins over the root's copy.
+            if !seen_names.insert(name.to_string()) {
+                continue;
+            }
             if name == "ROADMAP.md" {
                 roadmap = Some(Document {
                     path,
@@ -1154,9 +1205,12 @@ pub(crate) fn discover_root_documents(planning: &Path) -> Vec<Document> {
 /// frontmatter `status:` marks it done/complete is filtered out unless
 /// `show_completed` is set — matching `load_todos`'s hide/show shape.
 pub(crate) fn load_others(planning: &Path, show_completed: bool) -> Vec<Other> {
+    // notes/, ideas/, and seeds/ are root-scoped shared content, so they
+    // resolve against the workspace root rather than the scoped directory.
+    let root = workstream::root_of(planning);
     let mut out = Vec::new();
     for kind in OtherKind::ALL {
-        let mut group = read_others_dir(&planning.join(kind.dir()), kind);
+        let mut group = read_others_dir(&root.join(kind.dir()), kind);
         group.sort_by(|a, b| a.slug.cmp(&b.slug));
         out.extend(group);
     }
@@ -1260,9 +1314,23 @@ pub(crate) fn single_document(path: PathBuf, label: &str) -> Vec<Document> {
 /// filename stem. A missing or empty folder — and any non-markdown file or
 /// nested directory within it — yields nothing, so callers can treat an empty
 /// result as "hide this section".
+///
+/// Looks in the scoped directory first; when `folder` does not exist there,
+/// reads the workspace root's copy instead. This is what makes a root-scoped
+/// folder like `research/` still surface while a workstream is focused (it
+/// has no scoped copy to find), while a folder a workstream does carry its
+/// own copy of is read from there. In flat mode the scoped directory and the
+/// root are the same directory.
 pub(crate) fn discover_folder_documents(planning: &Path, folder: &str) -> Vec<Document> {
+    let dir = planning.join(folder);
+    let dir = if dir.is_dir() {
+        dir
+    } else {
+        workstream::root_of(planning).join(folder)
+    };
+
     let mut docs: Vec<(String, Document)> = Vec::new();
-    if let Ok(entries) = fs::read_dir(planning.join(folder)) {
+    if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
             if !path.is_file() {
@@ -1296,10 +1364,19 @@ pub(crate) struct DocsSection {
 
 /// `.planning` subfolders another section already surfaces, so they never also
 /// become a generic docs row: `phases/` (the Phases list), `quick/` (Tasks),
-/// `todos/` (Todos), `notes/`+`ideas/`+`seeds/` (Others), and `debug/` (debug
-/// sessions render as Todo rows via `load_debug_sessions`).
-const OWNED_FOLDERS: [&str; 7] = [
-    "phases", "quick", "todos", "notes", "ideas", "seeds", "debug",
+/// `todos/` (Todos), `notes/`+`ideas/`+`seeds/` (Others), `debug/` (debug
+/// sessions render as Todo rows via `load_debug_sessions`), and `workstreams/`
+/// (the container directory itself is never a docs row — its contents surface
+/// through the scoped `.planning` view instead).
+const OWNED_FOLDERS: [&str; 8] = [
+    "phases",
+    "quick",
+    "todos",
+    "notes",
+    "ideas",
+    "seeds",
+    "debug",
+    "workstreams",
 ];
 
 /// Subfolders emitted ahead of the auto-discovered ones, so the familiar layout
@@ -1341,8 +1418,21 @@ pub(crate) fn discover_docs_sections(planning: &Path, include_root: bool) -> Vec
         push(id, title, discover_folder_documents(planning, id));
     }
 
-    let mut discovered: Vec<String> = Vec::new();
-    if let Ok(entries) = fs::read_dir(planning) {
+    // The auto-discovered folder list is the union of the scoped directory's
+    // subfolders and the workspace root's — a folder that lives only at the
+    // root (e.g. a shared doc folder no workstream has its own copy of) still
+    // becomes a row. In flat mode both are the same directory.
+    let root = workstream::root_of(planning);
+    let scan_dirs: Vec<&Path> = if root.as_path() == planning {
+        vec![planning]
+    } else {
+        vec![planning, root.as_path()]
+    };
+    let mut discovered: HashSet<String> = HashSet::new();
+    for dir in scan_dirs {
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
         for entry in entries.filter_map(|e| e.ok()) {
             let path = entry.path();
             if !path.is_dir() {
@@ -1354,9 +1444,10 @@ pub(crate) fn discover_docs_sections(planning: &Path, include_root: bool) -> Vec
             if OWNED_FOLDERS.contains(&name) || PINNED_FOLDERS.iter().any(|(id, _)| *id == name) {
                 continue;
             }
-            discovered.push(name.to_string());
+            discovered.insert(name.to_string());
         }
     }
+    let mut discovered: Vec<String> = discovered.into_iter().collect();
     discovered.sort();
     for name in discovered {
         let documents = discover_folder_documents(planning, &name);

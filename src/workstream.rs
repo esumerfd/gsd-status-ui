@@ -100,10 +100,6 @@ pub(crate) fn scoped_dir(root: &Path, ws: Option<&str>) -> PathBuf {
 
 /// Recover the workspace root from a scoped directory. In flat mode (or any
 /// path whose parent is not literally named `workstreams`) this is a no-op.
-///
-/// Not yet called from `main.rs` — Task 2 wires it into `planning.rs`'s
-/// federation rule and Task 3 into the TUI's switch dialog.
-#[allow(dead_code)]
 pub(crate) fn root_of(scoped: &Path) -> PathBuf {
     let parent = scoped.parent();
     let parent_is_workstreams =

@@ -2842,4 +2842,121 @@ mod tests {
         assert!(for_five[0].checked);
         assert!(!for_five[1].checked);
     }
+
+    // ─────────────────────────────────── workstream federation (Task 2) ──
+
+    #[test]
+    fn load_todos_from_a_workstream_reads_root_todos_and_ignores_a_scoped_stray() {
+        // gsd-core issue #4256: todos/ is deliberately root-scoped even in
+        // workstream mode.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("todos/pending")).unwrap();
+        std::fs::write(root.join("todos/pending/root-todo.md"), "# Root todo\n").unwrap();
+        let scoped = root.join("workstreams/beta");
+        std::fs::create_dir_all(scoped.join("todos/pending")).unwrap();
+        std::fs::write(scoped.join("todos/pending/stray.md"), "# Stray todo\n").unwrap();
+
+        let todos = load_todos(&scoped, false);
+        let titles: Vec<&str> = todos.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["Root todo"],
+            "only the root todo is returned, the scoped stray is ignored: {titles:?}"
+        );
+    }
+
+    #[test]
+    fn load_others_from_a_workstream_reads_root_notes_ideas_seeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        std::fs::write(root.join("notes/a-note.md"), "# A root note\n").unwrap();
+        let scoped = root.join("workstreams/beta");
+        std::fs::create_dir_all(&scoped).unwrap();
+
+        let others = load_others(&scoped, false);
+        assert_eq!(others.len(), 1, "{others:?}");
+        assert_eq!(others[0].title, "A root note");
+    }
+
+    #[test]
+    fn discover_folder_documents_falls_back_to_root_when_the_scoped_copy_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("research")).unwrap();
+        std::fs::write(root.join("research/OVERVIEW.md"), "# Root Overview\n").unwrap();
+        let scoped = root.join("workstreams/beta");
+        std::fs::create_dir_all(&scoped).unwrap(); // no scoped research/ dir
+
+        let docs = discover_folder_documents(&scoped, "research");
+        assert_eq!(docs.len(), 1, "{docs:?}");
+        assert_eq!(docs[0].label, "overview");
+    }
+
+    #[test]
+    fn discover_folder_documents_prefers_the_scoped_copy_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("quick")).unwrap();
+        std::fs::write(root.join("quick/ROOT.md"), "# root-level quick doc\n").unwrap();
+        let scoped = root.join("workstreams/beta");
+        std::fs::create_dir_all(scoped.join("quick")).unwrap();
+        std::fs::write(scoped.join("quick/SCOPED.md"), "# scoped quick doc\n").unwrap();
+
+        let docs = discover_folder_documents(&scoped, "quick");
+        assert_eq!(docs.len(), 1, "{docs:?}");
+        assert_eq!(docs[0].label, "scoped");
+    }
+
+    #[test]
+    fn discover_root_documents_pins_scoped_roadmap_and_includes_root_project() {
+        let scoped = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let docs = discover_root_documents(scoped);
+        assert_eq!(docs[0].label, "roadmap", "{docs:?}");
+        let labels: Vec<&str> = docs.iter().map(|d| d.label.as_str()).collect();
+        assert!(
+            labels.contains(&"project"),
+            "root PROJECT.md must be included: {labels:?}"
+        );
+        let mut seen = HashSet::new();
+        for label in &labels {
+            assert!(seen.insert(label), "duplicate label {label}: {labels:?}");
+        }
+    }
+
+    #[test]
+    fn discover_docs_sections_surfaces_root_research_and_never_a_workstreams_section() {
+        let scoped = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let sections = discover_docs_sections(scoped, true);
+        let ids: Vec<&str> = sections.iter().map(|s| s.id.as_str()).collect();
+        assert!(
+            ids.contains(&"research"),
+            "root research/ section must surface: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&"workstreams"),
+            "the workstreams container must never become its own docs row: {ids:?}"
+        );
+    }
+
+    #[test]
+    fn load_state_from_a_workstream_falls_back_to_the_root_project_title() {
+        let scoped = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let meta = load_state(scoped);
+        assert_eq!(meta.project_title, "Workstream Sample Project");
+    }
+
+    #[test]
+    fn load_state_prefers_a_scoped_project_md_over_the_root_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("PROJECT.md"), "# Root Title\n").unwrap();
+        let scoped = root.join("workstreams/beta");
+        std::fs::create_dir_all(&scoped).unwrap();
+        std::fs::write(scoped.join("PROJECT.md"), "# Scoped Title\n").unwrap();
+
+        let meta = load_state(&scoped);
+        assert_eq!(meta.project_title, "Scoped Title");
+    }
 }

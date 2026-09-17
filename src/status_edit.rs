@@ -552,7 +552,7 @@ fn apply_quick_task(planning: &Path, task_id: &str, choice: StatusChoice) -> io:
                         .unwrap_or_default();
                 }
                 if let Some(tc) = crate::planning::quick_task_description_column(&header_cells) {
-                    if tc < width {
+                    if tc < width && tc != id_col {
                         cells[tc] = resolve_quick_task_title(planning, task_id).unwrap_or_default();
                     }
                 }
@@ -1207,6 +1207,19 @@ mod tests {
 | 260101-abc | An older task | complete | `.planning/quick/260101-abc-an-older-task` |
 ";
 
+    /// The header GSD's own STATE.md template writes. `Task ID` contains the
+    /// word "task", so a description-column probe that only fuzzy-matches
+    /// "task" resolves to the id column and overwrites the id with the title.
+    const STATE_TASK_ID_HEADER: &str = "\
+# STATE
+
+## Quick Tasks Completed
+
+| Task ID | Description | Date | Status |
+|---------|-------------|------|--------|
+| 260101-abc | An older task | 2026-01-01 | Complete |
+";
+
     fn quick_task_target(planning: &Path, task_id: &str) -> StatusTarget {
         StatusTarget::QuickTask {
             planning: planning.to_path_buf(),
@@ -1360,6 +1373,46 @@ mod tests {
                 "description should be restored from the task's PLAN.md title, got: {row}"
             );
         }
+    }
+
+    #[test]
+    fn a_task_id_header_keeps_the_id_in_the_id_column() {
+        // Real-world report: marking a task complete under GSD's own
+        // `| Task ID | Description | ... |` header wrote the *title* into the
+        // Task ID cell, so the reader never matched the row again — the task
+        // stayed "in progress" and every retry appended another duplicate.
+        let tmp = setup_quick_task_workspace(STATE_TASK_ID_HEADER, "260902-new");
+        let target = quick_task_target(tmp.path(), "260902-new");
+        apply(&target, StatusChoice::QuickTaskCompleted).expect("apply");
+
+        let body = fs::read_to_string(tmp.path().join("STATE.md")).unwrap();
+        let row = body
+            .lines()
+            .find(|l| l.contains("260902-new"))
+            .expect("new row");
+        let cells = crate::planning::split_table_row(row);
+        assert_eq!(cells[0].trim(), "260902-new", "id column: {cells:?}");
+        assert_eq!(cells[1].trim(), "New task", "description column: {cells:?}");
+        assert_eq!(cells[3].trim(), "complete", "status column: {cells:?}");
+
+        let tasks = crate::planning::load_quick_tasks(tmp.path(), true);
+        let task = tasks
+            .iter()
+            .find(|t| t.id == "260902-new")
+            .expect("new task");
+        assert_eq!(task.status, crate::model::QuickTaskStatus::Completed);
+    }
+
+    #[test]
+    fn completing_twice_under_a_task_id_header_does_not_duplicate_the_row() {
+        let tmp = setup_quick_task_workspace(STATE_TASK_ID_HEADER, "260902-new");
+        let target = quick_task_target(tmp.path(), "260902-new");
+        apply(&target, StatusChoice::QuickTaskCompleted).expect("first apply");
+        apply(&target, StatusChoice::QuickTaskCompleted).expect("second apply");
+
+        let body = fs::read_to_string(tmp.path().join("STATE.md")).unwrap();
+        let rows = body.lines().filter(|l| l.contains("260902-new")).count();
+        assert_eq!(rows, 1, "one row, not one per attempt: {body}");
     }
 
     #[test]

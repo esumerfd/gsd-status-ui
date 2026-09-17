@@ -803,10 +803,7 @@ fn parse_quick_completions(planning: &Path) -> HashMap<String, (Option<String>, 
 pub(crate) fn quick_task_columns(header_cells: &[String]) -> (usize, Option<usize>, Option<usize>) {
     let id_col = header_cells
         .iter()
-        .position(|c| {
-            let c = c.trim().to_lowercase();
-            c == "#" || c == "id" || c == "slug"
-        })
+        .position(|c| is_id_header(c))
         .unwrap_or(0);
     let status_col = header_cells
         .iter()
@@ -824,10 +821,28 @@ pub(crate) fn quick_task_columns(header_cells: &[String]) -> (usize, Option<usiz
 /// never needs it; only the writer does, when a row was previously removed
 /// (in-progress) and is now being re-added (complete/failed).
 pub(crate) fn quick_task_description_column(header_cells: &[String]) -> Option<usize> {
-    header_cells.iter().position(|c| {
-        let c = c.trim().to_lowercase();
-        c.contains("task") || c.contains("description")
-    })
+    header_cells
+        .iter()
+        .position(|c| c.trim().to_lowercase().contains("description"))
+        .or_else(|| {
+            // "Task ID" contains "task" but names the id column — matching it
+            // here would write the description over the id, leaving the row
+            // unfindable by the reader (and re-appended on every retry).
+            header_cells
+                .iter()
+                .position(|c| c.trim().to_lowercase().contains("task") && !is_id_header(c))
+        })
+}
+
+/// Whether a header cell names an id column: `#`, `id`, `slug`, or any
+/// `"... id"` compound such as `Task ID` / `task_id`.
+fn is_id_header(cell: &str) -> bool {
+    let c = cell.trim().to_lowercase();
+    let last = c
+        .split(|ch: char| ch.is_whitespace() || ch == '_' || ch == '-')
+        .next_back()
+        .unwrap_or("");
+    c == "#" || c == "slug" || last == "id"
 }
 
 /// Split a markdown table row on `|`, trimming each cell. Tolerates leading

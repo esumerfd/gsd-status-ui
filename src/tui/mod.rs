@@ -38,6 +38,7 @@ const HELP_TEXT: &str = "\
             Enter    open the step's plan
             o        open-document dialog
             s        set status (todo/task/phase/note)
+            S        switch workstream (workstream workspaces only)
             c        copy selected todo's name
             /        find a requirement by ID
             q        quit
@@ -91,11 +92,6 @@ pub(crate) struct Ui {
     /// A workstream name confirmed by Enter on the `S` picker, queued for the
     /// event loop to act on (it owns the mutable `planning: PathBuf` that
     /// needs re-scoping). Drained by `take_pending_workstream`.
-    ///
-    /// RED stage (Task 3): not yet set (on_workstream_dialog_key is a
-    /// `todo!()` stub) or drained by the event loop. `#[allow(dead_code)]` is
-    /// temporary — GREEN wires both ends.
-    #[allow(dead_code)]
     pending_workstream: Option<String>,
 }
 
@@ -264,8 +260,6 @@ impl Ui {
     }
 
     /// Drain a workstream switch confirmed by Enter (see `pending_workstream`).
-    /// Not yet called from `event_loop` — GREEN wires it in.
-    #[allow(dead_code)]
     pub(crate) fn take_pending_workstream(&mut self) -> Option<String> {
         self.pending_workstream.take()
     }
@@ -510,9 +504,15 @@ impl Ui {
     /// `planning: PathBuf` a switch re-scopes) — mirrors `on_dialog_key`'s
     /// shape but hands off a name instead of opening a document.
     fn on_workstream_dialog_key(&mut self, code: KeyCode) {
-        // RED stage (Task 3): dispatched from on_key so the key-driven tests
-        // below compile and run, but real behavior lands in the GREEN commit.
-        todo!("Task 3 GREEN: {code:?}")
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => self.app.close_workstream_dialog(),
+            KeyCode::Char('j') | KeyCode::Down => self.app.workstream_dialog_move(1),
+            KeyCode::Char('k') | KeyCode::Up => self.app.workstream_dialog_move(-1),
+            KeyCode::Enter => {
+                self.pending_workstream = self.app.workstream_dialog_take();
+            }
+            _ => {}
+        }
     }
 
     fn on_shell_key(&mut self, code: KeyCode) {
@@ -895,6 +895,50 @@ impl Ui {
             );
         }
 
+        // ── workstream switch dialog ──
+        if let Some(dialog) = self.app.workstream_dialog() {
+            let name_width = dialog
+                .items
+                .iter()
+                .map(|n| n.chars().count())
+                .max()
+                .unwrap_or(0)
+                .max(16);
+            let width = (name_width as u16 + 8).min(frame.area().width);
+            let height = (dialog.items.len() as u16 + 2).min(frame.area().height);
+            let popup = Rect {
+                x: frame.area().x + (frame.area().width.saturating_sub(width)) / 2,
+                y: frame.area().y + (frame.area().height.saturating_sub(height)) / 2,
+                width,
+                height,
+            };
+            frame.render_widget(Clear, popup);
+            let lines: Vec<Line> = dialog
+                .items
+                .iter()
+                .enumerate()
+                .map(|(i, name)| {
+                    // The currently-active workstream keeps a marker even
+                    // after the cursor (dialog.selected) moves away from it —
+                    // mirrors the open-document dialog's "●" open-tab marker.
+                    let marker = if i == dialog.focused { "●" } else { " " };
+                    let style = if i == dialog.selected {
+                        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    Line::from(Span::styled(
+                        format!(" {marker} {name:<name_width$} "),
+                        style,
+                    ))
+                })
+                .collect();
+            frame.render_widget(
+                Paragraph::new(lines).block(Block::bordered().title(" Switch workstream ")),
+                popup,
+            );
+        }
+
         // ── help overlay ──
         if self.help {
             let lines: Vec<&str> = HELP_TEXT.lines().collect();
@@ -942,7 +986,10 @@ impl Ui {
         };
         let right = if self.help {
             HELP_HINTS.to_string()
-        } else if self.app.dialog().is_some() || self.app.status_dialog().is_some() {
+        } else if self.app.dialog().is_some()
+            || self.app.status_dialog().is_some()
+            || self.app.workstream_dialog().is_some()
+        {
             DIALOG_HINTS.to_string()
         } else if let Some(view) = doc_view.filter(|v| v.is_search_mode()) {
             format!("/{} · {SEARCH_HINTS}", view.search_draft())
@@ -1025,6 +1072,12 @@ fn event_loop(
     ui: &mut Ui,
     planning: &Path,
 ) -> io::Result<()> {
+    // Owned (not the borrowed `&Path` argument) so a workstream switch can
+    // rewrite it in place — every reload_from_disk/run_find/timed refresh
+    // below reads THIS binding, which is what keeps the switched-to
+    // workstream alive across the periodic reload instead of snapping back
+    // to the startup default.
+    let mut planning: std::path::PathBuf = planning.to_path_buf();
     let mut last_status = std::time::Instant::now();
     let mut last_doc_check = std::time::Instant::now();
     loop {
@@ -1037,13 +1090,25 @@ fn event_loop(
                 ui.on_key(key);
                 // H (and future reload triggers) re-read .planning/ on demand.
                 if ui.take_needs_reload() {
-                    ui.reload_from_disk(planning);
+                    ui.reload_from_disk(&planning);
+                }
+                // Enter on the S dialog queues a chosen workstream name here,
+                // where the mutable `planning` binding lives (key handlers
+                // have no access to it). D2: read-only — this recomputes the
+                // scoped path, it never writes `.planning/active-workstream`.
+                if let Some(name) = ui.take_pending_workstream() {
+                    planning = crate::workstream::scoped_dir(
+                        &crate::workstream::root_of(&planning),
+                        Some(&name),
+                    );
+                    ui.app.flash = Some(format!("switched to workstream: {name}"));
+                    ui.reload_from_disk(&planning);
                 }
                 // Enter on a find-a-requirement draft queues the query here,
                 // where `planning: &Path` is in scope (key handlers have no
                 // access to it).
                 if let Some(query) = ui.take_pending_find() {
-                    ui.run_find(planning, &query);
+                    ui.run_find(&planning, &query);
                 }
                 if let Some(text) = ui.take_clipboard() {
                     execute!(io::stdout(), Print(clipboard::osc52_copy_sequence(&text))).ok();
@@ -1059,7 +1124,7 @@ fn event_loop(
             // entry list (and its j/k bound) stays frozen at launch and can't
             // reach a todo/task the reload just added — or a ROADMAP.md that
             // landed after launch.
-            ui.reload_from_disk(planning);
+            ui.reload_from_disk(&planning);
         }
         if last_doc_check.elapsed() >= DOC_CHECK {
             last_doc_check = std::time::Instant::now();

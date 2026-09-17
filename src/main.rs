@@ -126,6 +126,7 @@ fn print_help() {
     println!(
         "  [status]  j/k browse phase/steps · Enter open plan · o open-doc dialog · s set status · q quit"
     );
+    println!("            S switch workstream (workstream workspaces only)");
     println!(
         "  [doc]     j/k/arrows scroll · d/u or PgDn/PgUp page · g/G top/bottom · q/Esc to status"
     );

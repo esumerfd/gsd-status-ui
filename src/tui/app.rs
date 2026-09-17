@@ -168,15 +168,15 @@ pub(crate) struct StatusDialog {
 /// The `S` switch-workstream picker: every workstream in the workspace root
 /// (sorted, mirroring `workstream::list`), with the currently focused one
 /// pre-selected rather than defaulting to index 0.
-///
-/// RED stage (Task 3): fields aren't yet read outside tests
-/// (`open_workstream_dialog` is a `todo!()` stub). `#[allow(dead_code)]` is
-/// temporary — GREEN reads both from `draw`'s popup rendering.
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct WorkstreamDialog {
     pub(crate) items: Vec<String>,
     pub(crate) selected: usize,
+    /// The index of the workstream focused when the dialog opened — distinct
+    /// from `selected`, which moves with j/k. Lets the popup mark the
+    /// currently-active workstream even after the cursor moves away from it,
+    /// the way the open-document dialog marks already-open tabs.
+    pub(crate) focused: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1061,32 +1061,51 @@ impl App {
     /// mirroring `open_dialog`'s "nothing to open" shape. D2: read-only —
     /// this never writes `.planning/active-workstream`.
     pub(crate) fn open_workstream_dialog(&mut self) {
-        // RED stage (Task 3): wired into on_key so the key-driven tests below
-        // compile and run, but real behavior lands in the GREEN commit.
-        todo!("Task 3 GREEN")
+        self.flash = None;
+        let root = crate::workstream::root_of(&self.planning);
+        let items = crate::workstream::list(&root);
+        if items.is_empty() {
+            self.flash = Some("no workstreams in this workspace".into());
+            return;
+        }
+        // The focused workstream is `self.planning`'s leaf name (its scoped
+        // directory is `root/workstreams/<name>`); default to index 0 (a flat
+        // workspace never reaches this branch, so `self.planning == root`
+        // never happens here) when it isn't found for any reason.
+        let focused = self
+            .planning
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|name| items.iter().position(|n| n == name))
+            .unwrap_or(0);
+        self.workstream_dialog = Some(WorkstreamDialog {
+            items,
+            selected: focused,
+            focused,
+        });
     }
 
     pub(crate) fn workstream_dialog(&self) -> Option<&WorkstreamDialog> {
         self.workstream_dialog.as_ref()
     }
 
-    /// Not yet called from `on_workstream_dialog_key` — GREEN wires it in.
-    #[allow(dead_code)]
     pub(crate) fn close_workstream_dialog(&mut self) {
         self.workstream_dialog = None;
     }
 
-    #[allow(dead_code)]
     pub(crate) fn workstream_dialog_move(&mut self, delta: i32) {
-        todo!("Task 3 GREEN: {delta}")
+        if let Some(dialog) = self.workstream_dialog.as_mut() {
+            let last = dialog.items.len().saturating_sub(1) as i32;
+            dialog.selected = (dialog.selected as i32 + delta).clamp(0, last) as usize;
+        }
     }
 
     /// Take (consume) the selected workstream name, closing the dialog. The
     /// actual re-scoping happens one level up (the event loop owns the
     /// mutable `planning: PathBuf` this feeds into).
-    #[allow(dead_code)]
     pub(crate) fn workstream_dialog_take(&mut self) -> Option<String> {
-        todo!("Task 3 GREEN")
+        let dialog = self.workstream_dialog.take()?;
+        dialog.items.get(dialog.selected).cloned()
     }
 
     /// Open the selected document and close the dialog. As with `open_doc`,

@@ -165,6 +165,20 @@ pub(crate) struct StatusDialog {
     pub(crate) target: crate::status_edit::StatusTarget,
 }
 
+/// The `S` switch-workstream picker: every workstream in the workspace root
+/// (sorted, mirroring `workstream::list`), with the currently focused one
+/// pre-selected rather than defaulting to index 0.
+///
+/// RED stage (Task 3): fields aren't yet read outside tests
+/// (`open_workstream_dialog` is a `todo!()` stub). `#[allow(dead_code)]` is
+/// temporary — GREEN reads both from `draw`'s popup rendering.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub(crate) struct WorkstreamDialog {
+    pub(crate) items: Vec<String>,
+    pub(crate) selected: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 struct TabSet {
     /// Open document indices (into the entry's `documents`), kept ascending so
@@ -180,6 +194,7 @@ pub(crate) struct App {
     tabsets: Vec<TabSet>,
     dialog: Option<OpenDialog>,
     status_dialog: Option<StatusDialog>,
+    workstream_dialog: Option<WorkstreamDialog>,
     pub(crate) flash: Option<String>,
     pub(crate) quit: bool,
     /// The workspace's `.planning` directory, needed by `open_status_dialog`
@@ -187,6 +202,11 @@ pub(crate) struct App {
     /// ROADMAP.md/STATE.md at this root, not to a per-entry file). Empty for
     /// the bare `App::new(entries)` test constructor, which never exercises
     /// those two arms.
+    ///
+    /// Also what `open_workstream_dialog` reads: `workstream::root_of` +
+    /// `workstream::list` derive the picker's items from this path, and
+    /// `workstream::scoped_dir(&root_of(&self.planning), ...)` decides which
+    /// entry is pre-selected.
     planning: PathBuf,
 }
 
@@ -212,6 +232,7 @@ impl App {
             tabsets,
             dialog: None,
             status_dialog: None,
+            workstream_dialog: None,
             flash: None,
             quit: false,
             planning: PathBuf::new(),
@@ -1031,6 +1052,41 @@ impl App {
         let dialog = self.status_dialog.take()?;
         let (choice, _) = dialog.items.get(dialog.selected)?.clone();
         Some((dialog.target, choice))
+    }
+
+    /// Open the `S` switch-workstream picker: every workstream under the
+    /// workspace root, sorted, with the currently focused one pre-selected.
+    /// A flat workspace (no `.planning/workstreams/`) has nothing to switch
+    /// between, so this flashes instead of opening an empty picker —
+    /// mirroring `open_dialog`'s "nothing to open" shape. D2: read-only —
+    /// this never writes `.planning/active-workstream`.
+    pub(crate) fn open_workstream_dialog(&mut self) {
+        // RED stage (Task 3): wired into on_key so the key-driven tests below
+        // compile and run, but real behavior lands in the GREEN commit.
+        todo!("Task 3 GREEN")
+    }
+
+    pub(crate) fn workstream_dialog(&self) -> Option<&WorkstreamDialog> {
+        self.workstream_dialog.as_ref()
+    }
+
+    /// Not yet called from `on_workstream_dialog_key` — GREEN wires it in.
+    #[allow(dead_code)]
+    pub(crate) fn close_workstream_dialog(&mut self) {
+        self.workstream_dialog = None;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn workstream_dialog_move(&mut self, delta: i32) {
+        todo!("Task 3 GREEN: {delta}")
+    }
+
+    /// Take (consume) the selected workstream name, closing the dialog. The
+    /// actual re-scoping happens one level up (the event loop owns the
+    /// mutable `planning: PathBuf` this feeds into).
+    #[allow(dead_code)]
+    pub(crate) fn workstream_dialog_take(&mut self) -> Option<String> {
+        todo!("Task 3 GREEN")
     }
 
     /// Open the selected document and close the dialog. As with `open_doc`,
@@ -2516,5 +2572,66 @@ mod tests {
         let dialog = app.status_dialog().expect("status dialog open on a note");
         let labels: Vec<&str> = dialog.items.iter().map(|(_, l)| l.as_str()).collect();
         assert_eq!(labels, ["active", "complete"], "note vocabulary only");
+    }
+
+    // ─────────────────────────────── workstream switch dialog (Task 3) ──
+
+    fn workstream_app() -> App {
+        let planning = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let phases = crate::planning::load_phases(planning);
+        App::with_roadmap_row(planning, !phases.is_empty(), &phases, &[], &[], false)
+    }
+
+    #[test]
+    fn open_workstream_dialog_lists_every_workstream_sorted_with_the_focused_one_preselected() {
+        let mut app = workstream_app();
+        app.open_workstream_dialog();
+        let dialog = app
+            .workstream_dialog()
+            .expect("dialog opens in a workstream workspace");
+        assert_eq!(dialog.items, vec!["alpha".to_string(), "beta".to_string()]);
+        assert_eq!(dialog.selected, 1, "beta is the focused workstream");
+    }
+
+    #[test]
+    fn open_workstream_dialog_in_a_flat_workspace_flashes_instead_of_opening() {
+        let mut app = App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &[]);
+        app.open_workstream_dialog();
+        assert!(
+            app.workstream_dialog().is_none(),
+            "no dialog in a flat workspace"
+        );
+        assert_eq!(
+            app.flash.as_deref(),
+            Some("no workstreams in this workspace")
+        );
+    }
+
+    #[test]
+    fn workstream_dialog_move_clamps_at_both_ends() {
+        let mut app = workstream_app();
+        app.open_workstream_dialog();
+        app.workstream_dialog_move(5);
+        assert_eq!(app.workstream_dialog().unwrap().selected, 1);
+        app.workstream_dialog_move(-5);
+        assert_eq!(app.workstream_dialog().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn workstream_dialog_take_returns_the_selected_name_and_closes() {
+        let mut app = workstream_app();
+        app.open_workstream_dialog();
+        app.workstream_dialog_move(-1); // beta(1) -> alpha(0)
+        let name = app.workstream_dialog_take();
+        assert_eq!(name, Some("alpha".to_string()));
+        assert!(app.workstream_dialog().is_none());
+    }
+
+    #[test]
+    fn close_workstream_dialog_discards_it() {
+        let mut app = workstream_app();
+        app.open_workstream_dialog();
+        app.close_workstream_dialog();
+        assert!(app.workstream_dialog().is_none());
     }
 }

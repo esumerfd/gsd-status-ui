@@ -88,6 +88,15 @@ pub(crate) struct Ui {
     /// (the event loop, not a key handler, holds the `planning: &Path` the
     /// resolver needs). Drained by `take_pending_find`.
     pending_find: Option<String>,
+    /// A workstream name confirmed by Enter on the `S` picker, queued for the
+    /// event loop to act on (it owns the mutable `planning: PathBuf` that
+    /// needs re-scoping). Drained by `take_pending_workstream`.
+    ///
+    /// RED stage (Task 3): not yet set (on_workstream_dialog_key is a
+    /// `todo!()` stub) or drained by the event loop. `#[allow(dead_code)]` is
+    /// temporary — GREEN wires both ends.
+    #[allow(dead_code)]
+    pending_workstream: Option<String>,
 }
 
 /// The colored status report as ratatui text (reuses the report's ANSI colors).
@@ -228,6 +237,7 @@ impl Ui {
             needs_reload: false,
             find_draft: None,
             pending_find: None,
+            pending_workstream: None,
         }
     }
 
@@ -251,6 +261,13 @@ impl Ui {
     /// Drain a find query confirmed by Enter (see `pending_find`).
     pub(crate) fn take_pending_find(&mut self) -> Option<String> {
         self.pending_find.take()
+    }
+
+    /// Drain a workstream switch confirmed by Enter (see `pending_workstream`).
+    /// Not yet called from `event_loop` — GREEN wires it in.
+    #[allow(dead_code)]
+    pub(crate) fn take_pending_workstream(&mut self) -> Option<String> {
+        self.pending_workstream.take()
     }
 
     /// Resolve `query` to the file that defines that requirement ID (D-02)
@@ -438,6 +455,10 @@ impl Ui {
             self.on_status_dialog_key(key.code);
             return;
         }
+        if self.app.workstream_dialog().is_some() {
+            self.on_workstream_dialog_key(key.code);
+            return;
+        }
         if ctrl {
             self.on_shell_key(key.code);
         } else {
@@ -482,6 +503,16 @@ impl Ui {
             }
             _ => {}
         }
+    }
+
+    /// Drive the `S` switch-workstream dialog: j/k select, Esc/q cancel,
+    /// Enter queues the choice for the event loop (which owns the mutable
+    /// `planning: PathBuf` a switch re-scopes) — mirrors `on_dialog_key`'s
+    /// shape but hands off a name instead of opening a document.
+    fn on_workstream_dialog_key(&mut self, code: KeyCode) {
+        // RED stage (Task 3): dispatched from on_key so the key-driven tests
+        // below compile and run, but real behavior lands in the GREEN commit.
+        todo!("Task 3 GREEN: {code:?}")
     }
 
     fn on_shell_key(&mut self, code: KeyCode) {
@@ -613,6 +644,7 @@ impl Ui {
                 }
                 KeyCode::Char('o') => self.app.open_dialog(),
                 KeyCode::Char('s') => self.app.open_status_dialog(),
+                KeyCode::Char('S') => self.app.open_workstream_dialog(),
                 KeyCode::Char('c') => self.copy_selection(),
                 // Find a requirement by ID (D-01): opens a draft in the
                 // footer; Enter queues it for the event loop via `run_find`.
@@ -1040,6 +1072,28 @@ fn event_loop(
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+
+    /// A `Ui` focused on the beta workstream of the `sample-workstreams/`
+    /// fixture (sorted order: alpha, beta — beta is the `active-workstream`
+    /// default).
+    fn workstream_ui() -> Ui {
+        let planning = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let state = crate::planning::load_state(planning);
+        let phases = crate::planning::load_phases(planning);
+        let quick_tasks = crate::planning::load_quick_tasks(planning, false);
+        let todos = crate::planning::load_todos(planning, false);
+        Ui::new(
+            status_text(planning, &state, &phases, false),
+            App::with_roadmap_row(
+                planning,
+                !phases.is_empty(),
+                &navigable_phases(&phases, false),
+                &quick_tasks,
+                &todos,
+                false,
+            ),
+        )
+    }
 
     fn sample_ui() -> Ui {
         let planning = Path::new("sample/.planning");
@@ -2648,6 +2702,178 @@ mod tests {
                 .join("todos/completed/2026-09-02-fix-thing.md")
                 .exists(),
             "the todo file moved to completed/"
+        );
+    }
+
+    // ─────────────────────────────── workstream switch dialog (Task 3) ──
+
+    fn enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+    }
+
+    fn copy_dir(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).unwrap();
+        for entry in std::fs::read_dir(src).unwrap() {
+            let entry = entry.unwrap();
+            let from = entry.path();
+            let to = dst.join(entry.file_name());
+            if from.is_dir() {
+                copy_dir(&from, &to);
+            } else {
+                std::fs::copy(&from, &to).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn capital_s_opens_the_workstream_dialog_and_lowercase_s_still_opens_status() {
+        let mut ui = workstream_ui();
+
+        ui.on_key(plain('S'));
+        assert!(
+            ui.app.workstream_dialog().is_some(),
+            "S opens the workstream picker in a workstream workspace"
+        );
+        assert!(
+            ui.app.status_dialog().is_none(),
+            "S must never open the status dialog (D1)"
+        );
+
+        ui.on_key(plain('q'));
+        assert!(ui.app.workstream_dialog().is_none(), "q cancels");
+
+        ui.on_key(plain('s'));
+        assert!(
+            ui.app.status_dialog().is_some(),
+            "s still opens the status dialog, unaffected by S"
+        );
+        assert!(ui.app.workstream_dialog().is_none());
+    }
+
+    #[test]
+    fn capital_s_in_a_flat_workspace_flashes_instead_of_opening_an_empty_picker() {
+        let mut ui = sample_ui(); // sample/.planning has no workstreams/
+        ui.on_key(plain('S'));
+        assert!(
+            ui.app.workstream_dialog().is_none(),
+            "no picker opens in a flat workspace"
+        );
+        assert_eq!(
+            ui.app.flash.as_deref(),
+            Some("no workstreams in this workspace")
+        );
+    }
+
+    #[test]
+    fn workstream_dialog_j_k_clamp_and_esc_cancels_with_no_state_change() {
+        let mut ui = workstream_ui();
+        ui.on_key(plain('S'));
+        // beta (index 1) is pre-selected; only two items (alpha, beta).
+        ui.on_key(plain('j'));
+        assert_eq!(
+            ui.app.workstream_dialog().unwrap().selected,
+            1,
+            "clamps at bottom"
+        );
+        ui.on_key(plain('k'));
+        assert_eq!(ui.app.workstream_dialog().unwrap().selected, 0);
+        ui.on_key(plain('k'));
+        assert_eq!(
+            ui.app.workstream_dialog().unwrap().selected,
+            0,
+            "clamps at top"
+        );
+
+        ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(ui.app.workstream_dialog().is_none(), "Esc cancels");
+        assert_eq!(
+            ui.take_pending_workstream(),
+            None,
+            "no switch queued after cancel"
+        );
+    }
+
+    #[test]
+    fn workstream_dialog_enter_yields_the_chosen_name_and_closes() {
+        let mut ui = workstream_ui();
+        ui.on_key(plain('S'));
+        ui.on_key(plain('k')); // beta(1) -> alpha(0)
+        ui.on_key(enter());
+        assert!(
+            ui.app.workstream_dialog().is_none(),
+            "Enter closes the picker"
+        );
+        assert_eq!(ui.take_pending_workstream(), Some("alpha".to_string()));
+    }
+
+    #[test]
+    fn switching_workstreams_never_writes_the_active_workstream_pointer() {
+        // D2: copy the fixture to a tempdir so the assertion is real (a
+        // read-only fixture would pass trivially even if the code wrote).
+        let dir = tempfile::tempdir().unwrap();
+        copy_dir(Path::new("sample-workstreams"), dir.path());
+        let root = dir.path().join(".planning");
+        let scoped = root.join("workstreams/beta");
+        let before = std::fs::read(root.join("active-workstream")).unwrap();
+
+        let state = crate::planning::load_state(&scoped);
+        let phases = crate::planning::load_phases(&scoped);
+        let quick_tasks = crate::planning::load_quick_tasks(&scoped, false);
+        let todos = crate::planning::load_todos(&scoped, false);
+        let mut ui = Ui::new(
+            status_text(&scoped, &state, &phases, false),
+            App::with_roadmap_row(
+                &scoped,
+                !phases.is_empty(),
+                &navigable_phases(&phases, false),
+                &quick_tasks,
+                &todos,
+                false,
+            ),
+        );
+
+        ui.on_key(plain('S'));
+        ui.on_key(plain('k')); // beta -> alpha
+        ui.on_key(enter());
+        let name = ui.take_pending_workstream().expect("a switch was queued");
+        let new_planning =
+            crate::workstream::scoped_dir(&crate::workstream::root_of(&scoped), Some(&name));
+        ui.reload_from_disk(&new_planning);
+
+        let after = std::fs::read(root.join("active-workstream")).unwrap();
+        assert_eq!(
+            before, after,
+            "switching workstreams must never write the pointer file (D2)"
+        );
+    }
+
+    #[test]
+    fn a_switched_workstream_survives_a_subsequent_reload() {
+        let mut ui = workstream_ui(); // starts on beta
+        ui.on_key(plain('S'));
+        ui.on_key(plain('k')); // beta -> alpha
+        ui.on_key(enter());
+        let name = ui.take_pending_workstream().expect("a switch was queued");
+
+        let scoped = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let new_planning =
+            crate::workstream::scoped_dir(&crate::workstream::root_of(scoped), Some(&name));
+        ui.reload_from_disk(&new_planning);
+        assert!(
+            report_string(&ui).contains("Alpha First Phase"),
+            "reload after the switch renders alpha: {}",
+            report_string(&ui)
+        );
+
+        // The same reload entry point the timed refresh uses, called again
+        // with the SAME (already-switched) path — this is what a correct
+        // mutable `planning: PathBuf` binding in `event_loop` guarantees, as
+        // opposed to a stale `&Path` snapping back to the startup default.
+        ui.reload_from_disk(&new_planning);
+        assert!(
+            report_string(&ui).contains("Alpha First Phase"),
+            "a second reload still renders alpha, not the startup default: {}",
+            report_string(&ui)
         );
     }
 }

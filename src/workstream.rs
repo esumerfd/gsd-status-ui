@@ -15,25 +15,40 @@
 //! `${TMPDIR}/gsd-workstream-sessions/`: a standalone TUI process computes a
 //! different session key than the agent process that wrote that pointer, so
 //! reading it here could never match and would be dead code.
+use std::fs;
 use std::path::{Path, PathBuf};
-
-// RED stage (Task 1): signatures exist so the test module below compiles and
-// runs, but bodies are `todo!()` until the GREEN commit wires them up and
-// calls them from `main.rs`. `#[allow(dead_code)]` is temporary — GREEN
-// removes it once these are reachable from the non-test build.
 
 /// GSD's workstream name policy: `[A-Za-z0-9._-]` only, non-empty, no path
 /// separators, no `..`.
-#[allow(dead_code)]
-pub(crate) fn is_valid_name(_name: &str) -> bool {
-    todo!("Task 1 GREEN")
+pub(crate) fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains("..")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 /// Sorted, valid directory names under `.planning/workstreams/`. Empty vec
 /// when that directory is absent. Skips non-directories and invalid names.
-#[allow(dead_code)]
-pub(crate) fn list(_root: &Path) -> Vec<String> {
-    todo!("Task 1 GREEN")
+pub(crate) fn list(root: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(root.join("workstreams")) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+        .filter(|name| is_valid_name(name))
+        .collect();
+    names.sort();
+    names
+}
+
+/// A candidate resolves only when it is format-valid AND names a workstream
+/// directory that actually exists — mirroring gsd-core's
+/// `resolvesToExistingWorkstream`.
+fn resolves(names: &[String], candidate: &str) -> bool {
+    is_valid_name(candidate) && names.iter().any(|n| n == candidate)
 }
 
 /// Resolve the focused workstream name. Precedence: `cli` > `env` > the
@@ -43,23 +58,62 @@ pub(crate) fn list(_root: &Path) -> Vec<String> {
 /// falls through to the next source instead of resolving; an invalid or
 /// missing-directory `cli` value does NOT fall through — it resolves to
 /// `None` so the caller can treat an explicit `--ws` typo as fatal.
-#[allow(dead_code)]
-pub(crate) fn resolve(_root: &Path, _cli: Option<&str>, _env: Option<&str>) -> Option<String> {
-    todo!("Task 1 GREEN")
+pub(crate) fn resolve(root: &Path, cli: Option<&str>, env: Option<&str>) -> Option<String> {
+    let names = list(root);
+    if names.is_empty() {
+        return None;
+    }
+
+    if let Some(name) = cli {
+        return if resolves(&names, name) {
+            Some(name.to_string())
+        } else {
+            None
+        };
+    }
+
+    if let Some(name) = env {
+        if resolves(&names, name) {
+            return Some(name.to_string());
+        }
+    }
+
+    // D2: read-only. A missing pointer file is not an error — it just means
+    // no workstream has been switched to yet.
+    let pointer = fs::read_to_string(root.join("active-workstream")).unwrap_or_default();
+    let pointer = pointer.trim();
+    if !pointer.is_empty() && resolves(&names, pointer) {
+        return Some(pointer.to_string());
+    }
+
+    names.into_iter().next()
 }
 
 /// The scoped `.planning`-relative directory for `ws`: `root/workstreams/<name>`
 /// when `Some`, or `root` unchanged in flat mode (`None`).
-#[allow(dead_code)]
-pub(crate) fn scoped_dir(_root: &Path, _ws: Option<&str>) -> PathBuf {
-    todo!("Task 1 GREEN")
+pub(crate) fn scoped_dir(root: &Path, ws: Option<&str>) -> PathBuf {
+    match ws {
+        Some(name) => root.join("workstreams").join(name),
+        None => root.to_path_buf(),
+    }
 }
 
 /// Recover the workspace root from a scoped directory. In flat mode (or any
 /// path whose parent is not literally named `workstreams`) this is a no-op.
+///
+/// Not yet called from `main.rs` — Task 2 wires it into `planning.rs`'s
+/// federation rule and Task 3 into the TUI's switch dialog.
 #[allow(dead_code)]
-pub(crate) fn root_of(_scoped: &Path) -> PathBuf {
-    todo!("Task 1 GREEN")
+pub(crate) fn root_of(scoped: &Path) -> PathBuf {
+    let parent = scoped.parent();
+    let parent_is_workstreams =
+        parent.and_then(|p| p.file_name()).and_then(|n| n.to_str()) == Some("workstreams");
+    if parent_is_workstreams {
+        if let Some(root) = parent.and_then(|p| p.parent()) {
+            return root.to_path_buf();
+        }
+    }
+    scoped.to_path_buf()
 }
 
 #[cfg(test)]

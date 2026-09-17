@@ -490,17 +490,40 @@ fn progress_bar(pct: u32, width: usize, use_color: bool) -> String {
 }
 
 /// Compact workspace location for the banner: the directory that contains
-/// `.planning` plus the `.planning` segment — e.g. "sample/.planning".
+/// `.planning` plus the `.planning` segment — e.g. "sample/.planning". In
+/// workstream mode (`p`'s parent is `workstreams` and its grandparent is
+/// `.planning`), names the focused workstream instead:
+/// "{workspace-dir}/.planning/workstreams/{name}" (D4). Any other shape falls
+/// back to the flat-mode format unchanged, so flat-mode output stays
+/// byte-identical.
 fn short_planning(p: &Path) -> String {
     let leaf = p
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(".planning");
-    match p
-        .parent()
+    let parent = p.parent();
+    let parent_name = parent
         .and_then(|par| par.file_name())
-        .and_then(|n| n.to_str())
-    {
+        .and_then(|n| n.to_str());
+
+    if parent_name == Some("workstreams") {
+        let grandparent = parent.and_then(|par| par.parent());
+        let grandparent_name = grandparent
+            .and_then(|g| g.file_name())
+            .and_then(|n| n.to_str());
+        if grandparent_name == Some(".planning") {
+            let great_grandparent_name = grandparent
+                .and_then(|g| g.parent())
+                .and_then(|g| g.file_name())
+                .and_then(|n| n.to_str());
+            return match great_grandparent_name {
+                Some(name) => format!("{name}/.planning/workstreams/{leaf}"),
+                None => format!(".planning/workstreams/{leaf}"),
+            };
+        }
+    }
+
+    match parent_name {
         Some(parent) => format!("{parent}/{leaf}"),
         None => leaf.to_string(),
     }

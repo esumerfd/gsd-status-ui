@@ -14,8 +14,11 @@ mod workstream;
 fn main() -> ExitCode {
     let mut path: Option<PathBuf> = None;
     let mut plain = false;
-    for arg in env::args().skip(1) {
-        match arg.as_str() {
+    let mut ws: Option<String> = None;
+    let args: Vec<String> = env::args().skip(1).collect();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
             "--help" | "-h" => {
                 print_help();
                 return ExitCode::SUCCESS;
@@ -25,12 +28,22 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             "--plain" | "--no-tui" => plain = true,
+            "--ws" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    ws = Some(v.clone());
+                }
+            }
+            other if other.starts_with("--ws=") => {
+                ws = Some(other["--ws=".len()..].to_string());
+            }
             other => path = Some(PathBuf::from(other)),
         }
+        i += 1;
     }
     let start = path.unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-    let planning = match planning::find_planning_dir(&start) {
+    let root = match planning::find_planning_dir(&start) {
         Some(p) => p,
         None => {
             eprintln!(
@@ -41,6 +54,23 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+
+    let env_ws = env::var("GSD_WORKSTREAM").ok();
+    let resolved_ws = workstream::resolve(&root, ws.as_deref(), env_ws.as_deref());
+    if ws.is_some() && resolved_ws.is_none() {
+        let known = workstream::list(&root);
+        let known = if known.is_empty() {
+            "none".to_string()
+        } else {
+            known.join(", ")
+        };
+        eprintln!(
+            "gsd-status: unknown workstream '{}' (known: {known}).",
+            ws.unwrap_or_default()
+        );
+        return ExitCode::from(2);
+    }
+    let planning = workstream::scoped_dir(&root, resolved_ws.as_deref());
 
     let state = planning::load_state(&planning);
     let phases = planning::load_phases(&planning);
@@ -76,12 +106,20 @@ fn print_help() {
     println!("gsd-status — interactive status view for a GSD planning workspace");
     println!();
     println!("Usage:");
-    println!("  gsd-status [--plain|--no-tui] [path]");
+    println!("  gsd-status [--plain|--no-tui] [--ws <name>] [path]");
     println!("  gsd-status --version");
     println!();
     println!("If [path] is omitted, walks up from the current directory looking for .planning/.");
     println!("With a TTY it opens the tabbed TUI; otherwise (or with --plain) it prints a report.");
     println!("Honors NO_COLOR in plain mode.");
+    println!();
+    println!("Workstreams (.planning/workstreams/<name>/):");
+    println!("  --ws <name>       focus one workstream; unknown name exits 2");
+    println!("  GSD_WORKSTREAM    env var fallback when --ws is not given");
+    println!(
+        "  Selection order: --ws > GSD_WORKSTREAM > .planning/active-workstream > first sorted"
+    );
+    println!("  A flat workspace (no .planning/workstreams/) behaves exactly as before.");
     println!();
     println!("Keys (TUI) — modal: q always backs out one level (doc -> status -> exit).");
     println!("  ?         in-app help dialog listing every key by mode");

@@ -653,6 +653,27 @@ mod tests {
     }
 
     #[test]
+    fn short_planning_names_the_focused_workstream_in_workstream_mode() {
+        assert_eq!(
+            short_planning(Path::new("sample-workstreams/.planning/workstreams/beta")),
+            "sample-workstreams/.planning/workstreams/beta"
+        );
+        assert_eq!(
+            short_planning(Path::new(
+                "/a/b/gsd-status-ui/work/.planning/workstreams/alpha"
+            )),
+            "work/.planning/workstreams/alpha"
+        );
+        // A `workstreams` directory that isn't nested directly under
+        // `.planning` (D4 flat-mode byte-identical guarantee) falls back to
+        // today's behavior rather than misfiring the workstream format.
+        assert_eq!(
+            short_planning(Path::new("/x/not-dot-planning/workstreams/beta")),
+            "workstreams/beta"
+        );
+    }
+
+    #[test]
     fn progress_bar_uses_a_bright_bold_fill_when_colored() {
         let bar = progress_bar(50, 10, true);
         assert!(bar.contains(color::BRIGHT_GREEN), "bright fill: {bar:?}");

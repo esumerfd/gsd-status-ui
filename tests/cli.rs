@@ -25,6 +25,20 @@ fn run_stderr(args: &[&str]) -> (String, i32) {
     )
 }
 
+/// Run the binary with extra environment variables set (beyond `NO_COLOR`).
+fn run_with_env(args: &[&str], env_pairs: &[(&str, &str)]) -> (String, i32) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gsd-status"));
+    cmd.args(args).env("NO_COLOR", "1");
+    for (k, v) in env_pairs {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("run binary");
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
 #[test]
 fn no_planning_directory_prints_actionable_error() {
     // A directory with no .planning/ in it or any ancestor.
@@ -171,4 +185,62 @@ fn plain_report_shows_the_project_row_for_the_pre_roadmap_sample() {
         "Project row sits above Research:\n{stdout}"
     );
     assert!(!stdout.contains("Roadmap"), "no roadmap yet:\n{stdout}");
+}
+
+#[test]
+fn workstream_mode_defaults_to_the_active_workstream_pointer() {
+    let (stdout, code) = run(&["--plain", "sample-workstreams"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("path: sample-workstreams/.planning/workstreams/beta"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Beta First Phase"), "{stdout}");
+    assert!(!stdout.contains("Alpha First Phase"), "{stdout}");
+}
+
+#[test]
+fn ws_flag_overrides_the_active_workstream_pointer() {
+    let (stdout, code) = run(&["--ws", "alpha", "--plain", "sample-workstreams"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("path: sample-workstreams/.planning/workstreams/alpha"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Alpha First Phase"), "{stdout}");
+    assert!(!stdout.contains("Beta First Phase"), "{stdout}");
+}
+
+#[test]
+fn gsd_workstream_env_var_selects_a_workstream_with_no_flag() {
+    let (stdout, code) = run_with_env(
+        &["--plain", "sample-workstreams"],
+        &[("GSD_WORKSTREAM", "alpha")],
+    );
+    assert_eq!(code, 0, "{stdout}");
+    assert!(stdout.contains("Alpha First Phase"), "{stdout}");
+    assert!(!stdout.contains("Beta First Phase"), "{stdout}");
+}
+
+#[test]
+fn unknown_ws_flag_exits_2_and_lists_known_workstreams() {
+    let (stderr, code) = run_stderr(&["--ws", "nope", "--plain", "sample-workstreams"]);
+    assert_eq!(code, 2, "stderr={stderr}");
+    assert!(stderr.contains("nope"), "{stderr}");
+    assert!(stderr.contains("alpha"), "{stderr}");
+    assert!(stderr.contains("beta"), "{stderr}");
+}
+
+#[test]
+fn ws_flag_path_traversal_is_rejected() {
+    let (stderr, code) = run_stderr(&["--ws", "../../etc", "--plain", "sample-workstreams"]);
+    assert_eq!(code, 2, "stderr={stderr}");
+}
+
+#[test]
+fn flat_workspace_output_is_unchanged_by_workstream_support() {
+    let (stdout, code) = run(&["--plain", "sample"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("path: sample/.planning"), "{stdout}");
+    assert!(stdout.contains("Robot Coffee Service"), "{stdout}");
 }

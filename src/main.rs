@@ -9,6 +9,7 @@ mod planning;
 mod report;
 mod status_edit;
 mod tui;
+mod workstream;
 
 fn main() -> ExitCode {
     let mut path: Option<PathBuf> = None;

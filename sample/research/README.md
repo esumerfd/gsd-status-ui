@@ -1,12 +1,12 @@
 # Pre-roadmap sample GSD workspace
 
 A fictional "Robot Tea Service" project stopped one step earlier than
-[`sample/`](../sample/README.md): research is done and `REQUIREMENTS.md` is
+[`sample/normal/`](../normal/README.md): research is done and `REQUIREMENTS.md` is
 written, but there is no `ROADMAP.md`, so no phases parse.
 
 ```bash
-cargo run -- sample-research            # from the repo root: tabbed TUI (on a TTY)
-cargo run -- --plain sample-research    # print-and-exit report
+cargo run -- sample/research            # from the repo root: tabbed TUI (on a TTY)
+cargo run -- --plain sample/research    # print-and-exit report
 ```
 
 What it exercises:

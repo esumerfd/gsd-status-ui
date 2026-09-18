@@ -4,8 +4,8 @@ A fictional "Robot Coffee Service" project with a `.planning/` tree shaped
 like a real GSD workspace.
 
 ```bash
-cargo run -- sample            # from the repo root: tabbed TUI (on a TTY)
-cargo run -- --plain sample    # print-and-exit report
+cargo run -- sample/normal            # from the repo root: tabbed TUI (on a TTY)
+cargo run -- --plain sample/normal    # print-and-exit report
 ```
 
 What it exercises:
@@ -55,4 +55,4 @@ The milestone `status:` in `STATE.md` is single-valued, so only one of its
 colours can show at a time.
 
 For the pre-roadmap state — where those root docs get their own **Project** row
-because there's no Roadmap row yet — use `sample-research/` instead.
+because there's no Roadmap row yet — use `sample/research/` instead.

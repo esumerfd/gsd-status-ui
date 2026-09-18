@@ -95,12 +95,12 @@ The repo ships two fictional `.planning/` trees, for manual testing and
 screenshots:
 
 ```bash
-cargo run -- sample            # mid-milestone: roadmap, phases, steps, todos
-cargo run -- sample-research   # pre-roadmap: research done, no ROADMAP.md yet
+cargo run -- sample/normal      # mid-milestone: roadmap, phases, steps, todos
+cargo run -- sample/research    # pre-roadmap: research done, no ROADMAP.md yet
 ```
 
-See [`sample/README.md`](sample/README.md) for what each phase in `sample/`
-exercises. `sample-research/` covers the earlier state, where the **Project**
+See [`sample/README.md`](sample/README.md) for what each phase in `sample/normal/`
+exercises. `sample/research/` covers the earlier state, where the **Project**
 docs row is what reaches `PROJECT.md` and `REQUIREMENTS.md` — with no roadmap
 there is no Roadmap row to carry them.
 
@@ -121,10 +121,10 @@ leaf-adapter/    isolates gsd-status from `leaf`: renders a markdown file into
 
 vendor/leaf/     vendored copy of the markdown/ratatui viewer leaf-adapter
                  wraps (see vendor/README.md for upstream + local patches)
-sample/          example .planning/ workspace used in tests/cli.rs and for
-                 manual TUI testing
-sample-research/ the same, for a workspace that has finished research but has
-                 no ROADMAP.md yet (exercises the Project docs row)
+sample/normal/      example .planning/ workspace used in tests/cli.rs and for
+                    manual TUI testing
+sample/research/    the same, for a workspace that has finished research but
+                    has no ROADMAP.md yet (exercises the Project docs row)
 ```
 
 `model.rs` / `planning.rs` / `report.rs` are a module split of the logic
@@ -139,6 +139,6 @@ cargo test
 cargo fmt
 ```
 
-`tests/cli.rs` runs the built binary end-to-end against `sample/`.
+`tests/cli.rs` runs the built binary end-to-end against `sample/normal/`.
 `leaf-adapter/tests/doc_view.rs` exercises the doc panel renderer against a
 `ratatui::TestBackend`.

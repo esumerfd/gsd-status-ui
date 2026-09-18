@@ -728,7 +728,8 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()).phases(&phases),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default())
+                .phases(&phases),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -767,7 +768,8 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()).phases(&phases),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default())
+                .phases(&phases),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -921,7 +923,8 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()).phases(&phases),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default())
+                .phases(&phases),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -974,7 +977,9 @@ mod tests {
         let quick_tasks = vec![crate::model::QuickTask {
             id: "260709-aa1".into(),
             title: "Add dark-mode toggle".into(),
-            dir: std::path::PathBuf::from("sample/normal/.planning/quick/260709-aa1-add-dark-mode-toggle"),
+            dir: std::path::PathBuf::from(
+                "sample/normal/.planning/quick/260709-aa1-add-dark-mode-toggle",
+            ),
             status: crate::model::QuickTaskStatus::InProgress,
         }];
         let todos = vec![Todo {
@@ -1397,7 +1402,8 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()).phases(&phases),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default())
+                .phases(&phases),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();

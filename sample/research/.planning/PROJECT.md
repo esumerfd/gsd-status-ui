@@ -1,7 +1,7 @@
 # Sample Project — Robot Tea Service
 
 A second demo GSD workspace, deliberately stopped one step earlier than
-`sample/`: research is finished and the requirements are written, but there is no
+`sample/normal/`: research is finished and the requirements are written, but there is no
 `ROADMAP.md` yet, so no phases parse.
 
 That is the state this workspace exists to exercise — the **Project** docs row.
@@ -16,4 +16,4 @@ takes over and the Project row disappears.
 
 ## Constraints
 
-- Tea only. The coffee robot is a separate project (see `sample/`).
+- Tea only. The coffee robot is a separate project (see `sample/normal/`).

@@ -61,7 +61,7 @@ fn no_planning_directory_prints_actionable_error() {
 
 #[test]
 fn plain_report_renders_sample_workspace() {
-    let (stdout, code) = run(&["sample"]);
+    let (stdout, code) = run(&["sample/normal"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("Robot Coffee Service"), "{stdout}");
     assert!(stdout.contains("Phase 2"), "{stdout}");
@@ -87,21 +87,21 @@ fn version_flag_prints_the_package_version() {
 
 #[test]
 fn plain_flag_is_accepted_before_path() {
-    let (stdout, code) = run(&["--plain", "sample"]);
+    let (stdout, code) = run(&["--plain", "sample/normal"]);
     assert_eq!(code, 0, "--plain must not be treated as a path");
     assert!(stdout.contains("Robot Coffee Service"), "{stdout}");
 }
 
 #[test]
 fn no_tui_alias_works() {
-    let (stdout, code) = run(&["--no-tui", "sample"]);
+    let (stdout, code) = run(&["--no-tui", "sample/normal"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("Robot Coffee Service"), "{stdout}");
 }
 
 #[test]
 fn plain_report_lists_in_progress_quick_task_between_phases_and_todos() {
-    let (stdout, code) = run(&["sample"]);
+    let (stdout, code) = run(&["sample/normal"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("Tasks"), "{stdout}");
     assert!(stdout.contains("Add dark-mode toggle"), "{stdout}");
@@ -117,7 +117,7 @@ fn plain_report_lists_in_progress_quick_task_between_phases_and_todos() {
 
 #[test]
 fn plain_report_shows_failed_status_raw_and_hides_completed() {
-    let (stdout, code) = run(&["sample"]);
+    let (stdout, code) = run(&["sample/normal"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("Fix export crash"), "{stdout}");
     assert!(stdout.contains("verification failed"), "{stdout}");
@@ -130,7 +130,7 @@ fn plain_report_shows_failed_status_raw_and_hides_completed() {
 
 #[test]
 fn plain_report_lists_pending_todos_between_phases_and_next() {
-    let (stdout, code) = run(&["sample"]);
+    let (stdout, code) = run(&["sample/normal"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("Todos"), "{stdout}");
     let title = "Official signed build process for pr-monitor apps";
@@ -148,7 +148,7 @@ fn plain_report_lists_pending_todos_between_phases_and_next() {
 
 #[test]
 fn plain_report_lists_active_debug_session_prefixed_debug_in_todos() {
-    let (stdout, code) = run(&["sample"]);
+    let (stdout, code) = run(&["sample/normal"]);
     assert_eq!(code, 0);
     // The full trigger is 60 chars, past report.rs's 55-char todo-row
     // truncation, so only a prefix survives in the rendered row.
@@ -173,10 +173,10 @@ fn plain_report_lists_active_debug_session_prefixed_debug_in_todos() {
 
 #[test]
 fn plain_report_shows_the_project_row_for_the_pre_roadmap_sample() {
-    // sample-research/ is a workspace that finished research but has no
+    // sample/research/ is a workspace that finished research but has no
     // ROADMAP.md yet, so the Roadmap row is absent and the Project row is what
     // reaches PROJECT.md and REQUIREMENTS.md.
-    let (stdout, code) = run(&["sample-research"]);
+    let (stdout, code) = run(&["sample/research"]);
     assert_eq!(code, 0, "{stdout}");
     let project = stdout.find("  Project").expect("Project row present");
     let research = stdout.find("  Research").expect("Research row present");
@@ -189,10 +189,10 @@ fn plain_report_shows_the_project_row_for_the_pre_roadmap_sample() {
 
 #[test]
 fn workstream_mode_defaults_to_the_active_workstream_pointer() {
-    let (stdout, code) = run(&["--plain", "sample-workstreams"]);
+    let (stdout, code) = run(&["--plain", "sample/workstreams"]);
     assert_eq!(code, 0, "{stdout}");
     assert!(
-        stdout.contains("path: sample-workstreams/.planning/workstreams/beta"),
+        stdout.contains("path: workstreams/.planning/workstreams/beta"),
         "{stdout}"
     );
     assert!(stdout.contains("Beta First Phase"), "{stdout}");
@@ -201,10 +201,10 @@ fn workstream_mode_defaults_to_the_active_workstream_pointer() {
 
 #[test]
 fn ws_flag_overrides_the_active_workstream_pointer() {
-    let (stdout, code) = run(&["--ws", "alpha", "--plain", "sample-workstreams"]);
+    let (stdout, code) = run(&["--ws", "alpha", "--plain", "sample/workstreams"]);
     assert_eq!(code, 0, "{stdout}");
     assert!(
-        stdout.contains("path: sample-workstreams/.planning/workstreams/alpha"),
+        stdout.contains("path: workstreams/.planning/workstreams/alpha"),
         "{stdout}"
     );
     assert!(stdout.contains("Alpha First Phase"), "{stdout}");
@@ -214,7 +214,7 @@ fn ws_flag_overrides_the_active_workstream_pointer() {
 #[test]
 fn gsd_workstream_env_var_selects_a_workstream_with_no_flag() {
     let (stdout, code) = run_with_env(
-        &["--plain", "sample-workstreams"],
+        &["--plain", "sample/workstreams"],
         &[("GSD_WORKSTREAM", "alpha")],
     );
     assert_eq!(code, 0, "{stdout}");
@@ -224,7 +224,7 @@ fn gsd_workstream_env_var_selects_a_workstream_with_no_flag() {
 
 #[test]
 fn unknown_ws_flag_exits_2_and_lists_known_workstreams() {
-    let (stderr, code) = run_stderr(&["--ws", "nope", "--plain", "sample-workstreams"]);
+    let (stderr, code) = run_stderr(&["--ws", "nope", "--plain", "sample/workstreams"]);
     assert_eq!(code, 2, "stderr={stderr}");
     assert!(stderr.contains("nope"), "{stderr}");
     assert!(stderr.contains("alpha"), "{stderr}");
@@ -233,14 +233,14 @@ fn unknown_ws_flag_exits_2_and_lists_known_workstreams() {
 
 #[test]
 fn ws_flag_path_traversal_is_rejected() {
-    let (stderr, code) = run_stderr(&["--ws", "../../etc", "--plain", "sample-workstreams"]);
+    let (stderr, code) = run_stderr(&["--ws", "../../etc", "--plain", "sample/workstreams"]);
     assert_eq!(code, 2, "stderr={stderr}");
 }
 
 #[test]
 fn flat_workspace_output_is_unchanged_by_workstream_support() {
-    let (stdout, code) = run(&["--plain", "sample"]);
+    let (stdout, code) = run(&["--plain", "sample/normal"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("path: sample/.planning"), "{stdout}");
+    assert!(stdout.contains("path: normal/.planning"), "{stdout}");
     assert!(stdout.contains("Robot Coffee Service"), "{stdout}");
 }

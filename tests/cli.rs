@@ -244,3 +244,92 @@ fn flat_workspace_output_is_unchanged_by_workstream_support() {
     assert!(stdout.contains("path: normal/.planning"), "{stdout}");
     assert!(stdout.contains("Robot Coffee Service"), "{stdout}");
 }
+
+// ─────────────────────── sample/project-and-workstreams/ ───────────────────
+//
+// Characterization tests. They pin CURRENT gsd-status behavior on the
+// partially-migrated shape — root project files (PROJECT.md, ROADMAP.md,
+// phases/, research/, todos/) coexisting with workstreams that have started
+// taking over planning. They do NOT assert desired behavior; the three gaps
+// they document are captured, not fixed, by explicit scope decision (see the
+// plan's <deferred> block).
+
+#[test]
+fn project_and_workstreams_alpha_research_shadows_the_root_research_docs() {
+    // documents gap: folder shadowing is total, not a union. Alpha's own
+    // research/C.md replaces the root's research/{A,B}.md entirely instead of
+    // merging with them, so the Research row counts only alpha's one file.
+    let (stdout, code) = run(&["--plain", "sample/project-and-workstreams"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("Research") && stdout.contains("1 file"),
+        "alpha's scoped research/ must shadow the root's, counting only its own file:\n{stdout}"
+    );
+}
+
+#[test]
+fn project_and_workstreams_beta_scoped_todo_is_invisible_but_root_todo_is_not() {
+    // documents gap: a scoped todos/ is invisible. `load_todos` is hard-rooted
+    // and `todos` sits in OWNED_FOLDERS, so a todo written under
+    // workstreams/beta/todos/pending/ renders nowhere, while the root todo
+    // (visible from every workstream) still does.
+    let (stdout, code) = run(&["--ws", "beta", "--plain", "sample/project-and-workstreams"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("Send a welcome email to new members"),
+        "the root todo is hard-rooted and must still render:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Retry failed notification sends"),
+        "a workstream-scoped todo must render nowhere: {stdout}"
+    );
+}
+
+#[test]
+fn project_and_workstreams_alpha_has_roadmap_split_brain() {
+    // documents gap: roadmap split-brain. Alpha has no scoped ROADMAP.md, so
+    // there is no Roadmap row and no Phases section even though a root
+    // ROADMAP.md and a root phases/ directory both exist; the root roadmap
+    // stays openable, pinned first in the Project docs row.
+    let (stdout, code) = run(&["--plain", "sample/project-and-workstreams"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        !stdout.contains("Roadmap"),
+        "alpha has no scoped ROADMAP.md, so no Roadmap row:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("Phases"),
+        "no scoped roadmap means no Phases section:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Project"),
+        "the root ROADMAP.md stays reachable via the Project docs row:\n{stdout}"
+    );
+}
+
+#[test]
+fn project_and_workstreams_beta_is_the_healthy_comparison_arm() {
+    // Control arm proving tests 1-3 above are about federation rules, not a
+    // broken fixture: beta has its own scoped ROADMAP.md, so its Roadmap row
+    // and Phases section both render normally.
+    let (stdout, code) = run(&["--ws", "beta", "--plain", "sample/project-and-workstreams"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("Roadmap"),
+        "beta has its own ROADMAP.md:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Phases"),
+        "beta's own roadmap backs a Phases section:\n{stdout}"
+    );
+}
+
+#[test]
+fn project_and_workstreams_defaults_to_alpha_via_the_active_workstream_pointer() {
+    let (stdout, code) = run(&["--plain", "sample/project-and-workstreams"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("path: project-and-workstreams/.planning/workstreams/alpha"),
+        "{stdout}"
+    );
+}

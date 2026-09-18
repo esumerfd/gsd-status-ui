@@ -2,8 +2,10 @@
 
 A fictional "Workstream Sample Project" exercising workstream federation:
 root-scoped shared content (`todos/`, `notes/`, `research/`, `PROJECT.md`)
-plus two workstreams, alpha and beta, each with their own
-`STATE.md`/`ROADMAP.md`/`phases/`.
+plus four workstreams, each with their own `STATE.md`/`ROADMAP.md`/`phases/`:
+alpha and beta are live, gamma is `milestone complete`, and zeta is
+`archived`. The last two exist to exercise how the `S` picker orders and
+hides finished work.
 
 ```bash
 cargo run -- --plain sample/workstreams                # default: active-workstream pointer (beta)

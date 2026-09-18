@@ -68,6 +68,13 @@ the same repo are unaffected. Shared content (`todos/`, `notes/`, `research/`)
 stays visible while a workstream is focused. In a workspace with no
 `workstreams/` directory nothing changes and `S` reports there are none.
 
+Workstreams whose `STATE.md` says `complete` (or `milestone complete`) sort
+below a `--- complete ---` rule rather than mixing in with live ones. Ones
+marked `archived` are not offered at all — and the `H` show/hide-completed
+toggle does not reveal them, since `H` governs completed work inside a
+workspace, not whether a retired one is offered. An explicit `--ws <name>`
+still reaches an archived workstream, so nothing becomes unreadable.
+
 A partially-migrated workspace — one whose `.planning/` root still holds its
 own `ROADMAP.md`, `STATE.md`, or `phases/` beside `workstreams/` — also gets a
 `(base)` entry at the top of the picker. Those root files are workstream-scoped

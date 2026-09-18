@@ -232,6 +232,19 @@ fn unknown_ws_flag_exits_2_and_lists_known_workstreams() {
 }
 
 #[test]
+fn an_archived_workstream_is_hidden_from_the_picker_but_still_reachable_by_flag() {
+    // Hiding it from the `S` picker is a presentation decision. An explicit
+    // --ws names it deliberately, so it must still resolve — otherwise the
+    // archive becomes unreadable rather than merely unoffered.
+    let (stdout, code) = run(&["--ws", "zeta", "--plain", "sample/workstreams"]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("workstreams/zeta"),
+        "the archived workstream still renders: {stdout}"
+    );
+}
+
+#[test]
 fn ws_flag_path_traversal_is_rejected() {
     let (stderr, code) = run_stderr(&["--ws", "../../etc", "--plain", "sample/workstreams"]);
     assert_eq!(code, 2, "stderr={stderr}");

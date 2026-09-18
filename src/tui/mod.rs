@@ -925,9 +925,12 @@ impl Ui {
                 .map(|n| n.chars().count())
                 .max()
                 .unwrap_or(0)
+                .max(crate::workstream::COMPLETE_SEPARATOR.chars().count())
                 .max(16);
             let width = (name_width as u16 + 8).min(frame.area().width);
-            let height = (dialog.items.len() as u16 + 2).min(frame.area().height);
+            // The separator occupies a row of its own without being an entry.
+            let rows = dialog.items.len() + usize::from(dialog.separator_at.is_some());
+            let height = (rows as u16 + 2).min(frame.area().height);
             let popup = Rect {
                 x: frame.area().x + (frame.area().width.saturating_sub(width)) / 2,
                 y: frame.area().y + (frame.area().height.saturating_sub(height)) / 2,
@@ -935,26 +938,33 @@ impl Ui {
                 height,
             };
             frame.render_widget(Clear, popup);
-            let lines: Vec<Line> = dialog
-                .items
-                .iter()
-                .enumerate()
-                .map(|(i, name)| {
-                    // The currently-active workstream keeps a marker even
-                    // after the cursor (dialog.selected) moves away from it —
-                    // mirrors the open-document dialog's "●" open-tab marker.
-                    let marker = if i == dialog.focused { "●" } else { " " };
-                    let style = if i == dialog.selected {
-                        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
-                    } else {
-                        Style::default()
-                    };
-                    Line::from(Span::styled(
-                        format!(" {marker} {name:<name_width$} "),
-                        style,
-                    ))
-                })
-                .collect();
+            let mut lines: Vec<Line> = Vec::with_capacity(rows);
+            for (i, name) in dialog.items.iter().enumerate() {
+                // Drawn before the row it precedes, so it separates the
+                // active workstreams above from the complete ones below.
+                if dialog.separator_at == Some(i) {
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "   {sep:<name_width$} ",
+                            sep = crate::workstream::COMPLETE_SEPARATOR
+                        ),
+                        Style::default().add_modifier(Modifier::DIM),
+                    )));
+                }
+                // The currently-active workstream keeps a marker even
+                // after the cursor (dialog.selected) moves away from it —
+                // mirrors the open-document dialog's "●" open-tab marker.
+                let marker = if i == dialog.focused { "●" } else { " " };
+                let style = if i == dialog.selected {
+                    Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(Span::styled(
+                    format!(" {marker} {name:<name_width$} "),
+                    style,
+                )));
+            }
             frame.render_widget(
                 Paragraph::new(lines).block(Block::bordered().title(" Switch workstream ")),
                 popup,
@@ -2870,13 +2880,17 @@ mod tests {
     fn workstream_dialog_j_k_clamp_and_esc_cancels_with_no_state_change() {
         let mut ui = workstream_ui();
         ui.on_key(plain('S'));
-        // beta (index 1) is pre-selected; only two items (alpha, beta).
+        // Rows: alpha(0), beta(1), then the rule, then gamma(2) — beta is
+        // pre-selected. j steps onto gamma; a second j clamps there.
+        ui.on_key(plain('j'));
+        assert_eq!(ui.app.workstream_dialog().unwrap().selected, 2);
         ui.on_key(plain('j'));
         assert_eq!(
             ui.app.workstream_dialog().unwrap().selected,
-            1,
+            2,
             "clamps at bottom"
         );
+        ui.on_key(plain('k'));
         ui.on_key(plain('k'));
         assert_eq!(ui.app.workstream_dialog().unwrap().selected, 0);
         ui.on_key(plain('k'));
@@ -2965,6 +2979,36 @@ mod tests {
                 false,
             ),
         )
+    }
+
+    #[test]
+    fn the_picker_draws_a_complete_rule_between_active_and_finished_workstreams() {
+        let mut ui = workstream_ui();
+        ui.on_key(plain('S'));
+        let s = screen(&mut ui);
+        let rows: Vec<&str> = s
+            .lines()
+            .filter(|l| {
+                l.contains("alpha")
+                    || l.contains("beta")
+                    || l.contains("gamma")
+                    || l.contains(crate::workstream::COMPLETE_SEPARATOR)
+            })
+            .collect();
+        let idx = |needle: &str| {
+            rows.iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} on screen: {s}"))
+        };
+        assert!(
+            idx("beta") < idx(crate::workstream::COMPLETE_SEPARATOR),
+            "the rule sits below the active workstreams: {rows:?}"
+        );
+        assert!(
+            idx(crate::workstream::COMPLETE_SEPARATOR) < idx("gamma"),
+            "and above the complete ones: {rows:?}"
+        );
+        assert!(!s.contains("zeta"), "archived never renders: {s}");
     }
 
     #[test]

@@ -18,6 +18,32 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Label for the synthetic "workspace root" entry in the `S` picker.
+///
+/// Deliberately parenthesised: `is_valid_name` rejects `(` and `)`, so this
+/// can never collide with a real `.planning/workstreams/<name>/` directory,
+/// and no name-validity check has to special-case it.
+pub(crate) const BASE_LABEL: &str = "(base)";
+
+/// Does the workspace root carry workstream-shaped content of its own?
+///
+/// True only for a partially-migrated workspace — one where `ROADMAP.md`,
+/// `STATE.md`, `REQUIREMENTS.md`, or `phases/` still sit at `.planning/`
+/// alongside `workstreams/`. Those files are strictly scoped, so while a
+/// workstream is focused nothing can reach them; the picker offers a base
+/// entry exactly when there is something there to reach.
+///
+/// False for a cleanly-migrated workspace, whose root holds only shared
+/// content (`todos/`, `notes/`, `research/`, `PROJECT.md`) that every
+/// workstream view already federates in — a base entry there would open an
+/// empty panel.
+pub(crate) fn base_has_content(root: &Path) -> bool {
+    ["ROADMAP.md", "STATE.md", "REQUIREMENTS.md"]
+        .iter()
+        .any(|f| root.join(f).is_file())
+        || root.join("phases").is_dir()
+}
+
 /// GSD's workstream name policy: `[A-Za-z0-9._-]` only, non-empty, no path
 /// separators, no `..`.
 pub(crate) fn is_valid_name(name: &str) -> bool {
@@ -98,6 +124,19 @@ pub(crate) fn scoped_dir(root: &Path, ws: Option<&str>) -> PathBuf {
     }
 }
 
+/// The planning directory one `S`-picker selection re-scopes to.
+///
+/// [`BASE_LABEL`] means the workspace root itself; anything else is a
+/// workstream name. Lives here rather than inline in the event loop so the
+/// mapping is testable — the event loop owns a terminal and is not.
+pub(crate) fn selection_dir(root: &Path, selection: &str) -> PathBuf {
+    if selection == BASE_LABEL {
+        root.to_path_buf()
+    } else {
+        scoped_dir(root, Some(selection))
+    }
+}
+
 /// Recover the workspace root from a scoped directory. In flat mode (or any
 /// path whose parent is not literally named `workstreams`) this is a no-op.
 pub(crate) fn root_of(scoped: &Path) -> PathBuf {
@@ -116,6 +155,35 @@ pub(crate) fn root_of(scoped: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn selection_dir_maps_base_to_the_root_and_a_name_to_its_scoped_dir() {
+        let root = Path::new("/w/.planning");
+        assert_eq!(selection_dir(root, BASE_LABEL), root.to_path_buf());
+        assert_eq!(
+            selection_dir(root, "alpha"),
+            Path::new("/w/.planning/workstreams/alpha").to_path_buf()
+        );
+    }
+
+    #[test]
+    fn base_label_is_not_a_legal_workstream_name() {
+        // The synthetic picker entry must be structurally unable to collide
+        // with a real `.planning/workstreams/<name>/` directory.
+        assert!(!is_valid_name(BASE_LABEL));
+    }
+
+    #[test]
+    fn base_has_content_only_when_the_root_carries_workstream_shaped_files() {
+        // Partially migrated: ROADMAP.md/STATE.md/phases/ still sit at the
+        // root alongside workstreams/, and nothing else can reach them.
+        assert!(base_has_content(Path::new(
+            "sample/project-and-workstreams/.planning"
+        )));
+        // Cleanly migrated: the root holds only shared content, which every
+        // workstream view already federates in — a base entry would be dead.
+        assert!(!base_has_content(Path::new("sample/workstreams/.planning")));
+    }
 
     #[test]
     fn is_valid_name_accepts_and_rejects() {

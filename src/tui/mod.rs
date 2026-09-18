@@ -38,7 +38,7 @@ const HELP_TEXT: &str = "\
             Enter    open the step's plan
             o        open-document dialog
             s        set status (todo/task/phase/note)
-            S        switch workstream (workstream workspaces only)
+            S        switch workstream / (base) root
             c        copy selected todo's name
             /        find a requirement by ID
             q        quit
@@ -262,6 +262,28 @@ impl Ui {
     /// Drain a workstream switch confirmed by Enter (see `pending_workstream`).
     pub(crate) fn take_pending_workstream(&mut self) -> Option<String> {
         self.pending_workstream.take()
+    }
+
+    /// Apply a pending `S` selection: re-scope `planning` in place, flash,
+    /// and reload. Returns false when nothing was pending.
+    ///
+    /// Factored out of `event_loop` — which owns a terminal and so cannot be
+    /// unit-tested — so the `(base)`-vs-workstream mapping and the reload
+    /// that follows it are actually covered. D2: read-only; this recomputes
+    /// a path, it never writes `.planning/active-workstream`.
+    pub(crate) fn apply_pending_workstream(&mut self, planning: &mut std::path::PathBuf) -> bool {
+        let Some(name) = self.take_pending_workstream() else {
+            return false;
+        };
+        let root = crate::workstream::root_of(planning);
+        *planning = crate::workstream::selection_dir(&root, &name);
+        self.app.flash = Some(if name == crate::workstream::BASE_LABEL {
+            "switched to the workspace root".to_string()
+        } else {
+            format!("switched to workstream: {name}")
+        });
+        self.reload_from_disk(planning);
+        true
     }
 
     /// Resolve `query` to the file that defines that requirement ID (D-02)
@@ -1118,14 +1140,7 @@ fn event_loop(
                 // where the mutable `planning` binding lives (key handlers
                 // have no access to it). D2: read-only — this recomputes the
                 // scoped path, it never writes `.planning/active-workstream`.
-                if let Some(name) = ui.take_pending_workstream() {
-                    planning = crate::workstream::scoped_dir(
-                        &crate::workstream::root_of(&planning),
-                        Some(&name),
-                    );
-                    ui.app.flash = Some(format!("switched to workstream: {name}"));
-                    ui.reload_from_disk(&planning);
-                }
+                ui.apply_pending_workstream(&mut planning);
                 // Enter on a find-a-requirement draft queues the query here,
                 // where `planning: &Path` is in scope (key handlers have no
                 // access to it).
@@ -2931,6 +2946,61 @@ mod tests {
         assert_eq!(
             before, after,
             "switching workstreams must never write the pointer file (D2)"
+        );
+    }
+
+    fn ui_for(planning: &Path) -> Ui {
+        let state = crate::planning::load_state(planning);
+        let phases = crate::planning::load_phases(planning);
+        let quick_tasks = crate::planning::load_quick_tasks(planning, false);
+        let todos = crate::planning::load_todos(planning, false);
+        Ui::new(
+            status_text(planning, &state, &phases, false),
+            App::with_roadmap_row(
+                planning,
+                !phases.is_empty(),
+                &navigable_phases(&phases, false),
+                &quick_tasks,
+                &todos,
+                false,
+            ),
+        )
+    }
+
+    #[test]
+    fn selecting_base_rescopes_to_the_workspace_root_and_reaches_its_roadmap() {
+        // The gap this closes: in a partially-migrated workspace the root's
+        // own ROADMAP.md/phases/ are strictly scoped, so while a workstream
+        // is focused nothing can reach them.
+        let scoped = Path::new("sample/project-and-workstreams/.planning/workstreams/alpha");
+        let mut ui = ui_for(scoped);
+        assert!(
+            !report_string(&ui).contains("Root Catalog Import"),
+            "precondition: the root roadmap is unreachable from a workstream"
+        );
+
+        ui.on_key(plain('S'));
+        ui.on_key(plain('k')); // alpha(1) -> (base)(0)
+        ui.on_key(enter());
+
+        // Drive the SAME entry point the event loop uses, so this covers the
+        // wiring too — not just a mapping the test recomputed for itself.
+        let mut planning = scoped.to_path_buf();
+        assert!(ui.apply_pending_workstream(&mut planning));
+        assert_eq!(
+            planning,
+            crate::workstream::root_of(scoped),
+            "base re-scopes to the workspace root"
+        );
+        assert_eq!(
+            ui.app.flash.as_deref(),
+            Some("switched to the workspace root")
+        );
+
+        let report = report_string(&ui);
+        assert!(
+            report.contains("Root Catalog Import"),
+            "the root roadmap's phase is now reachable: {report}"
         );
     }
 

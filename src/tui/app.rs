@@ -1060,24 +1060,45 @@ impl App {
     /// between, so this flashes instead of opening an empty picker —
     /// mirroring `open_dialog`'s "nothing to open" shape. D2: read-only —
     /// this never writes `.planning/active-workstream`.
+    ///
+    /// A partially-migrated workspace — one whose root still carries its own
+    /// `ROADMAP.md`/`STATE.md`/`phases/` beside `workstreams/` — gains a
+    /// leading `(base)` entry. Those root files are strictly scoped, so
+    /// while a workstream is focused nothing else can reach them; `(base)`
+    /// is the only way in. It is omitted when the root holds nothing scoped,
+    /// where it would only open an empty panel.
     pub(crate) fn open_workstream_dialog(&mut self) {
         self.flash = None;
         let root = crate::workstream::root_of(&self.planning);
-        let items = crate::workstream::list(&root);
-        if items.is_empty() {
+        let workstreams = crate::workstream::list(&root);
+        if workstreams.is_empty() {
             self.flash = Some("no workstreams in this workspace".into());
             return;
         }
-        // The focused workstream is `self.planning`'s leaf name (its scoped
-        // directory is `root/workstreams/<name>`); default to index 0 (a flat
-        // workspace never reaches this branch, so `self.planning == root`
-        // never happens here) when it isn't found for any reason.
-        let focused = self
-            .planning
-            .file_name()
-            .and_then(|n| n.to_str())
-            .and_then(|name| items.iter().position(|n| n == name))
-            .unwrap_or(0);
+        let has_base = crate::workstream::base_has_content(&root);
+        let mut items: Vec<String> = Vec::with_capacity(workstreams.len() + usize::from(has_base));
+        if has_base {
+            items.push(crate::workstream::BASE_LABEL.to_string());
+        }
+        items.extend(workstreams);
+
+        // Viewing the root itself (`planning == root`, i.e. switched to
+        // base) focuses the base entry. Otherwise the focused workstream is
+        // `self.planning`'s leaf name, since its scoped directory is
+        // `root/workstreams/<name>`. Falls back to index 0 when neither
+        // matches.
+        let focused = if self.planning == root {
+            items
+                .iter()
+                .position(|n| n == crate::workstream::BASE_LABEL)
+                .unwrap_or(0)
+        } else {
+            self.planning
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|name| items.iter().position(|n| n == name))
+                .unwrap_or(0)
+        };
         self.workstream_dialog = Some(WorkstreamDialog {
             items,
             selected: focused,
@@ -2644,6 +2665,67 @@ mod tests {
         let name = app.workstream_dialog_take();
         assert_eq!(name, Some("alpha".to_string()));
         assert!(app.workstream_dialog().is_none());
+    }
+
+    fn partial_app(scoped: &str) -> App {
+        let planning = Path::new(scoped);
+        let phases = crate::planning::load_phases(planning);
+        App::with_roadmap_row(planning, !phases.is_empty(), &phases, &[], &[], false)
+    }
+
+    #[test]
+    fn open_workstream_dialog_offers_base_first_in_a_partially_migrated_workspace() {
+        // The root still carries ROADMAP.md/STATE.md/phases/, which no
+        // workstream view can reach, so the picker leads with (base).
+        let mut app = partial_app("sample/project-and-workstreams/.planning/workstreams/alpha");
+        app.open_workstream_dialog();
+        let dialog = app.workstream_dialog().expect("dialog opens");
+        assert_eq!(
+            dialog.items,
+            vec![
+                crate::workstream::BASE_LABEL.to_string(),
+                "alpha".to_string(),
+                "beta".to_string(),
+            ]
+        );
+        assert_eq!(dialog.selected, 1, "the focused workstream is alpha");
+    }
+
+    #[test]
+    fn open_workstream_dialog_omits_base_when_the_root_has_nothing_scoped() {
+        // Cleanly migrated: a base entry would open an empty panel.
+        let mut app = workstream_app();
+        app.open_workstream_dialog();
+        let dialog = app.workstream_dialog().expect("dialog opens");
+        assert!(
+            !dialog
+                .items
+                .contains(&crate::workstream::BASE_LABEL.to_string()),
+            "no dead base entry: {:?}",
+            dialog.items
+        );
+    }
+
+    #[test]
+    fn base_is_marked_focused_while_the_root_is_the_one_being_viewed() {
+        // After switching to base, `planning` IS the root — reopening the
+        // picker must mark (base), not fall back to the first workstream.
+        let mut app = partial_app("sample/project-and-workstreams/.planning");
+        app.open_workstream_dialog();
+        let dialog = app.workstream_dialog().expect("dialog opens");
+        assert_eq!(dialog.items[dialog.focused], crate::workstream::BASE_LABEL);
+        assert_eq!(dialog.selected, dialog.focused);
+    }
+
+    #[test]
+    fn workstream_dialog_take_can_return_the_base_label() {
+        let mut app = partial_app("sample/project-and-workstreams/.planning/workstreams/alpha");
+        app.open_workstream_dialog();
+        app.workstream_dialog_move(-1); // alpha(1) -> (base)(0)
+        assert_eq!(
+            app.workstream_dialog_take(),
+            Some(crate::workstream::BASE_LABEL.to_string())
+        );
     }
 
     #[test]

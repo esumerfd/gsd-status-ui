@@ -68,6 +68,13 @@ the same repo are unaffected. Shared content (`todos/`, `notes/`, `research/`)
 stays visible while a workstream is focused. In a workspace with no
 `workstreams/` directory nothing changes and `S` reports there are none.
 
+A partially-migrated workspace — one whose `.planning/` root still holds its
+own `ROADMAP.md`, `STATE.md`, or `phases/` beside `workstreams/` — also gets a
+`(base)` entry at the top of the picker. Those root files are workstream-scoped
+by GSD's rules, so nothing else can reach them; `(base)` is the way in. It is
+omitted when the root has nothing scoped of its own, where it would only open
+an empty panel.
+
 ## Install
 
 ### Homebrew

@@ -1189,7 +1189,7 @@ mod tests {
     use std::path::Path;
 
     fn sample_planning() -> &'static Path {
-        Path::new("sample/.planning")
+        Path::new("sample/normal/.planning")
     }
 
     /// How many `change_step(1)` moves it takes to walk from the default landing
@@ -1461,7 +1461,7 @@ mod tests {
     }
 
     fn sample_todos() -> Vec<crate::model::Todo> {
-        crate::planning::load_todos(Path::new("sample/.planning"), false)
+        crate::planning::load_todos(Path::new("sample/normal/.planning"), false)
     }
 
     fn todo(slug: &str, title: &str) -> crate::model::Todo {
@@ -2596,7 +2596,7 @@ mod tests {
     // ─────────────────────────────── workstream switch dialog (Task 3) ──
 
     fn workstream_app() -> App {
-        let planning = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let planning = Path::new("sample/workstreams/.planning/workstreams/beta");
         let phases = crate::planning::load_phases(planning);
         App::with_roadmap_row(planning, !phases.is_empty(), &phases, &[], &[], false)
     }

@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn the_real_report_renders_with_colors() {
-        let planning = std::path::Path::new("sample/.planning");
+        let planning = std::path::Path::new("sample/normal/.planning");
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
         let todos = crate::planning::load_todos(planning, false);

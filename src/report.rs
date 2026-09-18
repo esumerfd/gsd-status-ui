@@ -490,7 +490,7 @@ fn progress_bar(pct: u32, width: usize, use_color: bool) -> String {
 }
 
 /// Compact workspace location for the banner: the directory that contains
-/// `.planning` plus the `.planning` segment — e.g. "sample/.planning". In
+/// `.planning` plus the `.planning` segment — e.g. "sample/normal/.planning". In
 /// workstream mode (`p`'s parent is `workstreams` and its grandparent is
 /// `.planning`), names the focused workstream instead:
 /// "{workspace-dir}/.planning/workstreams/{name}" (D4). Any other shape falls
@@ -651,7 +651,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &state),
+            &Report::new(Path::new("sample/normal/.planning"), &state),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -665,8 +665,8 @@ mod tests {
     #[test]
     fn short_planning_shows_parent_dir_and_planning() {
         assert_eq!(
-            short_planning(Path::new("sample/.planning")),
-            "sample/.planning"
+            short_planning(Path::new("sample/normal/.planning")),
+            "normal/.planning"
         );
         assert_eq!(
             short_planning(Path::new("/a/b/gsd-status-ui/work/.planning")),
@@ -678,8 +678,8 @@ mod tests {
     #[test]
     fn short_planning_names_the_focused_workstream_in_workstream_mode() {
         assert_eq!(
-            short_planning(Path::new("sample-workstreams/.planning/workstreams/beta")),
-            "sample-workstreams/.planning/workstreams/beta"
+            short_planning(Path::new("sample/workstreams/.planning/workstreams/beta")),
+            "workstreams/.planning/workstreams/beta"
         );
         assert_eq!(
             short_planning(Path::new(
@@ -712,7 +712,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &StateMeta::default()),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -724,11 +724,11 @@ mod tests {
 
     #[test]
     fn renders_roadmap_section_above_phases_when_phases_exist() {
-        let phases = crate::planning::load_phases(Path::new("sample/.planning"));
+        let phases = crate::planning::load_phases(Path::new("sample/normal/.planning"));
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &StateMeta::default()).phases(&phases),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()).phases(&phases),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -767,7 +767,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &StateMeta::default()).phases(&phases),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()).phases(&phases),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -809,7 +809,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &state)
+            &Report::new(Path::new("sample/normal/.planning"), &state)
                 .phases(&phases)
                 .show_completed(show_completed),
         )
@@ -873,12 +873,12 @@ mod tests {
 
     #[test]
     fn hides_completed_phase_rows_until_show_completed() {
-        let phases = crate::planning::load_phases(Path::new("sample/.planning"));
+        let phases = crate::planning::load_phases(Path::new("sample/normal/.planning"));
         let render_to_string = |show_completed| {
             let mut buf = Vec::new();
             render(
                 &mut buf,
-                &Report::new(Path::new("sample/.planning"), &StateMeta::default())
+                &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default())
                     .phases(&phases)
                     .show_completed(show_completed),
             )
@@ -921,7 +921,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &StateMeta::default()).phases(&phases),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()).phases(&phases),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -940,7 +940,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &StateMeta::default()),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -961,7 +961,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &StateMeta::default()),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -970,11 +970,11 @@ mod tests {
 
     #[test]
     fn renders_tasks_section_between_phases_and_todos() {
-        let phases = crate::planning::load_phases(Path::new("sample/.planning"));
+        let phases = crate::planning::load_phases(Path::new("sample/normal/.planning"));
         let quick_tasks = vec![crate::model::QuickTask {
             id: "260709-aa1".into(),
             title: "Add dark-mode toggle".into(),
-            dir: std::path::PathBuf::from("sample/.planning/quick/260709-aa1-add-dark-mode-toggle"),
+            dir: std::path::PathBuf::from("sample/normal/.planning/quick/260709-aa1-add-dark-mode-toggle"),
             status: crate::model::QuickTaskStatus::InProgress,
         }];
         let todos = vec![Todo {
@@ -987,7 +987,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &StateMeta::default())
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default())
                 .phases(&phases)
                 .quick_tasks(&quick_tasks)
                 .todos(&todos),
@@ -1011,7 +1011,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &StateMeta::default()),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -1346,7 +1346,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &StateMeta::default()).todos(&todos),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()).todos(&todos),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();
@@ -1397,7 +1397,7 @@ mod tests {
         let mut buf = Vec::new();
         render(
             &mut buf,
-            &Report::new(Path::new("sample/.planning"), &StateMeta::default()).phases(&phases),
+            &Report::new(Path::new("sample/normal/.planning"), &StateMeta::default()).phases(&phases),
         )
         .unwrap();
         let out = String::from_utf8(buf).unwrap();

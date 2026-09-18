@@ -1529,7 +1529,7 @@ mod tests {
                 }
             }
         }
-        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("sample");
+        let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("sample").join("normal");
         copy_dir(&sample, dst);
     }
 

@@ -16,13 +16,14 @@ mod support;
 
 use std::path::Path;
 
-/// Copy `sample/` into a fresh temp dir so each test mutates its own throwaway
-/// workspace.
+/// Copy `sample/normal/` into a fresh temp dir so each test mutates its own
+/// throwaway workspace.
 fn temp_workspace() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     copy_dir(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("sample")
+            .join("normal")
             .as_path(),
         dir.path(),
     );

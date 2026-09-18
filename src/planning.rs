@@ -1648,7 +1648,7 @@ mod tests {
     use super::*;
 
     fn sample_phase_dir() -> PathBuf {
-        PathBuf::from("sample/.planning/phases/02-coffee-acquisition")
+        PathBuf::from("sample/normal/.planning/phases/02-coffee-acquisition")
     }
 
     fn sample_plans() -> Vec<Plan> {
@@ -1746,7 +1746,7 @@ mod tests {
         // The sample workspace is where the status colors get eyeballed, and each
         // stage paints its row a different color. A stage with no phase behind it
         // is a color nobody can see, so a regression in it goes unnoticed.
-        let phases = load_phases(Path::new("sample/.planning"));
+        let phases = load_phases(Path::new("sample/normal/.planning"));
 
         for stage in [
             Stage::NotStarted,
@@ -1770,7 +1770,7 @@ mod tests {
     fn sample_workspace_has_a_quick_task_in_every_status() {
         // Same guard for the Tasks section: one task per status color. Completed
         // tasks are hidden until `H`, so this loads with completions shown.
-        let tasks = load_quick_tasks(Path::new("sample/.planning"), true);
+        let tasks = load_quick_tasks(Path::new("sample/normal/.planning"), true);
 
         for status in [
             QuickTaskStatus::InProgress,
@@ -1892,7 +1892,7 @@ mod tests {
 
     #[test]
     fn loads_pending_todos_sorted_with_title_and_fallbacks() {
-        let todos = load_todos(Path::new("sample/.planning"), false);
+        let todos = load_todos(Path::new("sample/normal/.planning"), false);
         let titles: Vec<&str> = todos.iter().map(|t| t.title.as_str()).collect();
         // The active debug session fixture sorts last among non-completed
         // rows (its slug starts with 'k', after the date-prefixed todo slugs).
@@ -1912,7 +1912,7 @@ mod tests {
     #[test]
     fn hides_completed_todos_unless_asked() {
         // Default (show_completed=false) never surfaces todos/completed/.
-        let hidden = load_todos(Path::new("sample/.planning"), false);
+        let hidden = load_todos(Path::new("sample/normal/.planning"), false);
         assert!(
             !hidden.iter().any(|t| t.completed),
             "completed todos must stay hidden by default"
@@ -1920,7 +1920,7 @@ mod tests {
 
         // With show_completed, resolved todos append after the pending ones and
         // carry the completed marker.
-        let shown = load_todos(Path::new("sample/.planning"), true);
+        let shown = load_todos(Path::new("sample/normal/.planning"), true);
         let completed: Vec<&str> = shown
             .iter()
             .filter(|t| t.completed)
@@ -1942,7 +1942,7 @@ mod tests {
 
     #[test]
     fn loads_untracked_quick_task_as_in_progress() {
-        let tasks = load_quick_tasks(Path::new("sample/.planning"), false);
+        let tasks = load_quick_tasks(Path::new("sample/normal/.planning"), false);
         let task = tasks
             .iter()
             .find(|t| t.id == "260709-aa1")
@@ -1956,7 +1956,7 @@ mod tests {
         // GSD writes the task id into the plan's own title, so a row would read
         // "260711-dd4 — Add search history". The id is already the directory
         // name and buys the reader nothing, so it eats width the title needs.
-        let tasks = load_quick_tasks(Path::new("sample/.planning"), false);
+        let tasks = load_quick_tasks(Path::new("sample/normal/.planning"), false);
         let task = tasks
             .iter()
             .find(|t| t.id == "260711-dd4")
@@ -2018,7 +2018,7 @@ mod tests {
 
     #[test]
     fn hides_completed_shows_failed_keeps_in_progress() {
-        let tasks = load_quick_tasks(Path::new("sample/.planning"), false);
+        let tasks = load_quick_tasks(Path::new("sample/normal/.planning"), false);
 
         let in_progress = tasks
             .iter()
@@ -2119,7 +2119,7 @@ mod tests {
 
     #[test]
     fn shows_completed_quick_task_when_asked() {
-        let tasks = load_quick_tasks(Path::new("sample/.planning"), true);
+        let tasks = load_quick_tasks(Path::new("sample/normal/.planning"), true);
         let completed = tasks
             .iter()
             .find(|t| t.id == "260708-cc3")
@@ -2133,13 +2133,13 @@ mod tests {
     #[test]
     fn returns_empty_when_no_todos_dir() {
         // The phases/ dir has no todos/ subtree.
-        let todos = load_todos(Path::new("sample/.planning/phases"), true);
+        let todos = load_todos(Path::new("sample/normal/.planning/phases"), true);
         assert!(todos.is_empty());
     }
 
     #[test]
     fn merges_active_debug_session_into_todos_prefixed_debug() {
-        let todos = load_todos(Path::new("sample/.planning"), false);
+        let todos = load_todos(Path::new("sample/normal/.planning"), false);
         let debug_todo = todos
             .iter()
             .find(|t| t.title == "Debug: the kiosk app crashes when checking out an empty cart")
@@ -2149,7 +2149,7 @@ mod tests {
 
     #[test]
     fn hides_resolved_debug_session_unless_asked() {
-        let hidden = load_todos(Path::new("sample/.planning"), false);
+        let hidden = load_todos(Path::new("sample/normal/.planning"), false);
         assert!(
             !hidden
                 .iter()
@@ -2157,7 +2157,7 @@ mod tests {
             "resolved debug session must stay hidden by default"
         );
 
-        let shown = load_todos(Path::new("sample/.planning"), true);
+        let shown = load_todos(Path::new("sample/normal/.planning"), true);
         let resolved = shown
             .iter()
             .find(|t| {
@@ -2170,7 +2170,7 @@ mod tests {
 
     #[test]
     fn never_surfaces_debug_knowledge_base_as_a_row() {
-        let todos = load_todos(Path::new("sample/.planning"), true);
+        let todos = load_todos(Path::new("sample/normal/.planning"), true);
         assert!(
             !todos
                 .iter()
@@ -2184,7 +2184,7 @@ mod tests {
         // 01-navigation-skeleton has 01-01-PLAN.md only; VERIFICATION and
         // SUMMARY files must not be mistaken for steps.
         let steps = discover_steps(
-            &PathBuf::from("sample/.planning/phases/01-navigation-skeleton"),
+            &PathBuf::from("sample/normal/.planning/phases/01-navigation-skeleton"),
             &[],
         );
         let ids: Vec<&str> = steps.iter().map(|s| s.id.as_str()).collect();
@@ -2217,7 +2217,7 @@ mod tests {
     fn discover_documents_appends_unmatched_files_at_the_end() {
         // The reported bug: 01-VERIFICATION.md is not a known kind, yet must be
         // openable — after the plan, in a trailing tab.
-        let dir = PathBuf::from("sample/.planning/phases/01-navigation-skeleton");
+        let dir = PathBuf::from("sample/normal/.planning/phases/01-navigation-skeleton");
         let step = &discover_steps(&dir, &[])[0]; // 01-01
         let docs = discover_documents(&dir, "01", step);
 
@@ -2385,7 +2385,7 @@ mod tests {
     fn discover_docs_sections_surfaces_an_unowned_folder_as_its_own_section() {
         // `reviews/` is not a folder any other section owns, so it earns a
         // generic docs row titled from its name, backed by its markdown.
-        let sections = discover_docs_sections(Path::new("sample/.planning"), false);
+        let sections = discover_docs_sections(Path::new("sample/normal/.planning"), false);
         let reviews = sections
             .iter()
             .find(|s| s.id == "reviews")
@@ -2660,10 +2660,10 @@ mod tests {
 
     #[test]
     fn find_requirement_definition_locates_the_defining_file() {
-        // FR-1 is defined at sample/.planning/REQUIREMENTS.md:21 as a table
+        // FR-1 is defined at sample/normal/.planning/REQUIREMENTS.md:21 as a table
         // row (`| FR-1 | ... |`) and appears nowhere else in the sample tree
         // — an unambiguous tracer target for the whole feature slice.
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
 
         let found = find_requirement_definition(planning, "FR-1");
 
@@ -2676,7 +2676,7 @@ mod tests {
         // phases/01-navigation-skeleton/01-VERIFICATION.md, a table row added
         // for D-03 (the reveal-hidden-row behavior) — nothing at root defines
         // it, so this exercises the real sample tree's stage-2 fallback.
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
 
         let found = find_requirement_definition(planning, "NAV-01");
 
@@ -3002,7 +3002,7 @@ mod tests {
 
     #[test]
     fn discover_root_documents_pins_scoped_roadmap_and_includes_root_project() {
-        let scoped = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let scoped = Path::new("sample/workstreams/.planning/workstreams/beta");
         let docs = discover_root_documents(scoped);
         assert_eq!(docs[0].label, "roadmap", "{docs:?}");
         let labels: Vec<&str> = docs.iter().map(|d| d.label.as_str()).collect();
@@ -3018,7 +3018,7 @@ mod tests {
 
     #[test]
     fn discover_docs_sections_surfaces_root_research_and_never_a_workstreams_section() {
-        let scoped = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let scoped = Path::new("sample/workstreams/.planning/workstreams/beta");
         let sections = discover_docs_sections(scoped, true);
         let ids: Vec<&str> = sections.iter().map(|s| s.id.as_str()).collect();
         assert!(
@@ -3033,7 +3033,7 @@ mod tests {
 
     #[test]
     fn load_state_from_a_workstream_falls_back_to_the_root_project_title() {
-        let scoped = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let scoped = Path::new("sample/workstreams/.planning/workstreams/beta");
         let meta = load_state(scoped);
         assert_eq!(meta.project_title, "Workstream Sample Project");
     }

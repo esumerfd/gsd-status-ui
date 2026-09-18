@@ -1138,11 +1138,11 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
 
-    /// A `Ui` focused on the beta workstream of the `sample-workstreams/`
+    /// A `Ui` focused on the beta workstream of the `sample/workstreams/`
     /// fixture (sorted order: alpha, beta — beta is the `active-workstream`
     /// default).
     fn workstream_ui() -> Ui {
-        let planning = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let planning = Path::new("sample/workstreams/.planning/workstreams/beta");
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
         let quick_tasks = crate::planning::load_quick_tasks(planning, false);
@@ -1161,7 +1161,7 @@ mod tests {
     }
 
     fn sample_ui() -> Ui {
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
         let quick_tasks = crate::planning::load_quick_tasks(planning, false);
@@ -1182,7 +1182,7 @@ mod tests {
     /// A `sample_ui` with `H` already on, so every phase — including the
     /// verified Phase 1 — is listed and navigable.
     fn sample_ui_showing_completed() -> Ui {
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
         let mut ui = sample_ui();
         ui.on_key(plain('H'));
         ui.take_needs_reload();
@@ -1230,7 +1230,7 @@ mod tests {
         // scrolls so the selection stays in view. Before the fix the panel was
         // drawn with no scroll offset, so the highlighted line sat below the
         // fold and produced zero visible highlight cells.
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
         let mut ui = sample_ui();
         ui.on_key(plain('H')); // show completed work
         assert!(ui.take_needs_reload());
@@ -1383,7 +1383,7 @@ mod tests {
 
     #[test]
     fn capital_h_toggles_completed_work_visibility() {
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
         let mut ui = sample_ui();
 
         // Default: finished work is hidden.
@@ -1439,7 +1439,7 @@ mod tests {
 
     #[test]
     fn capital_h_toggles_completed_phase_visibility() {
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
         let mut ui = sample_ui();
 
         // Phase 1 is verified in the sample roadmap, so it starts hidden —
@@ -2316,7 +2316,7 @@ mod tests {
     #[test]
     fn run_find_selects_the_row_and_opens_the_tab_for_the_defining_file() {
         let mut ui = sample_ui();
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
 
         ui.run_find(planning, "FR-1");
 
@@ -2328,7 +2328,7 @@ mod tests {
     #[test]
     fn run_find_of_an_unresolvable_query_reports_not_found() {
         let mut ui = sample_ui();
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
 
         ui.run_find(planning, "not an id");
 
@@ -2343,7 +2343,7 @@ mod tests {
         // verified, so `sample_ui()` (show_completed == false) does not list
         // it. D-03: the find must reveal it rather than report not found.
         let mut ui = sample_ui();
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
         assert!(!ui.show_completed, "sanity: starts with completed hidden");
 
         ui.run_find(planning, "NAV-01");
@@ -2361,7 +2361,7 @@ mod tests {
     #[test]
     fn run_find_of_a_truly_missing_id_leaves_selection_put_after_one_reveal_retry() {
         let mut ui = sample_ui();
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
         let before = ui.app.selection();
 
         ui.run_find(planning, "ZZZ-99");
@@ -2389,7 +2389,7 @@ mod tests {
         // defining line is highlighted and scrolled to, exactly as a manual
         // `/` search would leave it.
         let mut ui = sample_ui();
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
 
         ui.run_find(planning, "FR-1");
 
@@ -2410,7 +2410,7 @@ mod tests {
         // doc pane drops the styling. Assert the rendered row carrying the
         // ID has background cells the surrounding body rows do not.
         let mut ui = sample_ui();
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
 
         ui.run_find(planning, "FR-1");
 
@@ -2445,7 +2445,7 @@ mod tests {
         // The resolver is case-insensitive, so the highlight must be armed
         // with the normalized ID rather than whatever case was typed.
         let mut ui = sample_ui();
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
 
         ui.run_find(planning, "  fr-1  ");
 
@@ -2460,7 +2460,7 @@ mod tests {
         // opens no new tab. The highlight must still move to the new ID
         // instead of being left on the first one.
         let mut ui = sample_ui();
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
 
         ui.run_find(planning, "FR-1");
         ui.run_find(planning, "FR-2");
@@ -2475,7 +2475,7 @@ mod tests {
         // A failed find must not disturb the document the user is already
         // reading — the not-found flash is the whole of its effect.
         let mut ui = sample_ui();
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
         ui.run_find(planning, "FR-1");
 
         ui.run_find(planning, "ZZZ-99");
@@ -2487,7 +2487,7 @@ mod tests {
 
     #[test]
     fn refresh_entries_extends_navigation_onto_a_todo_added_after_launch() {
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
         // Launch with no tasks or todos on disk yet. The phases go in filtered
@@ -2605,7 +2605,7 @@ mod tests {
     #[test]
     fn r_is_inert_when_no_roadmap_exists() {
         // A workspace with no ROADMAP.md: no phases, so no roadmap row/entry.
-        let planning = Path::new("sample/.planning");
+        let planning = Path::new("sample/normal/.planning");
         let mut ui = Ui::new(
             status_text(planning, &StateMeta::default(), &[], false),
             App::from_phases_and_todos(planning, &[], &[], &[]),
@@ -2817,7 +2817,7 @@ mod tests {
 
     #[test]
     fn capital_s_in_a_flat_workspace_flashes_instead_of_opening_an_empty_picker() {
-        let mut ui = sample_ui(); // sample/.planning has no workstreams/
+        let mut ui = sample_ui(); // sample/normal/.planning has no workstreams/
         ui.on_key(plain('S'));
         assert!(
             ui.app.workstream_dialog().is_none(),
@@ -2876,7 +2876,7 @@ mod tests {
         // D2: copy the fixture to a tempdir so the assertion is real (a
         // read-only fixture would pass trivially even if the code wrote).
         let dir = tempfile::tempdir().unwrap();
-        copy_dir(Path::new("sample-workstreams"), dir.path());
+        copy_dir(Path::new("sample/workstreams"), dir.path());
         let root = dir.path().join(".planning");
         let scoped = root.join("workstreams/beta");
         let before = std::fs::read(root.join("active-workstream")).unwrap();
@@ -2920,7 +2920,7 @@ mod tests {
         ui.on_key(enter());
         let name = ui.take_pending_workstream().expect("a switch was queued");
 
-        let scoped = Path::new("sample-workstreams/.planning/workstreams/beta");
+        let scoped = Path::new("sample/workstreams/.planning/workstreams/beta");
         let new_planning =
             crate::workstream::scoped_dir(&crate::workstream::root_of(scoped), Some(&name));
         ui.reload_from_disk(&new_planning);

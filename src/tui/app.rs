@@ -1807,7 +1807,10 @@ mod tests {
             .iter()
             .map(|(_, n)| n.clone())
             .collect();
-        assert_eq!(names, ["01-01-PLAN.md", "01-VERIFICATION.md"]);
+        assert_eq!(
+            names,
+            ["01-01-PLAN.md", "01-01-SUMMARY.md", "01-VERIFICATION.md"]
+        );
 
         let verification = app.doc_id(app.current, "verification");
         let req = app.open_doc(verification).expect("verification opens");
@@ -1817,9 +1820,9 @@ mod tests {
 
     #[test]
     fn open_dialog_omits_missing_docs() {
-        // Phase 1 has only its plan and a VERIFICATION doc on disk — the
-        // canonical kinds that don't exist (research, validation, uat, …) must
-        // not appear, but any file that does exist is listed.
+        // Phase 1 has only the step's plan and summary plus a VERIFICATION doc
+        // on disk — the canonical kinds that don't exist (research, validation,
+        // uat, …) must not appear, but any file that does exist is listed.
         let phases = sample_phases();
         let mut app = App::from_phases(sample_planning(), &phases[..1]);
         app.current = app
@@ -1830,7 +1833,10 @@ mod tests {
         app.open_dialog();
         let dialog = app.dialog().expect("dialog open");
         let names: Vec<&str> = dialog.items.iter().map(|(_, n)| n.as_str()).collect();
-        assert_eq!(names, ["01-01-PLAN.md", "01-VERIFICATION.md"]);
+        assert_eq!(
+            names,
+            ["01-01-PLAN.md", "01-01-SUMMARY.md", "01-VERIFICATION.md"]
+        );
         for missing in ["RESEARCH", "VALIDATION", "UAT", "CONTEXT", "DISCUSSION"] {
             assert!(
                 !names.iter().any(|n| n.contains(missing)),

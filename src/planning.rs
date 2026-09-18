@@ -1085,9 +1085,9 @@ fn sequence_documents(candidates: Vec<(PathBuf, String)>) -> Vec<Document> {
 /// so a known kind keeps its slot), then any unmatched phase-level file sorted
 /// alphabetically. `prefix` is the phase's leading token (e.g. `"02"`).
 ///
-/// A phase step's tab set is its own `NN-MM-PLAN.md` plus the phase-level
-/// `NN-<word>.md` docs — never other steps' plans/summaries, nor its own
-/// summary (those have a numeric second segment). Only existing files are
+/// A phase step's tab set is its own `NN-MM-…` files (plan first, then its
+/// summary and any other step-scoped doc) plus the phase-level `NN-<word>.md`
+/// docs — never *other* steps' plans or summaries. Only existing files are
 /// returned, so callers can treat the result as directly openable. The ordering
 /// is delegated to [`sequence_documents`], shared with quick tasks.
 pub(crate) fn discover_documents(phase_dir: &Path, prefix: &str, step: &Step) -> Vec<Document> {
@@ -1110,13 +1110,22 @@ pub(crate) fn discover_documents(phase_dir: &Path, prefix: &str, step: &Step) ->
             let Some(stem) = name.strip_suffix(".md") else {
                 continue;
             };
-            // Skip step-scoped files (`NN-MM-…`): a numeric first segment after
-            // the phase prefix means it belongs to a specific step (its plan or
-            // summary), not the phase as a whole — regardless of whether the
-            // rest of the file follows the `NN-` phase-prefix convention.
+            // A step-scoped file (`NN-MM-…`) belongs to one step, not to the
+            // phase. The step's own ones are its documents — `02-01-SUMMARY.md`
+            // is how step 02-01 records what it did, so it must be openable
+            // from that step's row. Other steps' files are theirs, and stay
+            // out of this step's tab set.
+            let step_marker = format!("{}-", step.id);
             if let Some(rest) = stem.strip_prefix(&phase_marker) {
                 let first_segment = rest.split('-').next().unwrap_or("");
                 if !first_segment.is_empty() && first_segment.chars().all(|c| c.is_ascii_digit()) {
+                    // The step's own plan is already candidate 0.
+                    if let Some(own) = stem.strip_prefix(&step_marker) {
+                        if !own.eq_ignore_ascii_case("PLAN") {
+                            let own = own.to_string();
+                            candidates.push((path, own));
+                        }
+                    }
                     continue;
                 }
             }
@@ -2206,7 +2215,10 @@ mod tests {
                 "validation",
                 "uat",
                 "context",
-                "discussion"
+                "discussion",
+                // The step's own SUMMARY isn't a canonical kind, so it lands in
+                // the trailing unmatched group — but it is reachable.
+                "summary"
             ]
         );
         assert!(docs[0].path.ends_with("02-01-PLAN.md"));
@@ -2222,14 +2234,35 @@ mod tests {
         let docs = discover_documents(&dir, "01", step);
 
         let labels: Vec<&str> = docs.iter().map(|d| d.label.as_str()).collect();
-        assert_eq!(labels, ["plan", "verification"]);
-        assert!(docs[1].path.ends_with("01-VERIFICATION.md"));
+        assert_eq!(labels, ["plan", "summary", "verification"]);
+        assert!(docs[2].path.ends_with("01-VERIFICATION.md"));
+    }
+
+    #[test]
+    fn discover_documents_includes_the_steps_own_summary() {
+        // The reported bug: `NN-MM-SUMMARY.md` records what the step actually
+        // did, yet the picker could not reach it — the step-scoped skip threw
+        // away the step's own files along with its siblings'.
+        let dir = sample_phase_dir();
+        let step = &discover_steps(&dir, &sample_plans())[0]; // 02-01
+        let docs = discover_documents(&dir, "02", step);
+
+        let names: Vec<String> = docs
+            .iter()
+            .map(|d| d.path.file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            names.contains(&"02-01-SUMMARY.md".to_string()),
+            "the step's own summary must be openable: {names:?}"
+        );
+        let labels: Vec<&str> = docs.iter().map(|d| d.label.as_str()).collect();
+        assert!(labels.contains(&"summary"), "{labels:?}");
     }
 
     #[test]
     fn discover_documents_excludes_sibling_step_files() {
-        // A step's tab set is its own plan plus phase-level docs — never other
-        // steps' PLAN/SUMMARY files, nor its own SUMMARY.
+        // A step's tab set is its own step-scoped files plus the phase-level
+        // docs — never another step's PLAN or SUMMARY.
         let dir = sample_phase_dir();
         let step = &discover_steps(&dir, &sample_plans())[0]; // 02-01
         let docs = discover_documents(&dir, "02", step);
@@ -2237,12 +2270,8 @@ mod tests {
         for d in &docs {
             let name = d.path.file_name().unwrap().to_string_lossy();
             assert!(
-                !name.contains("SUMMARY"),
-                "SUMMARY files must be excluded: {name}"
-            );
-            assert!(
-                !name.ends_with("02-02-PLAN.md") && !name.ends_with("02-03-PLAN.md"),
-                "sibling step plans must be excluded: {name}"
+                !name.starts_with("02-02-") && !name.starts_with("02-03-"),
+                "sibling step files must be excluded: {name}"
             );
         }
     }

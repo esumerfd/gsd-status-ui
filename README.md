@@ -91,18 +91,18 @@ Other targets: `make debug`, `make check`, `make fmt`, `make clean`. Run
 
 ## Try it against the sample workspaces
 
-The repo ships two fictional `.planning/` trees, for manual testing and
-screenshots:
+The repo ships four fictional `.planning/` trees under `sample/`, for manual
+testing and screenshots:
 
 ```bash
-cargo run -- sample/normal      # mid-milestone: roadmap, phases, steps, todos
-cargo run -- sample/research    # pre-roadmap: research done, no ROADMAP.md yet
+cargo run -- sample/normal                          # mid-milestone: roadmap, phases, steps, todos
+cargo run -- sample/research                        # pre-roadmap: research done, no ROADMAP.md yet
+cargo run -- --plain sample/workstreams             # workstream federation: two workstreams, each scoped
+cargo run -- --plain sample/project-and-workstreams # partially migrated: root project files + workstreams
 ```
 
-See [`sample/README.md`](sample/README.md) for what each phase in `sample/normal/`
-exercises. `sample/research/` covers the earlier state, where the **Project**
-docs row is what reaches `PROJECT.md` and `REQUIREMENTS.md` — with no roadmap
-there is no Roadmap row to carry them.
+See [`sample/README.md`](sample/README.md) for what each fixture exercises and
+a link to its own README.
 
 ## Project layout
 
@@ -121,10 +121,12 @@ leaf-adapter/    isolates gsd-status from `leaf`: renders a markdown file into
 
 vendor/leaf/     vendored copy of the markdown/ratatui viewer leaf-adapter
                  wraps (see vendor/README.md for upstream + local patches)
-sample/normal/      example .planning/ workspace used in tests/cli.rs and for
-                    manual TUI testing
-sample/research/    the same, for a workspace that has finished research but
-                    has no ROADMAP.md yet (exercises the Project docs row)
+sample/             four example .planning/ workspaces used in tests/cli.rs and
+                    for manual TUI testing — see sample/README.md for an index
+  normal/           mid-milestone: roadmap, phases, steps, todos
+  research/         pre-roadmap: no ROADMAP.md yet (exercises the Project row)
+  workstreams/      workstream federation: two independently scoped workstreams
+  project-and-workstreams/  partially migrated: root project files + workstreams
 ```
 
 `model.rs` / `planning.rs` / `report.rs` are a module split of the logic

@@ -984,40 +984,62 @@ impl Ui {
             Focus::Doc(doc) => self.views.get(&(self.app.current, doc)),
             Focus::Status => None,
         };
-        let right = if self.help {
-            HELP_HINTS.to_string()
+        // The footer hints are DIM so they recede. The query the user is
+        // actively typing must not recede with them — it was unreadable
+        // against the dim hints around it — so it renders undimmed and bold
+        // in the same green the doc view uses to highlight a search match.
+        let dim = Style::default().add_modifier(Modifier::DIM);
+        let typed = Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD);
+        let right: Vec<Span<'static>> = if self.help {
+            vec![Span::styled(HELP_HINTS, dim)]
         } else if self.app.dialog().is_some()
             || self.app.status_dialog().is_some()
             || self.app.workstream_dialog().is_some()
         {
-            DIALOG_HINTS.to_string()
+            vec![Span::styled(DIALOG_HINTS, dim)]
         } else if let Some(view) = doc_view.filter(|v| v.is_search_mode()) {
-            format!("/{} · {SEARCH_HINTS}", view.search_draft())
+            vec![
+                Span::styled("/", dim),
+                Span::styled(view.search_draft().to_string(), typed),
+                Span::styled(format!(" · {SEARCH_HINTS}"), dim),
+            ]
         } else if let Some(draft) = &self.find_draft {
-            format!("find: {draft} · {SEARCH_HINTS}")
+            vec![
+                Span::styled("find: ", dim),
+                Span::styled(draft.clone(), typed),
+                Span::styled(format!(" · {SEARCH_HINTS}"), dim),
+            ]
         } else if let Some(flash) = self.app.flash.clone() {
-            flash
+            vec![Span::styled(flash, dim)]
         } else if let Some(view) = doc_view.filter(|v| !v.search_query().is_empty()) {
             if view.search_match_count() == 0 {
-                format!("no matches for \"{}\" · / edit", view.search_query())
+                vec![Span::styled(
+                    format!("no matches for \"{}\" · / edit", view.search_query()),
+                    dim,
+                )]
             } else {
-                format!(
-                    "match {}/{} · n/N · / edit · q/Esc status",
-                    view.search_index() + 1,
-                    view.search_match_count()
-                )
+                vec![Span::styled(
+                    format!(
+                        "match {}/{} · n/N · / edit · q/Esc status",
+                        view.search_index() + 1,
+                        view.search_match_count()
+                    ),
+                    dim,
+                )]
             }
         } else if matches!(self.app.focus(), Focus::Status) {
-            STATUS_HINTS.to_string()
+            vec![Span::styled(STATUS_HINTS, dim)]
         } else {
-            DOC_HINTS.to_string()
+            vec![Span::styled(DOC_HINTS, dim)]
         };
-        let footer_line = Line::from(vec![
+        let mut spans = vec![
             Span::styled(position, Style::default().add_modifier(Modifier::BOLD)),
             Span::raw("   "),
-            Span::styled(right, Style::default().add_modifier(Modifier::DIM)),
-        ]);
-        frame.render_widget(Paragraph::new(footer_line), footer);
+        ];
+        spans.extend(right);
+        frame.render_widget(Paragraph::new(Line::from(spans)), footer);
     }
 }
 

@@ -192,7 +192,7 @@ fn workstream_mode_defaults_to_the_active_workstream_pointer() {
     let (stdout, code) = run(&["--plain", "sample/workstreams"]);
     assert_eq!(code, 0, "{stdout}");
     assert!(
-        stdout.contains("path: workstreams/.planning/workstreams/beta"),
+        stdout.contains("path: workstreams/workstreams/beta"),
         "{stdout}"
     );
     assert!(stdout.contains("Beta First Phase"), "{stdout}");
@@ -204,7 +204,7 @@ fn ws_flag_overrides_the_active_workstream_pointer() {
     let (stdout, code) = run(&["--ws", "alpha", "--plain", "sample/workstreams"]);
     assert_eq!(code, 0, "{stdout}");
     assert!(
-        stdout.contains("path: workstreams/.planning/workstreams/alpha"),
+        stdout.contains("path: workstreams/workstreams/alpha"),
         "{stdout}"
     );
     assert!(stdout.contains("Alpha First Phase"), "{stdout}");
@@ -241,7 +241,7 @@ fn ws_flag_path_traversal_is_rejected() {
 fn flat_workspace_output_is_unchanged_by_workstream_support() {
     let (stdout, code) = run(&["--plain", "sample/normal"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("path: normal/.planning"), "{stdout}");
+    assert!(stdout.contains("path: normal"), "{stdout}");
     assert!(stdout.contains("Robot Coffee Service"), "{stdout}");
 }
 
@@ -329,7 +329,7 @@ fn project_and_workstreams_defaults_to_alpha_via_the_active_workstream_pointer()
     let (stdout, code) = run(&["--plain", "sample/project-and-workstreams"]);
     assert_eq!(code, 0, "{stdout}");
     assert!(
-        stdout.contains("path: project-and-workstreams/.planning/workstreams/alpha"),
+        stdout.contains("path: project-and-workstreams/workstreams/alpha"),
         "{stdout}"
     );
 }

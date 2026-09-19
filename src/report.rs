@@ -490,12 +490,12 @@ fn progress_bar(pct: u32, width: usize, use_color: bool) -> String {
 }
 
 /// Compact workspace location for the banner: the directory that contains
-/// `.planning` plus the `.planning` segment — e.g. "sample/normal/.planning". In
-/// workstream mode (`p`'s parent is `workstreams` and its grandparent is
-/// `.planning`), names the focused workstream instead:
-/// "{workspace-dir}/.planning/workstreams/{name}" (D4). Any other shape falls
-/// back to the flat-mode format unchanged, so flat-mode output stays
-/// byte-identical.
+/// `.planning` — e.g. "sample/normal/.planning" displays as "normal". The
+/// `.planning` segment itself is internal plumbing and adds no information,
+/// so it's dropped. In workstream mode (`p`'s parent is `workstreams` and its
+/// grandparent is `.planning`), names the focused workstream instead:
+/// "{workspace-dir}/workstreams/{name}" (D4). Any other shape falls back to
+/// the flat-mode format unchanged, so flat-mode output stays byte-identical.
 fn short_planning(p: &Path) -> String {
     let leaf = p
         .file_name()
@@ -517,15 +517,22 @@ fn short_planning(p: &Path) -> String {
                 .and_then(|g| g.file_name())
                 .and_then(|n| n.to_str());
             return match great_grandparent_name {
-                Some(name) => format!("{name}/.planning/workstreams/{leaf}"),
-                None => format!(".planning/workstreams/{leaf}"),
+                Some(name) => format!("{name}/workstreams/{leaf}"),
+                None => format!("./workstreams/{leaf}"),
             };
         }
     }
 
-    match parent_name {
-        Some(parent) => format!("{parent}/{leaf}"),
-        None => leaf.to_string(),
+    if leaf == ".planning" {
+        match parent_name {
+            Some(parent) => parent.to_string(),
+            None => ".".to_string(),
+        }
+    } else {
+        match parent_name {
+            Some(parent) => format!("{parent}/{leaf}"),
+            None => leaf.to_string(),
+        }
     }
 }
 
@@ -663,29 +670,30 @@ mod tests {
     }
 
     #[test]
-    fn short_planning_shows_parent_dir_and_planning() {
+    fn short_planning_shows_parent_dir_without_the_planning_segment() {
         assert_eq!(
             short_planning(Path::new("sample/normal/.planning")),
-            "normal/.planning"
+            "normal"
         );
         assert_eq!(
             short_planning(Path::new("/a/b/gsd-status-ui/work/.planning")),
-            "work/.planning"
+            "work"
         );
-        assert_eq!(short_planning(Path::new(".planning")), ".planning");
+        // No parent directory above `.planning` to name — fall back to `.`.
+        assert_eq!(short_planning(Path::new(".planning")), ".");
     }
 
     #[test]
     fn short_planning_names_the_focused_workstream_in_workstream_mode() {
         assert_eq!(
             short_planning(Path::new("sample/workstreams/.planning/workstreams/beta")),
-            "workstreams/.planning/workstreams/beta"
+            "workstreams/workstreams/beta"
         );
         assert_eq!(
             short_planning(Path::new(
                 "/a/b/gsd-status-ui/work/.planning/workstreams/alpha"
             )),
-            "work/.planning/workstreams/alpha"
+            "work/workstreams/alpha"
         );
         // A `workstreams` directory that isn't nested directly under
         // `.planning` (D4 flat-mode byte-identical guarantee) falls back to

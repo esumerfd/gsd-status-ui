@@ -59,6 +59,9 @@ impl<'a> Report<'a> {
     }
 }
 
+/// Column width of the banner box, border characters included.
+const BANNER_WIDTH: usize = 63;
+
 pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()> {
     let &Report {
         planning,
@@ -82,7 +85,7 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
     // the separate title line below is gone.
     let top = {
         let lead = format!("╭─ {title} ");
-        let fill = 63usize.saturating_sub(lead.chars().count() + 1);
+        let fill = BANNER_WIDTH.saturating_sub(lead.chars().count() + 1);
         format!("{lead}{}╮", "─".repeat(fill))
     };
 
@@ -115,15 +118,41 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
     } else {
         state.status.as_str()
     };
-    writeln!(
-        out,
-        "  milestone: {bold}{m}{reset}    status: {sc}{s}{reset}",
-        bold = c(color::BOLD),
-        m = milestone,
-        sc = c(status_color),
-        s = status_str,
-        reset = c(color::RESET),
-    )?;
+    // No `status:` prompt — the color carries the meaning, and dropping the
+    // label buys back nine columns on the banner's longest line. The status
+    // still only shares the milestone line when both fit inside the box;
+    // otherwise it drops below, indented to line up with the milestone value.
+    const LABEL: &str = "  milestone: ";
+    const GAP: &str = "    ";
+    let one_line_width =
+        LABEL.chars().count() + milestone.chars().count() + GAP.len() + status_str.chars().count();
+    if one_line_width <= BANNER_WIDTH {
+        writeln!(
+            out,
+            "{LABEL}{bold}{m}{reset}{GAP}{sc}{s}{reset}",
+            bold = c(color::BOLD),
+            m = milestone,
+            sc = c(status_color),
+            s = status_str,
+            reset = c(color::RESET),
+        )?;
+    } else {
+        writeln!(
+            out,
+            "{LABEL}{bold}{m}{reset}",
+            bold = c(color::BOLD),
+            m = milestone,
+            reset = c(color::RESET),
+        )?;
+        writeln!(
+            out,
+            "{pad}{sc}{s}{reset}",
+            pad = " ".repeat(LABEL.chars().count()),
+            sc = c(status_color),
+            s = status_str,
+            reset = c(color::RESET),
+        )?;
+    }
 
     let total_phases = state.total_phases.max(phases.len() as u32);
     let completed_phases = phases.iter().filter(|p| phase_settled(p)).count() as u32;
@@ -667,6 +696,64 @@ mod tests {
             "project name should title the banner border:\n{out}"
         );
         assert!(!out.contains("GSD STATUS"), "generic title dropped:\n{out}");
+    }
+
+    #[test]
+    fn banner_status_drops_its_label_and_trails_a_short_milestone() {
+        // The color already marks the value as a status, so the `status:`
+        // prompt is dead weight on a line that runs long.
+        let state = StateMeta {
+            milestone: "v1.1".into(),
+            status: "executing".into(),
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            &Report::new(Path::new("sample/normal/.planning"), &state),
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("  milestone: v1.1    executing\n"),
+            "short milestone keeps status on the same line, unlabelled:\n{out}"
+        );
+        assert!(
+            !out.contains("status: executing"),
+            "the `status:` prompt is gone:\n{out}"
+        );
+    }
+
+    #[test]
+    fn banner_status_moves_to_its_own_line_when_the_milestone_is_long() {
+        let state = StateMeta {
+            milestone: "v1.1".into(),
+            milestone_name: "User language preference, end to end".into(),
+            status: "executing".into(),
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            &Report::new(Path::new("sample/normal/.planning"), &state),
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(
+            out.contains("  milestone: v1.1 (User language preference, end to end)\n"),
+            "long milestone owns its line:\n{out}"
+        );
+        assert!(
+            out.contains("\n             executing\n"),
+            "status wraps under the milestone value, aligned:\n{out}"
+        );
+        for line in out.lines().take(6) {
+            assert!(
+                line.chars().count() <= BANNER_WIDTH,
+                "banner line overflows the box ({} cols): {line:?}",
+                line.chars().count()
+            );
+        }
     }
 
     #[test]

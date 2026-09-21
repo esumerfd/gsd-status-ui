@@ -118,10 +118,12 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
     } else {
         state.status.as_str()
     };
-    // No `status:` prompt — the color carries the meaning, and dropping the
-    // label buys back nine columns on the banner's longest line. The status
-    // still only shares the milestone line when both fit inside the box;
-    // otherwise it drops below, indented to line up with the milestone value.
+    // Trailing the milestone, the status needs no `status:` prompt — the color
+    // carries the meaning, and dropping the label buys back nine columns on the
+    // banner's longest line. It only shares that line while both fit inside the
+    // box; past that it drops below, where it does get the label back so it
+    // isn't a bare word floating under the milestone. Either way the value
+    // lands in the same column.
     const LABEL: &str = "  milestone: ";
     const GAP: &str = "    ";
     let one_line_width =
@@ -144,10 +146,11 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
             m = milestone,
             reset = c(color::RESET),
         )?;
+        let wrapped = "  status:";
         writeln!(
             out,
-            "{pad}{sc}{s}{reset}",
-            pad = " ".repeat(LABEL.chars().count()),
+            "{wrapped}{pad}{sc}{s}{reset}",
+            pad = " ".repeat(LABEL.chars().count() - wrapped.chars().count()),
             sc = c(status_color),
             s = status_str,
             reset = c(color::RESET),
@@ -744,8 +747,8 @@ mod tests {
             "long milestone owns its line:\n{out}"
         );
         assert!(
-            out.contains("\n             executing\n"),
-            "status wraps under the milestone value, aligned:\n{out}"
+            out.contains("\n  status:    executing\n"),
+            "the wrapped line keeps its label, value aligned under the milestone:\n{out}"
         );
         for line in out.lines().take(6) {
             assert!(

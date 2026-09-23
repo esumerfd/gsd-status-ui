@@ -1,6 +1,6 @@
 ---
 milestone: v0.1
-milestone_name: Coffee Delivery MVP
+milestone_name: Coffee Delivery MVP - with extra whipped cream
 status: executing
 last_updated: 2026-07-04
 progress:

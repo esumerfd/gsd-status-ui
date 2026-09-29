@@ -1294,9 +1294,9 @@ mod tests {
     /// The sample holds a phase in every stage, so the tail of the Phases
     /// section is long: 02-03, the phase-3 placeholder, 04-01/02, 05-01/02,
     /// then the phase-6 and phase-7 placeholders, then phase 9's single
-    /// unsettled step (09-01). Verified Phase 1 and abandoned Phase 8 are
+    /// unsettled step (09-01), then the phase-10 placeholder. Verified Phase 1 and abandoned Phase 8 are
     /// hidden until `H`, so neither is counted.
-    const ROWS_02_02_TO_FIRST_TASK: usize = 10;
+    const ROWS_02_02_TO_FIRST_TASK: usize = 11;
 
     /// Same walk, carried past the four Tasks rows onto the first todo.
     const ROWS_02_02_TO_FIRST_TODO: usize = ROWS_02_02_TO_FIRST_TASK + 4;
@@ -1765,8 +1765,8 @@ mod tests {
     fn select_phase_moves_single_rows_within_the_tasks_section() {
         let mut ui = sample_ui();
         // J jumps phase to phase: 02-02 -> ph3 -> ph4 -> ph5 -> ph6 -> ph7 ->
-        // phase 9 (09-01), the last navigable phase.
-        for _ in 0..6 {
+        // phase 9 (09-01) -> ph10, the last navigable phase.
+        for _ in 0..7 {
             ui.on_key(plain('J'));
         }
         ui.on_key(plain('J')); // no next phase: flows down into the first Task row
@@ -2015,6 +2015,19 @@ mod tests {
         let s = screen(&mut ui);
         assert!(s.contains("Phase 3: Delivery Etiquette"), "{s}");
         assert!(!s.contains("Robot Coffee Service"), "{s}");
+    }
+
+    #[test]
+    fn enter_on_unstarted_phase_10_opens_its_heading_not_phase_1s() {
+        let mut ui = sample_ui();
+        select_phase_row(&mut ui, "10");
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(ui.app.current_entry().is_some_and(|e| e.is_roadmap()));
+        let s = screen(&mut ui);
+        // The heading is the first body line: nothing above it but the tab bar,
+        // so Phase 1's heading (a `1` prefix of `10`) was not the match.
+        let heading = s.find("Phase 10: Latte Art").expect(&s);
+        assert!(!s[..heading].contains("Phase"), "{s}");
     }
 
     #[test]

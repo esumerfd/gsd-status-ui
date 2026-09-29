@@ -1250,8 +1250,8 @@ mod tests {
     /// the first todo when no tasks are loaded. The sample carries a phase in
     /// every stage, so the tail of that section is long: 02-03, the phase-3
     /// placeholder, 04-01/02, 05-01/02, then the phase-6/7/8 placeholders, then
-    /// phase 9's single real step (09-01).
-    const STEPS_BELOW_02_02: usize = 11;
+    /// phase 9's single real step (09-01), then the phase-10 placeholder.
+    const STEPS_BELOW_02_02: usize = 12;
 
     fn sample_phases() -> Vec<Phase> {
         crate::planning::load_phases(sample_planning())
@@ -1264,10 +1264,10 @@ mod tests {
         // are the docs-folder rows (intel and research pinned first, then every
         // other `.planning` subfolder holding markdown, name-sorted — `debug/` is
         // owned by the Todos section, so it gets no row); each bare "1" is a
-        // placeholder for a phase with no plans yet (phases 3, 6, 7, and 8 — the
-        // sample carries one phase per stage); "09-01" is phase 9's single real
-        // step (unsettled, so it's a normal step row, not a placeholder); the
-        // trailing note-/idea-/seed- rows are the Others section.
+        // placeholder for a phase with no plans yet (phases 3, 6, 7, 8, and 10 —
+        // the sample carries one phase per stage); "09-01" is phase 9's single
+        // real step (unsettled, so it's a normal step row, not a placeholder);
+        // the trailing note-/idea-/seed- rows are the Others section.
         assert_eq!(
             ids,
             [
@@ -1288,6 +1288,7 @@ mod tests {
                 "1",
                 "1",
                 "09-01",
+                "1",
                 "note-2026-07-08-grinder-timing",
                 "note-2026-07-09-milk-frother",
                 "idea-latte-art-mode",
@@ -1539,11 +1540,12 @@ mod tests {
             &sample_quick_tasks(),
             &sample_todos(),
         );
-        // 1 roadmap + 3 docs-folder rows + 13 steps (phase 9's 09-01 included)
-        // + 4 tasks + 4 todos (incl. the active debug session) + 4 others.
-        assert_eq!(app.entries.len(), 29);
-        let last_phase_idx = 16; // phase 9's 09-01 step (the last phase)
-        let first_todo_idx = 21;
+        // 1 roadmap + 3 docs-folder rows + 14 steps (phase 9's 09-01 and the
+        // phase-10 placeholder included) + 4 tasks + 4 todos (incl. the active
+        // debug session) + 4 others.
+        assert_eq!(app.entries.len(), 30);
+        let last_phase_idx = 17; // the phase-10 placeholder (the last phase)
+        let first_todo_idx = 22;
         for e in &app.entries[(last_phase_idx + 1)..first_todo_idx] {
             assert!(e.is_task(), "expected a task row: {e:?}");
             assert!(!e.is_todo());
@@ -1688,15 +1690,16 @@ mod tests {
         assert!(!app.current_entry().unwrap().is_todo());
         assert!(!app.current_entry().unwrap().is_roadmap());
         assert_eq!(app.current_entry().unwrap().step.id, "02-02");
-        // 1 roadmap + 3 docs-folder rows + 13 steps (phase 9's 09-01 included)
-        // + 4 todos (incl. the active debug session) + 4 others.
-        assert_eq!(app.entries.len(), 25);
+        // 1 roadmap + 3 docs-folder rows + 14 steps (phase 9's 09-01 and the
+        // phase-10 placeholder included) + 4 todos (incl. the active debug
+        // session) + 4 others.
+        assert_eq!(app.entries.len(), 26);
         assert!(app.entries[0].is_roadmap());
-        assert!(app.entries[17].is_todo());
-        assert!(app.entries[20].is_todo());
+        assert!(app.entries[18].is_todo());
+        assert!(app.entries[21].is_todo());
         // The Others rows trail the todos.
-        assert!(app.entries[21].is_other());
-        assert!(app.entries[23].is_other());
+        assert!(app.entries[22].is_other());
+        assert!(app.entries[24].is_other());
     }
 
     #[test]
@@ -2051,18 +2054,18 @@ mod tests {
             App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &sample_todos());
         // entries: roadmap(0), intel(1), research(2), reviews(3), 01-01(4)…
         // 02-03(7), ph3(8), 04-01(9), 04-02(10), 05-01(11), 05-02(12), ph6(13),
-        // ph7(14), ph8(15), 09-01(16, phase 9's real step), todo0(17), todo1(18),
-        // todo2(19), todo3(20, the active debug session)
+        // ph7(14), ph8(15), 09-01(16, phase 9's real step), ph10(17), todo0(18),
+        // todo1(19), todo2(20), todo3(21, the active debug session)
 
         // In Todos, K moves one row up (todo → todo), not into the Phases section.
-        app.current = 18; // todo1
+        app.current = 19; // todo1
         app.select_phase(-1);
-        assert_eq!(app.current, 17);
+        assert_eq!(app.current, 18);
         assert!(app.current_entry().unwrap().is_todo());
 
         // J on a todo moves one row down.
         app.select_phase(1);
-        assert_eq!(app.current, 18);
+        assert_eq!(app.current, 19);
         assert!(app.current_entry().unwrap().is_todo());
 
         // On the Roadmap row, K clamps like k at the top (no phase jump).
@@ -2072,9 +2075,9 @@ mod tests {
         assert!(app.flash.as_deref().unwrap().contains("first step"));
 
         // From the last phase, J flows down into the Todos section…
-        app.current = 16; // phase 9's 09-01 step (the last phase)
+        app.current = 17; // the phase-10 placeholder (the last phase)
         app.select_phase(1);
-        assert_eq!(app.current, 17);
+        assert_eq!(app.current, 18);
         assert!(app.current_entry().unwrap().is_todo());
 
         // …and from the first phase, K flows up onto the last docs-folder row

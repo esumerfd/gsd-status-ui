@@ -1,7 +1,7 @@
 # ROADMAP: Robot Coffee Service
 
 **Milestone:** v0.1 — Coffee Delivery MVP
-**Status:** executing (Phase 2 of 9)
+**Status:** executing (Phase 2 of 10)
 
 A build toward a robot that can navigate the office, acquire a fresh cup of
 coffee, and deliver it to the requester without incident. Each phase is an
@@ -12,7 +12,9 @@ status panel can paint, so every stage colour is on screen at once. Phases 4-7
 were worked out of order while Phase 3 waited on a hardware part. Phase 9
 doubles up on the planned stage on purpose: it exists to exercise the status
 viewer's structural-tag heading conversion, not to add a ninth maturity — there
-are only eight stages the panel can paint.
+are only eight stages the panel can paint. Phase 10 is a second not-started
+phase with no directory: pressing Enter on it opens this roadmap at its
+heading, and its two-digit id checks that Phase 1 is never mistaken for it.
 
 ## Phases
 
@@ -25,6 +27,7 @@ are only eight stages the panel can paint.
 - [ ] **Phase 7: Multi-Floor Delivery**
 - [~] **Phase 8: Voice Ordering**
 - [ ] **Phase 9: XML Rendering**
+- [ ] **Phase 10: Latte Art**
 
 ## Phase Details
 
@@ -92,6 +95,13 @@ surface from Phase 6 covers the same need for a fraction of the work.
 2. A tag's attributes never reach the rendered heading text.
 3. Tags inside a fenced code block stay literal instead of becoming headings.
 
+### Phase 10: Latte Art
+**Goal:** The robot pours a recognisable rosetta on top of every latte.
+**Success Criteria**:
+1. Nine in ten pours are recognised as a rosetta by a passing human.
+2. The pattern survives the trip to the requester's desk.
+3. A failed pour is served plain, never binned.
+
 ## Plan Index
 
 ### Phase 1: Navigation Skeleton
@@ -124,3 +134,6 @@ _(abandoned before planning)_
 
 ### Phase 9: XML Rendering
 - [ ] 09-01-PLAN.md — structural tags as a nested heading outline
+
+### Phase 10: Latte Art
+_(not started — press Enter on its row to read this definition)_

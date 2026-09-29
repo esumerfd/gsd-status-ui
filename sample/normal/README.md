@@ -12,7 +12,7 @@ What it exercises:
 
 | Thing | Where |
 |---|---|
-| One phase per stage, so every stage colour is on screen | Phases 1-9 (below) |
+| One phase per stage, so every stage colour is on screen | Phases 1-10 (below) |
 | Steps to browse with `j`/`k` (open with `Enter`) | `02-01`, `02-02`, `02-03` |
 | All document tab kinds | `02-{RESEARCH,VALIDATION,UAT,CONTEXT,DISCUSSION-LOG}.md` + per-step plans |
 | Missing-doc flash message | Phase 1 has no research/uat/etc. docs |
@@ -21,6 +21,7 @@ What it exercises:
 | Structural tags convert to a nested heading outline — nesting depth, attribute stripping, name casing, the six-level cap, and the fenced contrast | `09-01-PLAN.md` (GSD-style tagged appendix) |
 | HTML/XML comments vanish — single-line, multi-line, and trailing a sentence — with no doubled blank line or lost paragraph break | `09-01-PLAN.md` (GSD-style tagged appendix) |
 | Simple same-line tag pairs render as an emphasized tag-name label — verbatim, never title-cased like a heading — then a colon, then the plain value, for any tag name, attributes discarded, while empty and mismatched pairs stay literal | `09-01-PLAN.md` (GSD-style tagged appendix) |
+| Enter on a not-started phase opens the roadmap at its definition (and `1` never matches `10`) | Phase 10 Latte Art (also Phase 3) |
 | Root docs behind the Roadmap row (`o` picker) | `PROJECT.md`, `REQUIREMENTS.md`, `STATE.md` |
 
 ## One phase per stage
@@ -46,7 +47,7 @@ and needs no new row.
 | Abandoned | grey | `⊘` | 8 Voice Ordering | roadmap `[~]` |
 
 Verified and abandoned phases are settled, so 1 and 8 are hidden until you press
-`H` — that also makes the Roadmap row read `Phases 2/9`. Phase 2 stays the first
+`H` — that also makes the Roadmap row read `Phases 2/10`. Phase 2 stays the first
 unsettled phase, so it remains the "current" one.
 
 The Tasks section covers its three status colours the same way (in progress =

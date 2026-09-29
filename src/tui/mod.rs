@@ -42,7 +42,7 @@ const HELP_TEXT: &str = "\
             g/G      first / last row
             d/u      next / prev section
             J/K      next / prev phase
-            Enter    open the step's plan
+            Enter    open the step's plan (unstarted phase: its roadmap section)
             o        open-document dialog
             s        set status (todo/task/phase/note)
             S        switch workstream / (base) root
@@ -2004,6 +2004,35 @@ mod tests {
         };
         let path = &ui.app.current_entry().unwrap().documents[doc].path;
         assert!(path.to_string_lossy().ends_with("-PLAN.md"), "{path:?}");
+    }
+
+    #[test]
+    fn esc_from_a_phase_roadmap_peek_returns_to_the_phase_row() {
+        let mut ui = sample_ui();
+        select_phase_row(&mut ui, "3");
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(ui.app.current_entry().unwrap().phase_id, "3");
+        assert_eq!(ui.app.focus(), Focus::Status);
+    }
+
+    #[test]
+    fn enter_on_an_unstarted_phase_without_a_detail_heading_opens_the_roadmap_at_the_top() {
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path().join(".planning");
+        std::fs::create_dir_all(&planning).unwrap();
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "# ROADMAP: Top Title\n\n## Phases\n\n- [ ] **Phase 1: One**\n- [ ] **Phase 2: Two**\n",
+        )
+        .unwrap();
+        let mut ui = Ui::new(Text::default(), App::new(vec![]));
+        ui.reload_from_disk(&planning);
+        select_phase_row(&mut ui, "2");
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(ui.app.current_entry().is_some_and(|e| e.is_roadmap()));
+        let s = screen(&mut ui);
+        assert!(s.contains("Top Title"), "{s}");
     }
 
     #[test]

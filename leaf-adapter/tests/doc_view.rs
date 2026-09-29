@@ -528,3 +528,29 @@ fn reload_reruns_the_active_search() {
         "matches re-run on new content"
     );
 }
+
+#[test]
+fn scroll_to_line_where_scrolls_without_arming_search() {
+    let filler = (0..40)
+        .map(|i| format!("filler line {i}\n\n"))
+        .collect::<String>();
+    let f = fixture(&format!(
+        "# Big Title\n\n{filler}## Target Heading\n\nend\n"
+    ));
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    let idx = view.scroll_to_line_where(|l| l.contains("target heading"));
+    assert!(idx.is_some());
+    let text = rendered_text(&mut view, 40, 10);
+    assert!(text.contains("Target Heading"), "{text}");
+    assert!(!text.contains("Big Title"), "{text}");
+    assert!(view.search_query().is_empty());
+}
+
+#[test]
+fn scroll_to_line_where_without_a_match_leaves_the_view_alone() {
+    let f = fixture("# Big Title\n\nbody\n");
+    let mut view = DocView::open(f.path(), 40).expect("open");
+    assert_eq!(view.scroll_to_line_where(|l| l.contains("nope")), None);
+    let text = rendered_text(&mut view, 40, 10);
+    assert!(text.contains("Big Title"), "{text}");
+}

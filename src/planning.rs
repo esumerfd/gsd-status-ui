@@ -415,16 +415,21 @@ pub(crate) fn roadmap_phase_heading(body: &str, phase_id: &str) -> Option<String
     let want = normalize_phase_id(phase_id);
     for line in body.lines() {
         let trimmed = line.trim_start();
-        let Some(rest) = trimmed.strip_prefix("### ") else {
+        if !trimmed.starts_with('#') {
+            continue;
+        }
+        let text = strip_md(trimmed.trim_start_matches('#')).trim().to_string();
+        let Some(after) = text.get(..6).filter(|p| p.eq_ignore_ascii_case("phase ")) else {
             continue;
         };
-        let Some(after) = rest.trim().strip_prefix("Phase ") else {
-            continue;
-        };
-        if let Some((id, _)) = split_phase_heading(after) {
-            if normalize_phase_id(&id) == want {
-                return Some(rest.trim().to_string());
-            }
+        let after = &text[after.len()..];
+        let id: String = after
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
+            .collect();
+        if !id.is_empty() && normalize_phase_id(&id) == want {
+            return Some(text);
         }
     }
     None
@@ -1676,6 +1681,66 @@ pub(crate) fn find_requirement_definition(planning: &Path, id: &str) -> Option<P
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn roadmap_heading_matches_padded_and_unpadded_ids() {
+        let body = "# R\n\n### Phase 3: Delivery Etiquette\n";
+        assert_eq!(
+            roadmap_phase_heading(body, "3").as_deref(),
+            Some("Phase 3: Delivery Etiquette")
+        );
+        assert_eq!(
+            roadmap_phase_heading(body, "03").as_deref(),
+            Some("Phase 3: Delivery Etiquette")
+        );
+        assert_eq!(
+            roadmap_phase_heading("### Phase 03: Zero Padded\n", "3").as_deref(),
+            Some("Phase 03: Zero Padded")
+        );
+    }
+
+    #[test]
+    fn roadmap_heading_never_prefix_matches_decimal_or_longer_ids() {
+        let both = "### Phase 3: A\n### Phase 3.1: B\n";
+        assert_eq!(
+            roadmap_phase_heading(both, "3.1").as_deref(),
+            Some("Phase 3.1: B")
+        );
+        assert_eq!(
+            roadmap_phase_heading(both, "3").as_deref(),
+            Some("Phase 3: A")
+        );
+        let other = "### Phase 30: Thirty\n### Phase 3.1: B\n";
+        assert_eq!(roadmap_phase_heading(other, "3"), None);
+    }
+
+    #[test]
+    fn roadmap_heading_handles_em_dash_bold_and_any_level() {
+        assert_eq!(
+            roadmap_phase_heading("### Phase 3 \u{2014} Title\n", "3").as_deref(),
+            Some("Phase 3 \u{2014} Title")
+        );
+        assert_eq!(
+            roadmap_phase_heading("### **Phase 4: Bold**\n", "4").as_deref(),
+            Some("Phase 4: Bold")
+        );
+        assert_eq!(
+            roadmap_phase_heading("## Phase 2\n", "2").as_deref(),
+            Some("Phase 2")
+        );
+        assert_eq!(
+            roadmap_phase_heading("#### Phase 2: Deep\n", "2").as_deref(),
+            Some("Phase 2: Deep")
+        );
+    }
+
+    #[test]
+    fn roadmap_heading_ignores_index_bullets() {
+        assert_eq!(
+            roadmap_phase_heading("## Phases\n\n- [ ] **Phase 5: Listed**\n", "5"),
+            None
+        );
+    }
 
     fn sample_phase_dir() -> PathBuf {
         PathBuf::from("sample/normal/.planning/phases/02-coffee-acquisition")

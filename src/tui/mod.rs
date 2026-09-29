@@ -54,7 +54,7 @@ const HELP_TEXT: &str = "\
             C-d/u    page down / up
             g/G      top / bottom
             /        search
-            n/N      next / prev match
+            n/N      next / prev match (reuses last search)
             q/Esc    back to status
  search     type     edit query · Enter find · Esc cancel
  dialog     j/k      select · Enter open · Esc cancel
@@ -340,6 +340,8 @@ impl Ui {
         };
         if let Some(view) = self.views.get_mut(&(self.app.current, doc)) {
             view.set_search(query);
+            // The jump leaves the same state a typed search does.
+            self.last_search = query.to_string();
         }
     }
 
@@ -611,6 +613,7 @@ impl Ui {
             if let Some(view) = self.views.get_mut(&(self.app.current, doc)) {
                 if view.is_search_mode() {
                     match code {
+                        // Cancelling a draft is not a new search: last_search is kept.
                         KeyCode::Esc => view.cancel_search(),
                         KeyCode::Enter => {
                             view.confirm_search();
@@ -2583,6 +2586,72 @@ mod tests {
         assert_eq!(q, "cup", "n re-arms the remembered query");
         assert!(n >= 1);
         assert!(screen(&mut ui).contains("match 1/"));
+    }
+
+    #[test]
+    fn shift_n_in_another_doc_reuses_the_last_search_backwards() {
+        let mut ui = sample_ui();
+        search_then_open_other_doc(&mut ui, 3);
+        ui.on_key(plain('N'));
+        let (q, n) = focused_search(&ui).unwrap();
+        assert_eq!(q, "cup");
+        assert!(n >= 2, "term needs 2+ matches in this doc, got {n}");
+        assert!(
+            screen(&mut ui).contains(&format!("match {n}/{n}")),
+            "N lands on the last match"
+        );
+    }
+
+    #[test]
+    fn doc_with_its_own_search_keeps_it_on_n() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0);
+        search_in_doc(&mut ui, "cup");
+        ui.on_key(esc());
+        open_via_dialog(&mut ui, 3);
+        search_in_doc(&mut ui, "robot");
+        ui.on_key(esc());
+        open_via_dialog(&mut ui, 0); // back to doc 1, still holding "cup"
+        ui.on_key(plain('n'));
+        assert_eq!(focused_search(&ui).unwrap().0, "cup");
+    }
+
+    #[test]
+    fn empty_confirm_forgets_the_last_search() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0);
+        search_in_doc(&mut ui, "cup");
+        search_in_doc(&mut ui, ""); // empty draft + Enter
+        ui.on_key(esc());
+        open_via_dialog(&mut ui, 3);
+        ui.on_key(plain('n'));
+        assert_eq!(focused_search(&ui).unwrap().0, "");
+        assert!(!screen(&mut ui).contains("match "));
+    }
+
+    #[test]
+    fn cancelled_draft_keeps_the_last_search() {
+        let mut ui = sample_ui();
+        open_via_dialog(&mut ui, 0);
+        search_in_doc(&mut ui, "cup");
+        ui.on_key(plain('/'));
+        ui.on_key(esc()); // cancel draft
+        ui.on_key(esc()); // back to status
+        open_via_dialog(&mut ui, 3);
+        ui.on_key(plain('n'));
+        assert_eq!(focused_search(&ui).unwrap().0, "cup");
+    }
+
+    #[test]
+    fn requirement_jump_becomes_the_last_search() {
+        let mut ui = sample_ui();
+        let planning = Path::new("sample/normal/.planning");
+        ui.run_find(planning, "FR-1");
+        ui.on_key(esc());
+        open_via_dialog(&mut ui, 5); // a different doc
+        assert_eq!(focused_search(&ui).unwrap().0, "");
+        ui.on_key(plain('n'));
+        assert_eq!(focused_search(&ui).unwrap().0, "FR-1");
     }
 
     #[test]

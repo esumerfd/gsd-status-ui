@@ -151,8 +151,16 @@ pub(crate) enum Focus {
 /// in canonical tab order. Each item is `(document index, file name)`.
 #[derive(Debug)]
 pub(crate) struct OpenDialog {
-    pub(crate) items: Vec<(usize, String)>,
+    pub(crate) items: Vec<(DialogItem, String)>,
     pub(crate) selected: usize,
+}
+
+/// One row of the Ctrl-o picker: a document of the current entry, or the
+/// project roadmap opened at the current phase's heading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DialogItem {
+    Doc(usize),
+    Roadmap(String),
 }
 
 /// The `s` status-editing picker: the vocabulary the selected row's item type
@@ -910,10 +918,9 @@ impl App {
         self.dialog.as_ref()
     }
 
-    /// The phase id of the selected row when it is a phase that has not been
-    /// started: a phase entry (not roadmap, docs folder, task, todo or note)
-    /// with no documents.
-    pub(crate) fn unstarted_phase_id(&self) -> Option<&str> {
+    /// The phase id of the selected row when it is a phase entry (not roadmap,
+    /// docs folder, task, todo or note), started or not.
+    pub(crate) fn selected_phase_id(&self) -> Option<&str> {
         let e = self.current_entry()?;
         let is_phase = !e.phase_id.is_empty()
             && !e.roadmap
@@ -921,7 +928,14 @@ impl App {
             && e.other.is_none()
             && e.todo_title.is_none()
             && e.quick_task_title.is_none();
-        (is_phase && e.documents.is_empty()).then_some(e.phase_id.as_str())
+        is_phase.then_some(e.phase_id.as_str())
+    }
+
+    /// The phase id of the selected row when it is a phase that has not been
+    /// started: a phase entry with no documents.
+    pub(crate) fn unstarted_phase_id(&self) -> Option<&str> {
+        let e = self.current_entry()?;
+        self.selected_phase_id().filter(|_| e.documents.is_empty())
     }
 
     /// The ROADMAP detail heading for `phase_id`; `None` when the file cannot
@@ -971,7 +985,16 @@ impl App {
             self.flash = Some("no active phase step".into());
             return;
         };
-        let items: Vec<(usize, String)> = entry
+        let roadmap = self
+            .selected_phase_id()
+            .filter(|_| self.roadmap_index().is_some())
+            .map(|id| {
+                (
+                    DialogItem::Roadmap(id.to_string()),
+                    "ROADMAP.md".to_string(),
+                )
+            });
+        let docs = entry
             .documents
             .iter()
             .enumerate()
@@ -980,14 +1003,20 @@ impl App {
                     return None;
                 }
                 let name = document.path.file_name()?.to_string_lossy().into_owned();
-                Some((doc, name))
-            })
-            .collect();
+                Some((DialogItem::Doc(doc), name))
+            });
+        let items: Vec<(DialogItem, String)> = roadmap.into_iter().chain(docs).collect();
         if items.is_empty() {
             self.flash = Some("no documents for this step".into());
             return;
         }
-        self.dialog = Some(OpenDialog { items, selected: 0 });
+        // The roadmap sits on top, but the selection starts on the entry's own
+        // first document so Ctrl-o Enter still opens the plan.
+        let selected = items
+            .iter()
+            .position(|(item, _)| matches!(item, DialogItem::Doc(_)))
+            .unwrap_or(0);
+        self.dialog = Some(OpenDialog { items, selected });
     }
 
     pub(crate) fn close_dialog(&mut self) {
@@ -1165,8 +1194,22 @@ impl App {
     /// Some(request) means the shell must create the DocView.
     pub(crate) fn dialog_select(&mut self) -> Option<OpenRequest> {
         let dialog = self.dialog.take()?;
-        let (doc, _) = dialog.items.get(dialog.selected)?;
-        self.open_doc(*doc)
+        match dialog.items.get(dialog.selected)? {
+            (DialogItem::Doc(doc), _) => self.open_doc(*doc),
+            (DialogItem::Roadmap(_), _) => None,
+        }
+    }
+
+    /// When the picker's selection is the roadmap item, close the picker and
+    /// return the phase id to open the roadmap at; otherwise leave it open.
+    pub(crate) fn take_dialog_roadmap(&mut self) -> Option<String> {
+        let dialog = self.dialog.as_ref()?;
+        let (DialogItem::Roadmap(phase_id), _) = dialog.items.get(dialog.selected)? else {
+            return None;
+        };
+        let phase_id = phase_id.clone();
+        self.dialog = None;
+        Some(phase_id)
     }
 
     /// Close the focused document tab. Returns the (step, doc index) whose view
@@ -1811,6 +1854,7 @@ mod tests {
         assert_eq!(
             names,
             [
+                "ROADMAP.md",
                 "02-02-PLAN.md",
                 "02-RESEARCH.md",
                 "02-VALIDATION.md",
@@ -1819,7 +1863,59 @@ mod tests {
                 "02-DISCUSSION-LOG.md",
             ]
         );
+        assert_eq!(dialog.selected, 1);
+    }
+
+    #[test]
+    fn open_dialog_on_a_phase_row_lists_the_roadmap_first_but_selects_the_plan() {
+        let mut app = sample_app(); // 02-02, a phase step
+        app.open_dialog();
+        let dialog = app.dialog().expect("dialog open");
+        let names: Vec<&str> = dialog.items.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names[0], "ROADMAP.md", "{names:?}");
+        assert_eq!(names[1], "02-02-PLAN.md", "{names:?}");
+        assert_eq!(dialog.selected, 1, "the plan stays the default");
+        assert_eq!(dialog.items[0].0, DialogItem::Roadmap("2".into()));
+    }
+
+    #[test]
+    fn open_dialog_on_an_unstarted_phase_offers_only_the_roadmap() {
+        let mut app = sample_app();
+        while app.unstarted_phase_id() != Some("3") {
+            app.change_step(1);
+        }
+        app.open_dialog();
+        let dialog = app.dialog().expect("roadmap is offered, no flash");
+        let names: Vec<&str> = dialog.items.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, ["ROADMAP.md"]);
         assert_eq!(dialog.selected, 0);
+    }
+
+    #[test]
+    fn open_dialog_on_the_roadmap_row_adds_no_extra_roadmap_item() {
+        let mut app = sample_app();
+        app.select_first(); // the Roadmap row
+        app.open_dialog();
+        let dialog = app.dialog().expect("dialog open");
+        assert!(
+            dialog
+                .items
+                .iter()
+                .all(|(item, _)| matches!(item, DialogItem::Doc(_))),
+            "{:?}",
+            dialog.items
+        );
+    }
+
+    #[test]
+    fn take_dialog_roadmap_returns_the_phase_and_closes_the_dialog() {
+        let mut app = sample_app();
+        app.open_dialog();
+        assert_eq!(app.take_dialog_roadmap(), None, "plan selected: not taken");
+        assert!(app.dialog().is_some());
+        app.dialog_move(-1); // up onto ROADMAP.md
+        assert_eq!(app.take_dialog_roadmap().as_deref(), Some("2"));
+        assert!(app.dialog().is_none());
     }
 
     #[test]
@@ -1844,7 +1940,12 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["01-01-PLAN.md", "01-01-SUMMARY.md", "01-VERIFICATION.md"]
+            [
+                "ROADMAP.md",
+                "01-01-PLAN.md",
+                "01-01-SUMMARY.md",
+                "01-VERIFICATION.md"
+            ]
         );
 
         let verification = app.doc_id(app.current, "verification");
@@ -1870,7 +1971,12 @@ mod tests {
         let names: Vec<&str> = dialog.items.iter().map(|(_, n)| n.as_str()).collect();
         assert_eq!(
             names,
-            ["01-01-PLAN.md", "01-01-SUMMARY.md", "01-VERIFICATION.md"]
+            [
+                "ROADMAP.md",
+                "01-01-PLAN.md",
+                "01-01-SUMMARY.md",
+                "01-VERIFICATION.md"
+            ]
         );
         for missing in ["RESEARCH", "VALIDATION", "UAT", "CONTEXT", "DISCUSSION"] {
             assert!(
@@ -1884,10 +1990,10 @@ mod tests {
     fn dialog_moves_clamp_and_select_opens_the_doc() {
         let mut app = sample_app();
         app.open_dialog();
+        app.dialog_move(-1); // plan -> ROADMAP.md, the top item
         app.dialog_move(-1); // clamps at top
         assert_eq!(app.dialog().unwrap().selected, 0);
-        app.dialog_move(1);
-        app.dialog_move(1); // -> validation (item index 2)
+        app.dialog_move(3); // -> validation (item index 3)
         let validation = app.doc_id(app.current, "validation");
         let req = app.dialog_select().expect("open request");
         assert_eq!(req.doc, validation);
@@ -1898,7 +2004,7 @@ mod tests {
         for _ in 0..20 {
             app.dialog_move(1); // clamps at bottom
         }
-        assert_eq!(app.dialog().unwrap().selected, 5);
+        assert_eq!(app.dialog().unwrap().selected, 6);
     }
 
     #[test]

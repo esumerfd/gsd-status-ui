@@ -8,7 +8,7 @@ pub(crate) mod app;
 pub(crate) mod clipboard;
 
 use crate::model::{Phase, QuickTask, StateMeta, Todo};
-use app::{App, Focus, OpenRequest, Selected};
+use app::{App, DialogItem, Focus, OpenRequest, Selected};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::style::Print;
 use crossterm::{execute, terminal};
@@ -43,7 +43,7 @@ const HELP_TEXT: &str = "\
             d/u      next / prev section
             J/K      next / prev phase
             Enter    open the step's plan (unstarted phase: its roadmap section)
-            o        open-document dialog
+            o        open-document dialog (phase row: ROADMAP.md on top)
             s        set status (todo/task/phase/note)
             S        switch workstream / (base) root
             c        copy selected todo's name
@@ -379,21 +379,30 @@ impl Ui {
     /// Enter on the status panel: an unstarted phase opens the roadmap peek
     /// scrolled to that phase's detail heading; anything else opens document 0.
     fn open_selected(&mut self) {
-        if let (Some(phase_id), Some(roadmap_idx)) =
-            (self.app.unstarted_phase_id(), self.app.roadmap_index())
-        {
-            let heading = self.app.roadmap_heading_for(phase_id);
-            self.open_roadmap();
-            if let Some(heading) = heading {
-                let want = heading.to_lowercase();
-                if let Some(view) = self.views.get_mut(&(roadmap_idx, 0)) {
-                    view.scroll_to_line_where(|line| is_rendered_heading(line, &want));
-                }
+        if let Some(phase_id) = self.app.unstarted_phase_id().map(str::to_owned) {
+            if self.app.roadmap_index().is_some() {
+                self.open_roadmap_at_phase(&phase_id);
+                return;
             }
-            return;
         }
         let req = self.app.open_doc(0);
         self.apply(req);
+    }
+
+    /// Open the roadmap peek scrolled to `phase_id`'s detail heading, or at
+    /// the top when the roadmap has no such heading.
+    fn open_roadmap_at_phase(&mut self, phase_id: &str) {
+        let Some(roadmap_idx) = self.app.roadmap_index() else {
+            return;
+        };
+        let heading = self.app.roadmap_heading_for(phase_id);
+        self.open_roadmap();
+        if let Some(heading) = heading {
+            let want = heading.to_lowercase();
+            if let Some(view) = self.views.get_mut(&(roadmap_idx, 0)) {
+                view.scroll_to_line_where(|line| is_rendered_heading(line, &want));
+            }
+        }
     }
 
     /// Open the project roadmap as a peek from any mode (the `R` key). Stashes
@@ -522,6 +531,10 @@ impl Ui {
             KeyCode::Char('j') | KeyCode::Down => self.app.dialog_move(1),
             KeyCode::Char('k') | KeyCode::Up => self.app.dialog_move(-1),
             KeyCode::Enter => {
+                if let Some(phase_id) = self.app.take_dialog_roadmap() {
+                    self.open_roadmap_at_phase(&phase_id);
+                    return;
+                }
                 let request = self.app.dialog_select();
                 self.apply(request);
             }
@@ -906,12 +919,10 @@ impl Ui {
                 .items
                 .iter()
                 .enumerate()
-                .map(|(i, (doc, name))| {
-                    let open_marker = if self.app.tabs().contains(doc) {
-                        "●"
-                    } else {
-                        " "
-                    };
+                .map(|(i, (item, name))| {
+                    let open =
+                        matches!(item, DialogItem::Doc(doc) if self.app.tabs().contains(doc));
+                    let open_marker = if open { "●" } else { " " };
                     let style = if i == dialog.selected {
                         Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
                     } else {
@@ -2041,6 +2052,22 @@ mod tests {
         };
         let path = &ui.app.current_entry().unwrap().documents[doc].path;
         assert!(path.to_string_lossy().ends_with("-PLAN.md"), "{path:?}");
+    }
+
+    #[test]
+    fn ctrl_o_roadmap_item_opens_the_roadmap_at_a_started_phases_heading() {
+        let mut ui = sample_ui();
+        select_phase_row(&mut ui, "2");
+        ui.on_key(ctrl('o'));
+        ui.on_key(plain('k')); // from the plan up onto ROADMAP.md
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(ui.app.current_entry().is_some_and(|e| e.is_roadmap()));
+        let s = screen(&mut ui);
+        let heading = s.find("Phase 2: Coffee Acquisition").expect(&s);
+        assert!(!s[..heading].contains("Phase"), "{s}");
+
+        ui.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(ui.app.current_entry().unwrap().phase_id, "2");
     }
 
     #[test]

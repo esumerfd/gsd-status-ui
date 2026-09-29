@@ -910,6 +910,27 @@ impl App {
         self.dialog.as_ref()
     }
 
+    /// The phase id of the selected row when it is a phase that has not been
+    /// started: a phase entry (not roadmap, docs folder, task, todo or note)
+    /// with no documents.
+    pub(crate) fn unstarted_phase_id(&self) -> Option<&str> {
+        let e = self.current_entry()?;
+        let is_phase = !e.phase_id.is_empty()
+            && !e.roadmap
+            && e.docs_folder.is_none()
+            && e.other.is_none()
+            && e.todo_title.is_none()
+            && e.quick_task_title.is_none();
+        (is_phase && e.documents.is_empty()).then_some(e.phase_id.as_str())
+    }
+
+    /// The ROADMAP detail heading for `phase_id`; `None` when the file cannot
+    /// be read or has no such heading.
+    pub(crate) fn roadmap_heading_for(&self, phase_id: &str) -> Option<String> {
+        let body = std::fs::read_to_string(self.planning.join("ROADMAP.md")).ok()?;
+        crate::planning::roadmap_phase_heading(&body, phase_id)
+    }
+
     /// Index of the synthetic Roadmap entry, if a `ROADMAP.md` exists.
     pub(crate) fn roadmap_index(&self) -> Option<usize> {
         self.entries.iter().position(|e| e.is_roadmap())

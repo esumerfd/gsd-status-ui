@@ -409,6 +409,27 @@ fn parse_phase_details(body: &str) -> Vec<(String, String)> {
     out
 }
 
+/// The `### Phase N: Title` detail heading for `phase_id` in a ROADMAP body,
+/// as plain text (`Phase 3: Delivery Etiquette`). Index bullets never match.
+pub(crate) fn roadmap_phase_heading(body: &str, phase_id: &str) -> Option<String> {
+    let want = normalize_phase_id(phase_id);
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("### ") else {
+            continue;
+        };
+        let Some(after) = rest.trim().strip_prefix("Phase ") else {
+            continue;
+        };
+        if let Some((id, _)) = split_phase_heading(after) {
+            if normalize_phase_id(&id) == want {
+                return Some(rest.trim().to_string());
+            }
+        }
+    }
+    None
+}
+
 fn parse_phase_plans(body: &str) -> HashMap<String, Vec<Plan>> {
     let mut map: HashMap<String, Vec<Plan>> = HashMap::new();
     let mut current: Option<String> = None;

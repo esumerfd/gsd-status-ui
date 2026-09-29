@@ -23,6 +23,13 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
+/// True when a rendered (lowercased) viewer line is the heading `want`
+/// (lowercased), or the first wrapped line of it.
+fn is_rendered_heading(line: &str, want: &str) -> bool {
+    let text = line.trim().trim_start_matches('#').trim();
+    text == want || (text.starts_with("phase ") && want.starts_with(text))
+}
+
 const STATUS_HINTS: &str =
     "j/k step · Enter plan · o open · s status · c copy todo · / find · ? help · q quit";
 const DOC_HINTS: &str = "j/k scroll · / find · ? help · q/Esc status";
@@ -363,6 +370,26 @@ impl Ui {
         self.copy_flash = false;
     }
 
+    /// Enter on the status panel: an unstarted phase opens the roadmap peek
+    /// scrolled to that phase's detail heading; anything else opens document 0.
+    fn open_selected(&mut self) {
+        if let (Some(phase_id), Some(roadmap_idx)) =
+            (self.app.unstarted_phase_id(), self.app.roadmap_index())
+        {
+            let heading = self.app.roadmap_heading_for(phase_id);
+            self.open_roadmap();
+            if let Some(heading) = heading {
+                let want = heading.to_lowercase();
+                if let Some(view) = self.views.get_mut(&(roadmap_idx, 0)) {
+                    view.scroll_to_line_where(|line| is_rendered_heading(line, &want));
+                }
+            }
+            return;
+        }
+        let req = self.app.open_doc(0);
+        self.apply(req);
+    }
+
     /// Open the project roadmap as a peek from any mode (the `R` key). Stashes
     /// the current `(entry, focus)` so Esc returns there. No-op when no
     /// `ROADMAP.md` exists (the row is hidden) or the roadmap is already
@@ -659,11 +686,9 @@ impl Ui {
                     self.apply(req);
                 }
                 // Enter doc mode: document 0 is the entry's primary file — the
-                // roadmap's ROADMAP.md, or any other row's plan.
-                KeyCode::Enter => {
-                    let req = self.app.open_doc(0);
-                    self.apply(req);
-                }
+                // roadmap's ROADMAP.md, or any other row's plan. An unstarted
+                // phase has no document, so it opens the roadmap at its heading.
+                KeyCode::Enter => self.open_selected(),
                 KeyCode::Char('o') => self.app.open_dialog(),
                 KeyCode::Char('s') => self.app.open_status_dialog(),
                 KeyCode::Char('S') => self.app.open_workstream_dialog(),
@@ -1938,6 +1963,47 @@ mod tests {
             s.contains("Robot Coffee Service"),
             "Esc returns to status: {s}"
         );
+    }
+
+    /// Press `j` until the current entry belongs to `phase_id` (bounded).
+    fn select_phase_row(ui: &mut Ui, phase_id: &str) {
+        ui.app.select_first();
+        for _ in 0..200 {
+            if ui
+                .app
+                .current_entry()
+                .is_some_and(|e| e.phase_id == phase_id && !e.is_roadmap())
+            {
+                return;
+            }
+            ui.on_key(plain('j'));
+        }
+        panic!("never reached a phase-{phase_id} entry");
+    }
+
+    #[test]
+    fn enter_on_an_unstarted_phase_opens_the_roadmap_at_its_heading() {
+        let mut ui = sample_ui();
+        select_phase_row(&mut ui, "3");
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(ui.app.current_entry().is_some_and(|e| e.is_roadmap()));
+        assert_eq!(ui.app.focus(), Focus::Doc(0));
+        let s = screen(&mut ui);
+        assert!(s.contains("Phase 3: Delivery Etiquette"), "{s}");
+        assert!(!s.contains("Robot Coffee Service"), "{s}");
+    }
+
+    #[test]
+    fn enter_on_a_started_phase_still_opens_its_plan() {
+        let mut ui = sample_ui();
+        select_phase_row(&mut ui, "2");
+        ui.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!ui.app.current_entry().is_some_and(|e| e.is_roadmap()));
+        let Focus::Doc(doc) = ui.app.focus() else {
+            panic!("expected doc focus");
+        };
+        let path = &ui.app.current_entry().unwrap().documents[doc].path;
+        assert!(path.to_string_lossy().ends_with("-PLAN.md"), "{path:?}");
     }
 
     #[test]

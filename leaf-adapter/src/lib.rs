@@ -677,6 +677,16 @@ impl DocView {
         self.scroll = 0;
     }
 
+    /// Scroll so the first rendered line satisfying `pred` is the top line,
+    /// returning its index; `None` (scroll untouched) when nothing matches.
+    /// `pred` receives the rendered, wrapped, lowercased line. Unlike
+    /// `set_search` this arms no highlight or match footer.
+    pub fn scroll_to_line_where(&mut self, pred: impl Fn(&str) -> bool) -> Option<usize> {
+        let idx = self.plain_lines.iter().position(|l| pred(l))?;
+        self.scroll = u16::try_from(idx).unwrap_or(u16::MAX);
+        Some(idx)
+    }
+
     /// Scrolls past the end; the render-time clamp settles it on the last page.
     pub fn to_bottom(&mut self) {
         self.scroll = u16::MAX;

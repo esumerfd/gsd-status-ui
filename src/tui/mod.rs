@@ -69,6 +69,9 @@ pub(crate) struct Ui {
     app: App,
     /// DocViews keyed by `(step index, document index)`.
     views: HashMap<(usize, usize), DocView>,
+    /// The most recent confirmed doc search, shared across every `DocView` so
+    /// `n`/`N` in a doc with no active query re-arm it. Empty means none.
+    last_search: String,
     report: Text<'static>,
     body_width: u16,
     help: bool,
@@ -230,6 +233,7 @@ impl Ui {
         Self {
             app,
             views: HashMap::new(),
+            last_search: String::new(),
             report,
             body_width: 80,
             help: false,
@@ -608,7 +612,11 @@ impl Ui {
                 if view.is_search_mode() {
                     match code {
                         KeyCode::Esc => view.cancel_search(),
-                        KeyCode::Enter => view.confirm_search(),
+                        KeyCode::Enter => {
+                            view.confirm_search();
+                            // An empty draft clears the query, forgetting it here too.
+                            self.last_search = view.search_query().to_string();
+                        }
                         KeyCode::Backspace => view.pop_search_draft(),
                         KeyCode::Char(c) => view.push_search_draft(c),
                         _ => {}
@@ -738,8 +746,21 @@ impl Ui {
             KeyCode::Char('g') | KeyCode::Home => view.to_top(),
             KeyCode::Char('G') | KeyCode::End => view.to_bottom(),
             KeyCode::Char('/') => view.begin_search(),
-            KeyCode::Char('n') => view.next_match(),
-            KeyCode::Char('N') => view.prev_match(),
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                let backwards = code == KeyCode::Char('N');
+                // A doc with its own active query keeps cycling it; otherwise
+                // re-arm the remembered one (first match, or last for `N`).
+                if view.search_query().is_empty() && !self.last_search.is_empty() {
+                    view.set_search(&self.last_search);
+                    if backwards {
+                        view.prev_match();
+                    }
+                } else if backwards {
+                    view.prev_match();
+                } else {
+                    view.next_match();
+                }
+            }
             KeyCode::Char('?') => self.help = true,
             _ => {}
         }
@@ -2522,6 +2543,46 @@ mod tests {
         };
         let view = ui.views.get(&(ui.app.current, doc))?;
         Some((view.search_query().to_string(), view.search_match_count()))
+    }
+
+    fn esc() -> KeyEvent {
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    }
+
+    /// Type `/term` + Enter in the focused doc.
+    fn search_in_doc(ui: &mut Ui, term: &str) {
+        ui.on_key(plain('/'));
+        for ch in term.chars() {
+            ui.on_key(plain(ch));
+        }
+        ui.on_key(enter());
+    }
+
+    /// Search `cup` in doc 0 (plan), Esc back to status, then open doc
+    /// `moves` (a different doc containing `cup` at least twice).
+    fn search_then_open_other_doc(ui: &mut Ui, moves: usize) {
+        open_via_dialog(ui, 0);
+        search_in_doc(ui, "cup");
+        let (q, n) = focused_search(ui).unwrap();
+        assert_eq!((q.as_str(), n > 0), ("cup", true), "setup search");
+        ui.on_key(esc());
+        open_via_dialog(ui, moves);
+    }
+
+    #[test]
+    fn n_in_another_doc_reuses_the_last_search() {
+        let mut ui = sample_ui();
+        search_then_open_other_doc(&mut ui, 3); // UAT
+        let s = screen(&mut ui);
+        assert!(s.contains("UAT: Phase 2"), "second doc is focused: {s}");
+        assert_eq!(focused_search(&ui).unwrap().0, "", "no surprise query");
+        assert!(!s.contains("match "), "no surprise highlight: {s}");
+
+        ui.on_key(plain('n'));
+        let (q, n) = focused_search(&ui).unwrap();
+        assert_eq!(q, "cup", "n re-arms the remembered query");
+        assert!(n >= 1);
+        assert!(screen(&mut ui).contains("match 1/"));
     }
 
     #[test]

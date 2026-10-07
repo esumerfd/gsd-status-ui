@@ -104,6 +104,54 @@ pub(crate) fn ensure_gitignore(root: &Path) -> io::Result<()> {
     io::Write::write_all(&mut file, addition.as_bytes())
 }
 
+/// Delete `gsd-state-<pid>.json` files in `dir` whose pid `is_alive` says
+/// is gone. `keep_pid`'s file always survives. Names that are not exactly
+/// that shape, with a pid in `1..=i32::MAX`, are left alone.
+pub(crate) fn prune(dir: &Path, keep_pid: u32, is_alive: impl Fn(u32) -> bool) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(|e| e.ok()) {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(pid_of) else {
+            continue;
+        };
+        if pid != keep_pid && !is_alive(pid) {
+            // Another shell's gsd-status may be pruning the same file.
+            fs::remove_file(entry.path()).ok();
+        }
+    }
+}
+
+/// The pid in an exact `gsd-state-<pid>.json` name, restricted to
+/// `1..=i32::MAX`: pid 0 or a value that casts negative would make
+/// `kill(2)` signal a process group.
+fn pid_of(name: &str) -> Option<u32> {
+    let digits = name.strip_prefix(PREFIX)?.strip_suffix(SUFFIX)?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let pid: u32 = digits.parse().ok()?;
+    (1..=i32::MAX as u32).contains(&pid).then_some(pid)
+}
+
+/// Is `pid` a live process? Alive when `kill(pid, 0)` succeeds, or fails
+/// with `EPERM` (it exists but belongs to someone else).
+pub(crate) fn pid_alive(pid: u32) -> bool {
+    // SAFETY: signal 0 performs only the existence and permission check and
+    // sends nothing; the call has no memory-safety preconditions.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// Prune dead shells' state files on a detached background thread so the
+/// TUI never waits on it. The thread shares no state, so the process ending
+/// mid-prune is harmless.
+pub(crate) fn spawn_prune(root: &Path, keep_pid: u32) {
+    let dir = root.join(DIR);
+    std::thread::spawn(move || prune(&dir, keep_pid, pid_alive));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +268,75 @@ mod tests {
             fs::read_to_string(root.join(".gitignore")).unwrap(),
             "gsd-status/\n"
         );
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn prune_removes_dead_pids_and_keeps_live_ones_and_the_current_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        for pid in [10, 11, 12] {
+            fs::write(d.join(format!("gsd-state-{pid}.json")), "{}").unwrap();
+        }
+        // 10 is alive; 11 and 12 are dead, but 12 is this shell (keep_pid).
+        prune(d, 12, |pid| pid == 10);
+        assert_eq!(
+            names_in(d),
+            vec![
+                "gsd-state-10.json".to_string(),
+                "gsd-state-12.json".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn prune_ignores_names_that_are_not_exactly_a_state_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        let too_big = format!("gsd-state-{}.json", i32::MAX as u64 + 1);
+        let odd = [
+            "notes.txt",
+            "gsd-state-abc.json",
+            "gsd-state-12.json.tmp",
+            "gsd-state-.json",
+            "gsd-state-0.json",
+            "gsd-state--5.json",
+            too_big.as_str(),
+        ];
+        for name in odd {
+            fs::write(d.join(name), "{}").unwrap();
+        }
+        fs::write(d.join("gsd-state-7.json"), "{}").unwrap();
+        prune(d, 1, |_| false);
+        let mut expected: Vec<String> = odd.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        assert_eq!(names_in(d), expected, "only gsd-state-7.json is pruned");
+    }
+
+    #[test]
+    fn prune_of_a_missing_dir_is_quiet_and_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("gsd-status");
+        prune(&missing, 1, |_| false);
+        assert!(!missing.exists());
+    }
+
+    #[test]
+    fn pid_alive_is_true_for_this_process_and_false_for_a_reaped_child() {
+        assert!(pid_alive(std::process::id()));
+        // Best-effort: a reaped child's pid is dead unless it is reused in
+        // the microseconds between wait() and the check.
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(!pid_alive(pid), "reaped child {pid} reads as dead");
     }
 }

@@ -606,6 +606,7 @@ version = "0.10.0"
 dependencies = [
  "crossterm",
  "leaf-adapter",
+ "libc",
  "ratatui",
  "tempfile",
 ]

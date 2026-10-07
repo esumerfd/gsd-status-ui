@@ -85,6 +85,9 @@ fn main() -> ExitCode {
 
     let interactive = !plain && io::stdout().is_terminal();
     if interactive {
+        // Interactive only: --plain / non-TTY reads the state but never
+        // writes or prunes it.
+        session_state::spawn_prune(&root, session_pid);
         match tui::run(
             &planning,
             &state,

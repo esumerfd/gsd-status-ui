@@ -45,7 +45,7 @@ const HELP_TEXT: &str = "\
             Enter    open the step's plan (unstarted phase: its roadmap section)
             o        open-document dialog (phase row: ROADMAP.md on top)
             s        set status (todo/task/phase/note)
-            S        switch workstream / (base) root
+            S        switch workstream / (base) root (remembered per shell)
             c        copy selected todo's name
             /        find a requirement by ID
             q        quit
@@ -291,8 +291,9 @@ impl Ui {
     ///
     /// Factored out of `event_loop` — which owns a terminal and so cannot be
     /// unit-tested — so the `(base)`-vs-workstream mapping and the reload
-    /// that follows it are actually covered. D2: read-only; this recomputes
-    /// a path, it never writes `.planning/active-workstream`.
+    /// that follows it are actually covered. D2: this never writes
+    /// `.planning/active-workstream`; it only writes its own
+    /// `.planning/gsd-status/` state, and only when a session pid is set.
     pub(crate) fn apply_pending_workstream(&mut self, planning: &mut std::path::PathBuf) -> bool {
         let Some(name) = self.take_pending_workstream() else {
             return false;
@@ -1234,8 +1235,9 @@ fn event_loop(
                 }
                 // Enter on the S dialog queues a chosen workstream name here,
                 // where the mutable `planning` binding lives (key handlers
-                // have no access to it). D2: read-only — this recomputes the
-                // scoped path, it never writes `.planning/active-workstream`.
+                // have no access to it). D2: this never writes
+                // `.planning/active-workstream`; it only writes its own
+                // `.planning/gsd-status/` state (in apply_pending_workstream).
                 ui.apply_pending_workstream(&mut planning);
                 // Enter on a find-a-requirement draft queues the query here,
                 // where `planning: &Path` is in scope (key handlers have no

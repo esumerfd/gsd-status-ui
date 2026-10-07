@@ -133,7 +133,12 @@ fn print_help() {
     println!("  --ws <name>       focus one workstream; unknown name exits 2");
     println!("  GSD_WORKSTREAM    env var fallback when --ws is not given");
     println!(
-        "  Selection order: --ws > GSD_WORKSTREAM > .planning/active-workstream > first sorted"
+        "  Selection order: --ws > GSD_WORKSTREAM > this shell's last S choice > \
+         .planning/active-workstream > first sorted"
+    );
+    println!(
+        "  S choices are remembered per launching shell in .planning/gsd-status/ \
+         (git-ignored); --plain reads but never writes it."
     );
     println!("  A flat workspace (no .planning/workstreams/) behaves exactly as before.");
     println!();

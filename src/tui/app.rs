@@ -1114,8 +1114,10 @@ impl App {
     /// workspace root, sorted, with the currently focused one pre-selected.
     /// A flat workspace (no `.planning/workstreams/`) has nothing to switch
     /// between, so this flashes instead of opening an empty picker —
-    /// mirroring `open_dialog`'s "nothing to open" shape. D2: read-only —
-    /// this never writes `.planning/active-workstream`.
+    /// mirroring `open_dialog`'s "nothing to open" shape. D2: this never
+    /// writes `.planning/active-workstream`; it only writes its own
+    /// `.planning/gsd-status/` state, and that write happens later, in
+    /// `Ui::apply_pending_workstream`.
     ///
     /// A partially-migrated workspace — one whose root still carries its own
     /// `ROADMAP.md`/`STATE.md`/`phases/` beside `workstreams/` — gains a

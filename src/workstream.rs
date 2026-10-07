@@ -7,9 +7,11 @@
 //! workstream mode moves only `ROADMAP.md`, `STATE.md`, `REQUIREMENTS.md`, and
 //! `phases/` into `.planning/workstreams/<name>/`.
 //!
-//! D2: this module never writes `.planning/active-workstream` or any other
-//! pointer — it only ever reads. Switching workstreams in the TUI (see
-//! `tui::app::WorkstreamDialog`) never touches disk.
+//! D2: this module never writes `.planning/active-workstream`, which GSD
+//! owns — it only ever reads. Switching workstreams in the TUI records the
+//! choice only in gsd-status's own `.planning/gsd-status/gsd-state-<ppid>.json`
+//! (see `session_state`), keyed by the launching shell's PID, and that choice
+//! is read back here as the tier after `GSD_WORKSTREAM`.
 //!
 //! This module deliberately does NOT read GSD's session-scoped pointer under
 //! `${TMPDIR}/gsd-workstream-sessions/`: a standalone TUI process computes a

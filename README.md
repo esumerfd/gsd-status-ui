@@ -55,16 +55,22 @@ crate) is under active development — see
 In a workspace that uses GSD workstreams (`.planning/workstreams/<name>/`),
 `gsd-status` focuses one workstream at a time — by default the one GSD itself
 considers current, resolved in GSD's own order: `--ws`, then `GSD_WORKSTREAM`,
-then `.planning/active-workstream`, then the first workstream by name.
+then the workstream you last picked with `S` in the same shell, then
+`.planning/active-workstream`, then the first workstream by name.
 
 ```bash
 gsd-status --ws alpha        # focus a specific workstream
 GSD_WORKSTREAM=alpha gsd-status
 ```
 
-Press `S` in the TUI to switch between them. Switching is view-only — it never
-writes GSD's `.planning/active-workstream` pointer, so other GSD sessions in
-the same repo are unaffected. Shared content (`todos/`, `notes/`, `research/`)
+Press `S` in the TUI to switch between them. Switching never writes GSD's
+`.planning/active-workstream` pointer, so other GSD sessions in the same repo
+are unaffected. Instead `gsd-status` remembers the choice for the shell it was
+launched from, in `.planning/gsd-status/gsd-state-<ppid>.json`, so relaunching
+from that shell reopens the same workstream while other terminals keep their
+own. `.planning/.gitignore` gets a `gsd-status/` entry automatically, and files
+for shells that have exited are cleaned up in the background when the TUI
+starts. `--plain` reads the remembered choice but never writes it. Shared content (`todos/`, `notes/`, `research/`)
 stays visible while a workstream is focused. In a workspace with no
 `workstreams/` directory nothing changes and `S` reports there are none.
 

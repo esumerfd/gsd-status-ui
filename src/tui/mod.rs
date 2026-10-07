@@ -103,6 +103,11 @@ pub(crate) struct Ui {
     /// event loop to act on (it owns the mutable `planning: PathBuf` that
     /// needs re-scoping). Drained by `take_pending_workstream`.
     pending_workstream: Option<String>,
+    /// PID of the shell that launched gsd-status. When set, a confirmed `S`
+    /// switch is remembered in `.planning/gsd-status/gsd-state-<pid>.json`.
+    /// `None` (the default) writes nothing — every test that builds a `Ui`
+    /// over the in-repo `sample/` fixtures relies on that.
+    session_pid: Option<u32>,
 }
 
 /// The colored status report as ratatui text (reuses the report's ANSI colors).
@@ -245,7 +250,13 @@ impl Ui {
             find_draft: None,
             pending_find: None,
             pending_workstream: None,
+            session_pid: None,
         }
+    }
+
+    /// Turn on per-shell memory of `S` switches for the shell `pid`.
+    pub(crate) fn set_session_pid(&mut self, pid: u32) {
+        self.session_pid = Some(pid);
     }
 
     /// Re-read `.planning/` and rebuild both the status panel and the navigable
@@ -288,11 +299,24 @@ impl Ui {
         };
         let root = crate::workstream::root_of(planning);
         *planning = crate::workstream::selection_dir(&root, &name);
-        self.app.flash = Some(if name == crate::workstream::BASE_LABEL {
+        let is_base = name == crate::workstream::BASE_LABEL;
+        let mut flash = if is_base {
             "switched to the workspace root".to_string()
         } else {
             format!("switched to workstream: {name}")
-        });
+        };
+        if let Some(pid) = self.session_pid {
+            let remembered = if is_base {
+                crate::session_state::Remembered::Base
+            } else {
+                crate::session_state::Remembered::Workstream(name)
+            };
+            // A failed write must not undo the switch — just say so.
+            if let Err(e) = crate::session_state::write(&root, pid, &remembered) {
+                flash.push_str(&format!(" (not remembered: {e})"));
+            }
+        }
+        self.app.flash = Some(flash);
         self.reload_from_disk(planning);
         true
     }
@@ -1141,6 +1165,7 @@ pub(crate) fn run(
     phases: &[Phase],
     quick_tasks: &[QuickTask],
     todos: &[Todo],
+    session_pid: u32,
 ) -> io::Result<()> {
     let mut ui = Ui::new(
         status_text(planning, state, phases, false),
@@ -1153,6 +1178,7 @@ pub(crate) fn run(
             false,
         ),
     );
+    ui.set_session_pid(session_pid);
 
     terminal::enable_raw_mode()?;
     execute!(io::stdout(), terminal::EnterAlternateScreen)?;
@@ -3225,6 +3251,85 @@ mod tests {
         assert_eq!(
             before, after,
             "switching workstreams must never write the pointer file (D2)"
+        );
+    }
+
+    #[test]
+    fn a_switch_with_a_session_pid_is_remembered_for_the_next_launch() {
+        // Tracer: S switch -> per-ppid state file -> resolved on next launch.
+        let dir = tempfile::tempdir().unwrap();
+        copy_dir(Path::new("sample/workstreams"), dir.path());
+        let root = dir.path().join(".planning");
+        let scoped = root.join("workstreams/beta");
+        let pointer_before = std::fs::read(root.join("active-workstream")).unwrap();
+
+        let mut ui = ui_for(&scoped);
+        ui.set_session_pid(4242);
+        ui.on_key(plain('S'));
+        ui.on_key(plain('k')); // beta -> alpha
+        ui.on_key(enter());
+        let mut planning = scoped.clone();
+        assert!(ui.apply_pending_workstream(&mut planning));
+
+        assert!(
+            root.join("gsd-status/gsd-state-4242.json").is_file(),
+            "the switch is recorded for this shell"
+        );
+        let remembered = crate::session_state::read(&root, 4242);
+        assert_eq!(
+            crate::workstream::resolve(&root, None, None, remembered.as_ref()),
+            Some("alpha".to_string()),
+            "the next launch from the same shell opens alpha"
+        );
+        assert_eq!(
+            std::fs::read(root.join("active-workstream")).unwrap(),
+            pointer_before,
+            "D2: GSD's pointer is untouched"
+        );
+    }
+
+    #[test]
+    fn a_switch_without_a_session_pid_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        copy_dir(Path::new("sample/workstreams"), dir.path());
+        let root = dir.path().join(".planning");
+        let scoped = root.join("workstreams/beta");
+
+        let mut ui = ui_for(&scoped);
+        ui.on_key(plain('S'));
+        ui.on_key(plain('k'));
+        ui.on_key(enter());
+        let mut planning = scoped.clone();
+        assert!(ui.apply_pending_workstream(&mut planning));
+
+        assert!(!root.join("gsd-status").exists(), "no state dir");
+        assert!(!root.join(".gitignore").exists(), "no .gitignore");
+    }
+
+    #[test]
+    fn choosing_base_with_a_session_pid_remembers_null() {
+        let dir = tempfile::tempdir().unwrap();
+        copy_dir(Path::new("sample/project-and-workstreams"), dir.path());
+        let root = dir.path().join(".planning");
+        let scoped = root.join("workstreams/alpha");
+
+        let mut ui = ui_for(&scoped);
+        ui.set_session_pid(99);
+        ui.on_key(plain('S'));
+        ui.on_key(plain('k')); // alpha(1) -> (base)(0)
+        ui.on_key(enter());
+        let mut planning = scoped.clone();
+        assert!(ui.apply_pending_workstream(&mut planning));
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("gsd-status/gsd-state-99.json"))
+                .unwrap_or_default()
+                .trim(),
+            r#"{"workstream": null}"#
+        );
+        assert_eq!(
+            crate::session_state::read(&root, 99),
+            Some(crate::session_state::Remembered::Base)
         );
     }
 

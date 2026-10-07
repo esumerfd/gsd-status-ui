@@ -7,6 +7,7 @@ mod color;
 mod model;
 mod planning;
 mod report;
+mod session_state;
 mod status_edit;
 mod tui;
 mod workstream;
@@ -56,7 +57,12 @@ fn main() -> ExitCode {
     };
 
     let env_ws = env::var("GSD_WORKSTREAM").ok();
-    let resolved_ws = workstream::resolve(&root, ws.as_deref(), env_ws.as_deref());
+    // The launching shell. Its remembered `S` choice is read on both the
+    // plain and TUI paths so `--plain` agrees with the TUI in the same shell.
+    let session_pid = std::os::unix::process::parent_id();
+    let remembered = session_state::read(&root, session_pid);
+    let resolved_ws =
+        workstream::resolve(&root, ws.as_deref(), env_ws.as_deref(), remembered.as_ref());
     if ws.is_some() && resolved_ws.is_none() {
         let known = workstream::list(&root);
         let known = if known.is_empty() {
@@ -79,7 +85,14 @@ fn main() -> ExitCode {
 
     let interactive = !plain && io::stdout().is_terminal();
     if interactive {
-        match tui::run(&planning, &state, &phases, &quick_tasks, &todos) {
+        match tui::run(
+            &planning,
+            &state,
+            &phases,
+            &quick_tasks,
+            &todos,
+            session_pid,
+        ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("gsd-status: {e}");

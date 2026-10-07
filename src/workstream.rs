@@ -18,6 +18,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::session_state::Remembered;
+
 /// Label for the synthetic "workspace root" entry in the `S` picker.
 ///
 /// Deliberately parenthesised: `is_valid_name` rejects `(` and `)`, so this
@@ -77,14 +79,22 @@ fn resolves(names: &[String], candidate: &str) -> bool {
     is_valid_name(candidate) && names.iter().any(|n| n == candidate)
 }
 
-/// Resolve the focused workstream name. Precedence: `cli` > `env` > the
+/// Resolve the focused workstream name. Precedence: `cli` > `env` > this
+/// shell's remembered `S` choice (`session`, see `session_state`) > the
 /// `.planning/active-workstream` pointer file > the first name in sorted
 /// order. Returns `None` when `.planning/workstreams/` is absent or empty
-/// (flat mode). An invalid or missing-directory `env`/pointer-file value
-/// falls through to the next source instead of resolving; an invalid or
+/// (flat mode), or when `session` remembers the `(base)` view and the base
+/// has content of its own. An invalid or missing-directory
+/// `env`/session/pointer-file value, or a remembered base with nothing in
+/// it, falls through to the next source instead of resolving; an invalid or
 /// missing-directory `cli` value does NOT fall through — it resolves to
 /// `None` so the caller can treat an explicit `--ws` typo as fatal.
-pub(crate) fn resolve(root: &Path, cli: Option<&str>, env: Option<&str>) -> Option<String> {
+pub(crate) fn resolve(
+    root: &Path,
+    cli: Option<&str>,
+    env: Option<&str>,
+    session: Option<&Remembered>,
+) -> Option<String> {
     let names = list(root);
     if names.is_empty() {
         return None;
@@ -102,6 +112,15 @@ pub(crate) fn resolve(root: &Path, cli: Option<&str>, env: Option<&str>) -> Opti
         if resolves(&names, name) {
             return Some(name.to_string());
         }
+    }
+
+    // This shell's last `S` choice (gsd-status's own state, never GSD's).
+    match session {
+        Some(Remembered::Workstream(name)) if resolves(&names, name) => {
+            return Some(name.clone());
+        }
+        Some(Remembered::Base) if base_has_content(root) => return None,
+        _ => {}
     }
 
     // D2: read-only. A missing pointer file is not an error — it just means
@@ -341,11 +360,11 @@ mod tests {
     #[test]
     fn resolve_none_when_workstreams_absent_or_empty() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(resolve(dir.path(), None, None), None);
+        assert_eq!(resolve(dir.path(), None, None, None), None);
 
         let dir2 = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir2.path().join("workstreams")).unwrap();
-        assert_eq!(resolve(dir2.path(), None, None), None);
+        assert_eq!(resolve(dir2.path(), None, None, None), None);
     }
 
     #[test]
@@ -357,21 +376,21 @@ mod tests {
         fs::create_dir_all(root.join("workstreams/gamma")).unwrap();
 
         // No sources set: sorted-first (alpha).
-        assert_eq!(resolve(root, None, None), Some("alpha".to_string()));
+        assert_eq!(resolve(root, None, None, None), Some("alpha".to_string()));
 
         // active-workstream file set: beta wins over sorted-first.
         fs::write(root.join("active-workstream"), "beta\n").unwrap();
-        assert_eq!(resolve(root, None, None), Some("beta".to_string()));
+        assert_eq!(resolve(root, None, None, None), Some("beta".to_string()));
 
         // env wins over the file.
         assert_eq!(
-            resolve(root, None, Some("gamma")),
+            resolve(root, None, Some("gamma"), None),
             Some("gamma".to_string())
         );
 
         // cli wins over env.
         assert_eq!(
-            resolve(root, Some("alpha"), Some("gamma")),
+            resolve(root, Some("alpha"), Some("gamma"), None),
             Some("alpha".to_string())
         );
     }
@@ -383,11 +402,82 @@ mod tests {
         fs::create_dir_all(root.join("workstreams/alpha")).unwrap();
 
         // Invalid env value falls through to the file/sorted-first sources.
-        assert_eq!(resolve(root, None, Some("nope")), Some("alpha".to_string()));
+        assert_eq!(
+            resolve(root, None, Some("nope"), None),
+            Some("alpha".to_string())
+        );
 
         // Invalid file value falls through to sorted-first.
         fs::write(root.join("active-workstream"), "also-nope").unwrap();
-        assert_eq!(resolve(root, None, None), Some("alpha".to_string()));
+        assert_eq!(resolve(root, None, None, None), Some("alpha".to_string()));
+    }
+
+    #[test]
+    fn resolve_session_sits_between_env_and_the_pointer_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("workstreams/alpha")).unwrap();
+        fs::create_dir_all(root.join("workstreams/beta")).unwrap();
+        fs::create_dir_all(root.join("workstreams/gamma")).unwrap();
+        fs::write(root.join("active-workstream"), "beta\n").unwrap();
+        let gamma = Remembered::Workstream("gamma".into());
+
+        // session beats the pointer file.
+        assert_eq!(
+            resolve(root, None, None, Some(&gamma)),
+            Some("gamma".to_string())
+        );
+        // env beats session.
+        assert_eq!(
+            resolve(root, None, Some("alpha"), Some(&gamma)),
+            Some("alpha".to_string())
+        );
+        // cli beats session.
+        assert_eq!(
+            resolve(root, Some("alpha"), None, Some(&gamma)),
+            Some("alpha".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_falls_through_an_invalid_or_missing_session_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("workstreams/alpha")).unwrap();
+        fs::create_dir_all(root.join("workstreams/beta")).unwrap();
+
+        for bad in ["gone", "../beta", "a b"] {
+            let s = Remembered::Workstream(bad.into());
+            // No pointer file: sorted-first.
+            assert_eq!(
+                resolve(root, None, None, Some(&s)),
+                Some("alpha".to_string()),
+                "{bad:?} falls through to sorted-first"
+            );
+        }
+        fs::write(root.join("active-workstream"), "beta").unwrap();
+        let s = Remembered::Workstream("gone".into());
+        assert_eq!(
+            resolve(root, None, None, Some(&s)),
+            Some("beta".to_string()),
+            "a missing session value falls through to the pointer file"
+        );
+    }
+
+    #[test]
+    fn resolve_session_base_is_the_root_only_when_the_base_has_content() {
+        // Partially migrated: base has content, so `null` means the root view.
+        let root = Path::new("sample/project-and-workstreams/.planning");
+        assert_eq!(resolve(root, None, None, Some(&Remembered::Base)), None);
+
+        // Cleanly migrated: an empty base view would be dead, so fall through.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("workstreams/alpha")).unwrap();
+        assert_eq!(
+            resolve(root, None, None, Some(&Remembered::Base)),
+            Some("alpha".to_string())
+        );
     }
 
     #[test]
@@ -395,7 +485,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         fs::create_dir_all(root.join("workstreams/alpha")).unwrap();
-        assert_eq!(resolve(root, Some("nope"), None), None);
+        assert_eq!(resolve(root, Some("nope"), None, None), None);
     }
 
     #[test]

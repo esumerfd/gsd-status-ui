@@ -12,6 +12,8 @@ on, how many plans are done, and what to run next.
 * Review all generated documents with a keystroke.
 * Update status when GSD/agent gets it wrong.
 * Focus one GSD workstream at a time, and switch between them with `S`.
+* Each terminal remembers its own workstream — relaunch from the same shell and
+  you're back where you were, without disturbing GSD or other terminals.
 
 ## What it reads
 
@@ -70,8 +72,10 @@ launched from, in `.planning/gsd-status/gsd-state-<ppid>.json`, so relaunching
 from that shell reopens the same workstream while other terminals keep their
 own. `.planning/.gitignore` gets a `gsd-status/` entry automatically, and files
 for shells that have exited are cleaned up in the background when the TUI
-starts. `--plain` reads the remembered choice but never writes it. Shared content (`todos/`, `notes/`, `research/`)
-stays visible while a workstream is focused. In a workspace with no
+starts. `--plain` reads the remembered choice but never writes it.
+
+Shared content (`todos/`, `notes/`, `research/`) stays visible while a
+workstream is focused. In a workspace with no
 `workstreams/` directory nothing changes and `S` reports there are none.
 
 Workstreams whose `STATE.md` says `complete` (or `milestone complete`) sort

@@ -291,6 +291,21 @@ pub(crate) fn parse_ws_archive_name(name: &str) -> Option<(String, String)> {
     })
 }
 
+/// `v1.0-ROADMAP.md` -> "v1.0". Excludes `archived-*` and `ws-*`.
+pub(crate) fn version_of_entry(_name: &str) -> Option<String> {
+    None
+}
+
+/// `archived-20261006-phases` -> "2026-10-06".
+pub(crate) fn parse_archived_phases_name(_name: &str) -> Option<String> {
+    None
+}
+
+/// Modification time of `path` as `YYYY-MM-DD` (UTC).
+pub(crate) fn mtime_date(_path: &Path) -> Option<String> {
+    None
+}
+
 fn existing(path: PathBuf) -> Option<PathBuf> {
     path.exists().then_some(path)
 }
@@ -451,6 +466,33 @@ pub(crate) mod fixtures {
         write_state(&ws.join("milestone-complete"), "status: milestone complete");
         write_state(&ws.join("archived-status"), "status: archived");
         fs::create_dir_all(ws.join("no-state/phases")).unwrap();
+        root
+    }
+
+    /// `live_permutations` plus every archive shape gsd-core writes.
+    pub(crate) fn archive_permutations(dir: &Path) -> PathBuf {
+        let root = live_permutations(dir);
+        let ms = root.join("milestones");
+        fs::create_dir_all(ms.join("v1.0-phases/01-x")).unwrap();
+        fs::create_dir_all(ms.join("v1.0-quick")).unwrap();
+        fs::write(ms.join("v1.0-ROADMAP.md"), "# v1.0").unwrap();
+        fs::write(ms.join("v1.0-REQUIREMENTS.md"), "# reqs").unwrap();
+
+        let french = ms.join("ws-release-french-2026-10-15");
+        write_state(&french, "status: complete");
+        fs::write(french.join("ROADMAP.md"), "# r").unwrap();
+        fs::create_dir_all(french.join("phases/41-x")).unwrap();
+
+        let old = ms.join("ws-old-2026-09-25");
+        write_state(&old, "milestone: v1.1\nstatus: complete");
+        fs::create_dir_all(old.join("milestones")).unwrap();
+        fs::write(old.join("milestones/v1.0-ROADMAP.md"), "# v1.0").unwrap();
+
+        // gsd-core `phases clear` residue: one empty (ready/), one populated.
+        fs::create_dir_all(
+            root.join("workstreams/open-ms/milestones/archived-20260901-phases/00-old"),
+        )
+        .unwrap();
         root
     }
 }
@@ -858,5 +900,180 @@ mod tests {
         assert_eq!(m.date.as_deref(), Some("2026-10-15"));
         assert_eq!(m.layout.anchor, a);
         assert_eq!(m.layout.display, "milestones/ws-release-french-2026-10-15");
+    }
+
+    fn found(root: &Path) -> Vec<ArchivedMilestone> {
+        discover_completed(root)
+    }
+
+    fn row<'a>(
+        rows: &'a [ArchivedMilestone],
+        ws: &str,
+        version: Option<&str>,
+    ) -> &'a ArchivedMilestone {
+        rows.iter()
+            .find(|m| m.workstream == ws && m.version.as_deref() == version)
+            .unwrap_or_else(|| panic!("no row {ws} {version:?} in {rows:#?}"))
+    }
+
+    #[test]
+    fn version_of_entry_reads_version_prefixes() {
+        assert_eq!(version_of_entry("v1.0-ROADMAP.md").as_deref(), Some("v1.0"));
+        assert_eq!(
+            version_of_entry("v1.0-REQUIREMENTS.md").as_deref(),
+            Some("v1.0")
+        );
+        assert_eq!(version_of_entry("v1.0-phases").as_deref(), Some("v1.0"));
+        assert_eq!(version_of_entry("v1.0-quick").as_deref(), Some("v1.0"));
+        assert_eq!(
+            version_of_entry("v1.6-MILESTONE-AUDIT.md").as_deref(),
+            Some("v1.6")
+        );
+        for none in [
+            "archived-20261006-phases",
+            "ws-x-2026-01-01",
+            "MILESTONES.md",
+            "notes.md",
+        ] {
+            assert_eq!(version_of_entry(none), None, "{none}");
+        }
+    }
+
+    #[test]
+    fn parse_archived_phases_name_reads_date() {
+        assert_eq!(
+            parse_archived_phases_name("archived-20261006-phases").as_deref(),
+            Some("2026-10-06")
+        );
+        assert_eq!(parse_archived_phases_name("archived-2026-phases"), None);
+    }
+
+    #[test]
+    fn discover_groups_versioned_root_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fixtures::archive_permutations(dir.path());
+        // 2026-08-01 12:00 UTC = day 20666.
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(20_666 * 86_400 + 43_200);
+        fs::File::options()
+            .write(true)
+            .open(root.join("milestones/v1.0-ROADMAP.md"))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+
+        let rows = found(&root);
+        let v1: Vec<_> = rows.iter().filter(|m| m.workstream == BASE_LABEL).collect();
+        assert_eq!(v1.len(), 1, "{rows:#?}");
+        let m = v1[0];
+        assert_eq!(m.version.as_deref(), Some("v1.0"));
+        assert_eq!(m.date.as_deref(), Some("2026-08-01"));
+        assert_eq!(m.layout.display, "milestones/v1.0");
+        assert!(m.layout.roadmap.is_some());
+        assert!(m.layout.requirements.is_some());
+        assert!(m.layout.phases_dir.is_some());
+        assert!(m.layout.quick_dir.is_some());
+    }
+
+    #[test]
+    fn discover_finds_workstream_versioned_archives() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fixtures::archive_permutations(dir.path());
+        let m = row(&found(&root), "done-in-place", Some("v1.6")).clone();
+        assert_eq!(
+            m.layout.display,
+            "workstreams/done-in-place/milestones/v1.6"
+        );
+    }
+
+    #[test]
+    fn discover_scans_inner_milestones_of_archived_workstreams() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fixtures::archive_permutations(dir.path());
+        let rows = found(&root);
+        let old = row(&rows, "old", Some("v1.1"));
+        assert_eq!(old.date.as_deref(), Some("2026-09-25"));
+        let inner = row(&rows, "old", Some("v1.0"));
+        assert!(inner.layout.roadmap.is_some(), "{inner:?}");
+    }
+
+    #[test]
+    fn discover_skips_empty_archived_phases_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fixtures::archive_permutations(dir.path());
+        assert!(
+            found(&root).iter().all(|m| m.workstream != "ready"),
+            "empty archived-<date>-phases is not a completion"
+        );
+    }
+
+    #[test]
+    fn discover_lists_nonempty_archived_phases_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fixtures::archive_permutations(dir.path());
+        let m = row(&found(&root), "open-ms", None).clone();
+        assert_eq!(m.date.as_deref(), Some("2026-09-01"));
+        assert!(m.layout.phases_dir.is_some());
+    }
+
+    #[test]
+    fn discover_synthesizes_rows_for_completed_live_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fixtures::archive_permutations(dir.path());
+        let rows = found(&root);
+        for name in ["milestone-complete", "archived-status"] {
+            let own: Vec<_> = rows.iter().filter(|m| m.workstream == name).collect();
+            assert_eq!(own.len(), 1, "{name}: {rows:#?}");
+            assert_eq!(own[0].layout.anchor, root.join("workstreams").join(name));
+            assert_eq!(own[0].layout.display, format!("workstreams/{name}"));
+        }
+        assert_eq!(
+            rows.iter()
+                .filter(|m| m.workstream == "done-in-place")
+                .count(),
+            1,
+            "its v1.6 archive covers it: {rows:#?}"
+        );
+        for open in ["open-ms", "ready", "no-milestone", "no-state"] {
+            let live = root.join("workstreams").join(open);
+            assert!(
+                rows.iter().all(|m| m.layout.anchor != live),
+                "{open} is open, never synthesized"
+            );
+        }
+    }
+
+    #[test]
+    fn discover_orders_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fixtures::archive_permutations(dir.path());
+        let rows = found(&root);
+        assert!(rows.len() >= 6, "{rows:#?}");
+        for pair in rows.windows(2) {
+            let (a, b) = (&pair[0], &pair[1]);
+            assert!(a.date >= b.date, "date desc, None last: {a:?} then {b:?}");
+            if a.date == b.date {
+                assert!(
+                    (&a.workstream, std::cmp::Reverse(&a.version))
+                        <= (&b.workstream, std::cmp::Reverse(&b.version)),
+                    "ties by workstream then version: {a:?} then {b:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn mtime_date_reads_utc_day() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("f");
+        fs::write(&f, "x").unwrap();
+        let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(20_666 * 86_400 + 60);
+        fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+        assert_eq!(mtime_date(&f).as_deref(), Some("2026-08-01"));
+        assert_eq!(mtime_date(&dir.path().join("missing")), None);
     }
 }

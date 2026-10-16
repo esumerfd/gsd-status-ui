@@ -3574,6 +3574,76 @@ mod tests {
         assert!(!s.contains(crate::workstream::COMPLETE_SEPARATOR), "{s}");
     }
 
+    fn archive_ui() -> (tempfile::TempDir, Ui) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workstream::fixtures::archive_permutations(dir.path());
+        let ui = ui_for(&root.join("workstreams/open-ms"));
+        (dir, ui)
+    }
+
+    fn col_of(line: &str, needle: &str) -> usize {
+        let byte = line
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} in {line:?}"));
+        line[..byte].chars().count()
+    }
+
+    #[test]
+    fn picker_completed_rows_render_name_version_date() {
+        let (_dir, mut ui) = archive_ui();
+        ui.on_key(plain('S'));
+        ui.on_key(plain('H'));
+        let s = screen_tall(&mut ui, 40);
+        let french = s
+            .lines()
+            .find(|l| l.contains("release-french"))
+            .unwrap_or_else(|| panic!("french row: {s}"));
+        let root_row = s
+            .lines()
+            .find(|l| l.contains(crate::workstream::BASE_LABEL) && l.contains("v1.0"))
+            .unwrap_or_else(|| panic!("root row: {s}"));
+        assert!(
+            col_of(french, "release-french") < col_of(french, "\u{2014}"),
+            "{french}"
+        );
+        assert!(col_of(french, "\u{2014}") < col_of(french, "2026-10-15"), "{french}");
+        assert_eq!(
+            col_of(french, "\u{2014}"),
+            col_of(root_row, "v1.0"),
+            "version column aligned\n{french}\n{root_row}"
+        );
+        let after = &root_row[root_row.find("v1.0").unwrap()..];
+        let date_in_root = col_of(root_row, "v1.0") + col_of(after, "20");
+        assert_eq!(
+            col_of(french, "2026-10-15"),
+            date_in_root,
+            "date column aligned\n{french}\n{root_row}"
+        );
+    }
+
+    #[test]
+    fn picker_h_resets_on_every_open() {
+        let (_dir, mut ui) = archive_ui();
+        ui.on_key(plain('S'));
+        ui.on_key(plain('H'));
+        ui.on_key(esc());
+        ui.on_key(plain('S'));
+        let s = screen_tall(&mut ui, 40);
+        assert!(!s.contains(crate::workstream::COMPLETE_SEPARATOR), "{s}");
+        assert!(!s.contains("release-french"), "{s}");
+    }
+
+    #[test]
+    fn picker_h_leaves_panel_show_completed_alone() {
+        let (_dir, mut ui) = archive_ui();
+        ui.on_key(plain('S'));
+        let flash_after_open = ui.app.flash.clone();
+        ui.on_key(plain('H'));
+        assert!(!ui.show_completed);
+        assert!(!ui.take_needs_reload());
+        assert_eq!(ui.app.flash, flash_after_open);
+    }
+
     #[test]
     fn selecting_a_completed_row_shows_archived_read_only_banner() {
         let (_dir, root) = archived_workspace();

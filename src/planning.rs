@@ -174,16 +174,48 @@ fn strip_md(s: &str) -> String {
 
 pub(crate) fn load_phases(planning: &Path) -> Vec<Phase> {
     let roadmap_path = planning.join("ROADMAP.md");
-    let body = match fs::read_to_string(&roadmap_path) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
+    let mut phases = load_phases_from(
+        roadmap_path.is_file().then_some(roadmap_path.as_path()),
+        Some(&planning.join("phases")),
+        false,
+    );
+
+    // A shutdown settles every phase that never finished, whatever the roadmap
+    // checkboxes still say. This is the path that matters in practice: GSD's own
+    // tooling can only ever write `[ ]`, so a project killed through the normal
+    // workflow records its death in STATE.md's status and nowhere else.
+    if load_state(planning).is_abandoned() {
+        for ph in &mut phases {
+            if !ph.roadmap_checked && ph.stage != Stage::Verified {
+                ph.stage = Stage::Abandoned;
+            }
+        }
+    }
+    phases
+}
+
+/// The phase loader behind both live and archived views. `roadmap` and
+/// `phases_dir` are explicit so an archive's prefixed files
+/// (`v1.0-ROADMAP.md`, `v1.0-phases/`) load through the same code. Without a
+/// readable roadmap a live view has no phases; an archived view
+/// (`dirs_as_completed`) lists its phase directories as completed phases.
+fn load_phases_from(
+    roadmap: Option<&Path>,
+    phases_dir: Option<&Path>,
+    dirs_as_completed: bool,
+) -> Vec<Phase> {
+    let body = roadmap.and_then(|p| fs::read_to_string(p).ok());
+    let body = match body {
+        Some(b) => b,
+        None if dirs_as_completed => String::new(),
+        None => return Vec::new(),
     };
 
     let top_level = parse_phase_index(&body);
     let detail_phases = parse_phase_details(&body);
     let plans_per_phase = parse_phase_plans(&body);
 
-    let phase_dirs = scan_phase_dirs(planning);
+    let phase_dirs = phases_dir.map(scan_dirs).unwrap_or_default();
 
     let mut phases = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -239,18 +271,6 @@ pub(crate) fn load_phases(planning: &Path) -> Vec<Phase> {
         }
     }
 
-    // A shutdown settles every phase that never finished, whatever the roadmap
-    // checkboxes still say. This is the path that matters in practice: GSD's own
-    // tooling can only ever write `[ ]`, so a project killed through the normal
-    // workflow records its death in STATE.md's status and nowhere else.
-    if load_state(planning).is_abandoned() {
-        for ph in &mut phases {
-            if !ph.roadmap_checked && ph.stage != Stage::Verified {
-                ph.stage = Stage::Abandoned;
-            }
-        }
-    }
-
     phases.sort_by(|a, b| {
         phase_sort_key(&a.id)
             .partial_cmp(&phase_sort_key(&b.id))
@@ -264,14 +284,42 @@ pub(crate) struct ArchiveView {
     pub(crate) state: StateMeta,
     pub(crate) phases: Vec<Phase>,
     pub(crate) quick_tasks: Vec<QuickTask>,
+    // Rendered by the report in the next commit.
+    #[allow(dead_code)]
     pub(crate) notes: Vec<String>,
 }
 
-pub(crate) fn load_archive(_layout: &crate::workstream::ArchiveLayout) -> ArchiveView {
+pub(crate) fn load_archive(layout: &crate::workstream::ArchiveLayout) -> ArchiveView {
+    let state = layout
+        .state
+        .as_deref()
+        .and_then(Path::parent)
+        .map(load_state)
+        .unwrap_or_default();
+    let phases = load_phases_from(
+        layout.roadmap.as_deref(),
+        layout.phases_dir.as_deref(),
+        true,
+    );
+    // An archive's quick tasks are all history; only a recorded failure keeps
+    // its own status.
+    let quick_tasks = layout
+        .quick_dir
+        .as_deref()
+        .map(|dir| {
+            let mut tasks = load_quick_tasks_in(dir, true);
+            for t in &mut tasks {
+                if t.status == QuickTaskStatus::InProgress {
+                    t.status = QuickTaskStatus::Completed;
+                }
+            }
+            tasks
+        })
+        .unwrap_or_default();
     ArchiveView {
-        state: StateMeta::default(),
-        phases: Vec::new(),
-        quick_tasks: Vec::new(),
+        state,
+        phases,
+        quick_tasks,
         notes: Vec::new(),
     }
 }
@@ -309,7 +357,7 @@ fn phase_sort_key(id: &str) -> f64 {
 /// `status_edit`, which needs the real directory to backfill completion
 /// artifacts into (not just the parsed `Phase` struct).
 pub(crate) fn find_phase_dir(planning: &Path, phase_id: &str) -> Option<PathBuf> {
-    scan_phase_dirs(planning)
+    scan_dirs(&planning.join("phases"))
         .into_iter()
         .find(|p| dir_matches_phase(p, phase_id))
 }
@@ -502,9 +550,8 @@ fn parse_plan_line(line: &str) -> Option<Plan> {
 
 // ──────────────────────────────────────────────────────── phase scanning ──
 
-fn scan_phase_dirs(planning: &Path) -> Vec<PathBuf> {
-    let phases_root = planning.join("phases");
-    let Ok(entries) = fs::read_dir(&phases_root) else {
+fn scan_dirs(phases_root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(phases_root) else {
         return Vec::new();
     };
     entries
@@ -737,11 +784,16 @@ fn title_from_slug(slug: &str) -> String {
 /// passing/blank Status is a finished task — hidden by default (D-02), or shown
 /// as `Completed` when `show_completed` is set.
 pub(crate) fn load_quick_tasks(planning: &Path, show_completed: bool) -> Vec<QuickTask> {
-    let dir = planning.join("quick");
-    let Ok(entries) = fs::read_dir(&dir) else {
+    load_quick_tasks_in(&planning.join("quick"), show_completed)
+}
+
+/// `load_quick_tasks` over an explicit directory; its completion table is the
+/// STATE.md beside it.
+pub(crate) fn load_quick_tasks_in(dir: &Path, show_completed: bool) -> Vec<QuickTask> {
+    let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
-    let completions = parse_quick_completions(planning);
+    let completions = parse_quick_completions(dir.parent().unwrap_or(dir));
     let mut tasks: Vec<QuickTask> = entries
         .filter_map(|e| e.ok())
         .map(|e| e.path())

@@ -327,22 +327,25 @@ impl Ui {
     /// periodic refresh and the on-demand `H` toggle.
     pub(crate) fn reload_from_disk(&mut self, planning: &Path) {
         if let Some(display) = self.archive.as_ref().map(|m| m.layout.display.clone()) {
-            // Archived view: read-only, no todos or quick tasks, and every
-            // phase listed so an all-complete archive is not an empty panel.
-            let state = crate::planning::load_state(planning);
-            let phases = crate::planning::load_phases(planning);
+            // Archived view: read-only, no todos, and every phase listed so an
+            // all-complete archive is not an empty panel. File names come from
+            // the layout, since archives use prefixed names (`v1.0-ROADMAP.md`).
+            let layout = self.archive.as_ref().map(|m| m.layout.clone()).unwrap();
+            let view = crate::planning::load_archive(&layout);
             let mut buf = Vec::new();
             crate::report::render(
                 &mut buf,
-                &crate::report::Report::new(planning, &state)
-                    .phases(&phases)
+                &crate::report::Report::new(planning, &view.state)
+                    .phases(&view.phases)
+                    .quick_tasks(&view.quick_tasks)
                     .show_completed(true)
                     .archived(Some(&display))
                     .use_color(true),
             )
             .ok();
             self.set_report(ansi::ansi_to_text(&String::from_utf8_lossy(&buf)));
-            self.refresh_entries(planning, &phases, &[], &[]);
+            self.app.set_roadmap_override(layout.roadmap.clone());
+            self.refresh_entries(planning, &view.phases, &view.quick_tasks, &[]);
             return;
         }
         let state = crate::planning::load_state(planning);
@@ -396,6 +399,7 @@ impl Ui {
             }
         };
         self.archive = None;
+        self.app.set_roadmap_override(None);
         let root = crate::workstream::root_of(planning);
         *planning = crate::workstream::selection_dir(&root, &name);
         let is_base = name == crate::workstream::BASE_LABEL;

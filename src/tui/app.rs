@@ -230,6 +230,9 @@ pub(crate) struct App {
     /// `workstream::scoped_dir(&root_of(&self.planning), ...)` decides which
     /// entry is pre-selected.
     planning: PathBuf,
+    /// The roadmap file to open for the Roadmap row when it is not
+    /// `planning/ROADMAP.md` — an archived milestone's `v1.0-ROADMAP.md`.
+    roadmap_override: Option<PathBuf>,
 }
 
 impl App {
@@ -258,7 +261,21 @@ impl App {
             flash: None,
             quit: false,
             planning: PathBuf::new(),
+            roadmap_override: None,
         }
+    }
+
+    /// Point the Roadmap row (and heading lookups) at `path` instead of
+    /// `planning/ROADMAP.md`; `None` restores the live default. Takes effect
+    /// on the next `refresh_with_roadmap_row`.
+    pub(crate) fn set_roadmap_override(&mut self, path: Option<PathBuf>) {
+        self.roadmap_override = path;
+    }
+
+    fn roadmap_file(&self) -> PathBuf {
+        self.roadmap_override
+            .clone()
+            .unwrap_or_else(|| self.planning.join("ROADMAP.md"))
     }
 
     /// Flatten all phases in roadmap order. A phase with no step plans yet
@@ -319,6 +336,7 @@ impl App {
             quick_tasks,
             todos,
             show_completed,
+            None,
         ));
         app.planning = planning.to_path_buf();
         app
@@ -335,14 +353,22 @@ impl App {
         quick_tasks: &[QuickTask],
         todos: &[Todo],
         show_completed: bool,
+        roadmap_override: Option<&Path>,
     ) -> Vec<StepEntry> {
         let mut entries = Vec::new();
         if has_roadmap {
-            let roadmap_path = planning.join("ROADMAP.md");
+            let roadmap_path = roadmap_override
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| planning.join("ROADMAP.md"));
             // The Roadmap row is the UI's window onto every `.planning` root
             // doc: ROADMAP.md stays at index 0 (so open_doc(0)/Enter/R open it),
-            // and the other root docs follow so the picker can reach them.
-            let mut documents = discover_root_documents(planning);
+            // and the other root docs follow so the picker can reach them. An
+            // archived roadmap is a single prefixed file, so it stands alone.
+            let mut documents = if roadmap_override.is_some() {
+                Vec::new()
+            } else {
+                discover_root_documents(planning)
+            };
             if documents.is_empty() {
                 documents = single_document(roadmap_path.clone(), "roadmap");
             }
@@ -561,6 +587,7 @@ impl App {
             quick_tasks,
             todos,
             show_completed,
+            self.roadmap_override.as_deref(),
         );
         let new_index: HashMap<(String, String), usize> = new_entries
             .iter()
@@ -949,7 +976,7 @@ impl App {
     /// The ROADMAP detail heading for `phase_id`; `None` when the file cannot
     /// be read or has no such heading.
     pub(crate) fn roadmap_heading_for(&self, phase_id: &str) -> Option<String> {
-        let body = std::fs::read_to_string(self.planning.join("ROADMAP.md")).ok()?;
+        let body = std::fs::read_to_string(self.roadmap_file()).ok()?;
         crate::planning::roadmap_phase_heading(&body, phase_id)
     }
 

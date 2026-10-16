@@ -3884,6 +3884,81 @@ mod tests {
         assert_eq!(snapshot(&root), before, "archive bytes unchanged");
     }
 
+    #[test]
+    fn browsing_archives_writes_nothing_under_planning() {
+        let (_dir, mut ui, root) = archived_on_editable_row();
+        let mut planning = root.join("workstreams/open-ms");
+        ui.set_session_pid(4242);
+        // A roadmap in every dir the editor might resolve, so an unguarded
+        // phase edit would really write.
+        for dir in [
+            root.clone(),
+            root.join("workstreams/open-ms"),
+            root.join("milestones/ws-release-french-2026-10-15"),
+        ] {
+            std::fs::write(
+                dir.join("ROADMAP.md"),
+                "## Phases\n\n- [x] **Phase 41: French strings** - done.\n",
+            )
+            .unwrap();
+        }
+        ui.reload_from_disk(&planning);
+        let before = snapshot(&root);
+
+        // Cursor is on a row the live view could edit.
+        ui.on_key(plain('s'));
+        ui.on_key(plain('j'));
+        ui.on_key(enter());
+        ui.on_key(plain('H'));
+        ui.on_key(plain('j'));
+        ui.on_key(esc());
+        ui.reload_from_disk(&planning);
+        select_completed(&mut ui, &mut planning, is_root_v1);
+
+        assert_eq!(snapshot(&root), before, "nothing under .planning changed");
+        assert!(!root.join("gsd-status").exists());
+    }
+
+    #[test]
+    fn archived_view_survives_reload_and_panel_h() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workstream::fixtures::archive_permutations(dir.path());
+        let mut planning = root.join("workstreams/open-ms");
+        let mut ui = ui_for(&planning);
+        select_completed(&mut ui, &mut planning, is_french);
+        ui.reload_from_disk(&planning);
+        assert!(screen_tall(&mut ui, 40).contains("ARCHIVED (read-only)"));
+        ui.on_key(plain('H'));
+        ui.on_key(esc());
+        assert!(screen_tall(&mut ui, 40).contains("ARCHIVED (read-only)"));
+    }
+
+    #[test]
+    fn live_selection_clears_archived_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workstream::fixtures::archive_permutations(dir.path());
+        let mut planning = root.join("workstreams/open-ms");
+        let mut ui = ui_for(&planning);
+        select_completed(&mut ui, &mut planning, is_french);
+        ui.on_key(esc());
+        assert!(screen_tall(&mut ui, 40).contains("ARCHIVED (read-only)"));
+
+        ui.on_key(plain('S'));
+        for _ in 0..30 {
+            let d = ui.app.workstream_dialog().unwrap();
+            if matches!(d.items[d.selected], crate::workstream::PickerRow::Open { .. }) {
+                break;
+            }
+            ui.on_key(plain('j'));
+        }
+        ui.on_key(enter());
+        assert!(ui.apply_pending_workstream(&mut planning));
+        assert!(!screen_tall(&mut ui, 40).contains("ARCHIVED (read-only)"));
+        ui.app.flash = None;
+        ui.on_key(plain('s'));
+        assert_ne!(ui.app.flash.as_deref(), Some("archived view is read-only"));
+    }
+
     fn is_root_v1(m: &crate::workstream::ArchivedMilestone) -> bool {
         m.layout
             .roadmap

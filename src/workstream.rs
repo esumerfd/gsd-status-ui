@@ -292,67 +292,243 @@ pub(crate) fn parse_ws_archive_name(name: &str) -> Option<(String, String)> {
 }
 
 /// `v1.0-ROADMAP.md` -> "v1.0". Excludes `archived-*` and `ws-*`.
-pub(crate) fn version_of_entry(_name: &str) -> Option<String> {
-    None
+pub(crate) fn version_of_entry(name: &str) -> Option<String> {
+    const SUFFIXES: [&str; 5] = [
+        "-ROADMAP.md",
+        "-REQUIREMENTS.md",
+        "-MILESTONE-AUDIT.md",
+        "-phases",
+        "-quick",
+    ];
+    if name.starts_with("archived-") || name.starts_with("ws-") {
+        return None;
+    }
+    let version = SUFFIXES.iter().find_map(|s| name.strip_suffix(s))?;
+    let mut chars = version.chars();
+    (chars.next() == Some('v') && chars.next().is_some_and(|c| c.is_ascii_digit()))
+        .then(|| version.to_string())
 }
 
 /// `archived-20261006-phases` -> "2026-10-06".
-pub(crate) fn parse_archived_phases_name(_name: &str) -> Option<String> {
-    None
+pub(crate) fn parse_archived_phases_name(name: &str) -> Option<String> {
+    let d = name.strip_prefix("archived-")?.strip_suffix("-phases")?;
+    (d.len() == 8 && d.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| format!("{}-{}-{}", &d[..4], &d[4..6], &d[6..]))
 }
 
 /// Modification time of `path` as `YYYY-MM-DD` (UTC).
-pub(crate) fn mtime_date(_path: &Path) -> Option<String> {
-    None
+pub(crate) fn mtime_date(path: &Path) -> Option<String> {
+    let secs = fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let (y, m, d) = crate::status_edit::civil_from_days((secs / 86_400) as i64);
+    Some(format!("{y:04}-{m:02}-{d:02}"))
 }
 
 fn existing(path: PathBuf) -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
-/// Completed milestones from every archive location, newest first.
+fn non_empty(path: &Path) -> bool {
+    if path.is_dir() {
+        fs::read_dir(path).is_ok_and(|mut d| d.next().is_some())
+    } else {
+        path.is_file()
+    }
+}
+
+/// Valid-named entries of `dir` (sorted), so no unchecked name is ever joined.
+fn valid_entries(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        .filter(|n| is_valid_name(n))
+        .collect();
+    names.sort();
+    names
+}
+
+fn live_layout(dir: &Path, display: String) -> ArchiveLayout {
+    ArchiveLayout {
+        display,
+        state: existing(dir.join("STATE.md")),
+        roadmap: existing(dir.join("ROADMAP.md")),
+        requirements: existing(dir.join("REQUIREMENTS.md")),
+        phases_dir: existing(dir.join("phases")),
+        quick_dir: existing(dir.join("quick")),
+        anchor: dir.to_path_buf(),
+    }
+}
+
+/// Rows from one `milestones/` directory: `v<X>-*` entries grouped into one
+/// row per version, and populated `archived-<date>-phases` dirs. `display`
+/// is the directory's path relative to `.planning`.
+fn scan_milestones_dir(
+    mdir: &Path,
+    display: &str,
+    workstream: &str,
+    names: &[String],
+    out: &mut Vec<ArchivedMilestone>,
+) {
+    let mut versions: Vec<String> = names.iter().filter_map(|n| version_of_entry(n)).collect();
+    versions.dedup(); // names are sorted, so equal versions are adjacent
+    for version in versions {
+        let members: Vec<PathBuf> = names
+            .iter()
+            .filter(|n| version_of_entry(n).as_deref() == Some(&version))
+            .map(|n| mdir.join(n))
+            .collect();
+        if !members.iter().any(|m| non_empty(m)) {
+            continue;
+        }
+        let roadmap = mdir.join(format!("{version}-ROADMAP.md"));
+        let date =
+            mtime_date(&roadmap).or_else(|| members.iter().filter_map(|m| mtime_date(m)).max());
+        out.push(ArchivedMilestone {
+            workstream: workstream.to_string(),
+            layout: ArchiveLayout {
+                anchor: mdir.to_path_buf(),
+                display: format!("{display}/{version}"),
+                state: None,
+                roadmap: existing(roadmap),
+                requirements: existing(mdir.join(format!("{version}-REQUIREMENTS.md"))),
+                phases_dir: existing(mdir.join(format!("{version}-phases"))),
+                quick_dir: existing(mdir.join(format!("{version}-quick"))),
+            },
+            version: Some(version),
+            date,
+        });
+    }
+    for name in names {
+        let Some(date) = parse_archived_phases_name(name) else {
+            continue;
+        };
+        let dir = mdir.join(name);
+        if !dir.is_dir() || !non_empty(&dir) {
+            continue; // empty = `phases clear` residue, not a completion
+        }
+        out.push(ArchivedMilestone {
+            workstream: workstream.to_string(),
+            version: None,
+            date: Some(date),
+            layout: ArchiveLayout {
+                anchor: mdir.to_path_buf(),
+                display: format!("{display}/{name}"),
+                state: None,
+                roadmap: None,
+                requirements: None,
+                phases_dir: Some(dir),
+                quick_dir: None,
+            },
+        });
+    }
+}
+
+/// Completed milestones from every place gsd-core archives them, one flat
+/// record each, newest first. Pure read; scan depth is fixed.
 pub(crate) fn discover_completed(root: &Path) -> Vec<ArchivedMilestone> {
     let mut found = Vec::new();
-    let Ok(entries) = fs::read_dir(root.join("milestones")) else {
-        return found;
-    };
-    for entry in entries.flatten() {
-        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+
+    // (a) root `milestones/`: whole-workstream archives and root versions.
+    let root_ms = root.join("milestones");
+    let names = valid_entries(&root_ms);
+    for name in &names {
+        let Some((workstream, date)) = parse_ws_archive_name(name) else {
             continue;
         };
-        if !is_valid_name(&name) {
+        let dir = root_ms.join(name);
+        if !dir.is_dir() || !is_valid_name(&workstream) {
             continue;
         }
-        let Some((workstream, date)) = parse_ws_archive_name(&name) else {
-            continue;
-        };
-        if !entry.path().is_dir() || !is_valid_name(&workstream) {
-            continue;
-        }
-        let dir = entry.path();
         let version = fs::read_to_string(dir.join("STATE.md"))
             .ok()
             .and_then(|b| frontmatter_value(&b, "milestone"))
             .filter(|v| v != "null" && !v.is_empty());
+        let display = format!("milestones/{name}");
+        scan_milestones_dir(
+            &dir.join("milestones"),
+            &format!("{display}/milestones"),
+            &workstream,
+            &valid_entries(&dir.join("milestones")),
+            &mut found,
+        );
         found.push(ArchivedMilestone {
             workstream,
             version,
             date: Some(date),
-            layout: ArchiveLayout {
-                display: format!("milestones/{name}"),
-                state: existing(dir.join("STATE.md")),
-                roadmap: existing(dir.join("ROADMAP.md")),
-                requirements: existing(dir.join("REQUIREMENTS.md")),
-                phases_dir: existing(dir.join("phases")),
-                quick_dir: existing(dir.join("quick")),
-                anchor: dir,
-            },
+            layout: live_layout(&dir, display),
         });
     }
+    scan_milestones_dir(&root_ms, "milestones", BASE_LABEL, &names, &mut found);
+
+    // (b) each live workstream's own `milestones/`.
+    let live = list(root);
+    for name in &live {
+        let mdir = root.join("workstreams").join(name).join("milestones");
+        scan_milestones_dir(
+            &mdir,
+            &format!("workstreams/{name}/milestones"),
+            name,
+            &valid_entries(&mdir),
+            &mut found,
+        );
+    }
+
+    // (c) completed live dirs that were never archived to `milestones/`.
+    let mut live_dirs: Vec<(String, PathBuf, String)> = live
+        .iter()
+        .map(|n| {
+            (
+                n.clone(),
+                root.join("workstreams").join(n),
+                format!("workstreams/{n}"),
+            )
+        })
+        .collect();
+    if base_has_content(root) {
+        live_dirs.insert(
+            0,
+            (
+                BASE_LABEL.to_string(),
+                root.to_path_buf(),
+                ".planning".into(),
+            ),
+        );
+    }
+    for (workstream, dir, display) in live_dirs {
+        if classify_dir(&dir) != Classification::Complete {
+            continue;
+        }
+        let version = fs::read_to_string(dir.join("STATE.md"))
+            .ok()
+            .and_then(|b| frontmatter_value(&b, "milestone"))
+            .filter(|v| v != "null" && is_valid_name(v));
+        if found
+            .iter()
+            .any(|m| m.workstream == workstream && m.version == version)
+        {
+            continue;
+        }
+        found.push(ArchivedMilestone {
+            workstream,
+            version,
+            date: mtime_date(&dir.join("STATE.md")),
+            layout: live_layout(&dir, display),
+        });
+    }
+
     found.sort_by(|a, b| {
         b.date
             .cmp(&a.date)
             .then_with(|| a.workstream.cmp(&b.workstream))
+            .then_with(|| b.version.cmp(&a.version))
     });
     found
 }

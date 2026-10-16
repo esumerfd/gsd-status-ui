@@ -3581,8 +3581,12 @@ mod tests {
         let mut ui = ui_for(&planning);
         ui.on_key(plain('S'));
         ui.on_key(plain('H'));
-        for _ in 0..6 {
-            ui.on_key(plain('j')); // clamps on the archived row
+        for _ in 0..20 {
+            let d = ui.app.workstream_dialog().unwrap();
+            if d.items[d.selected].label() == "release-french" {
+                break;
+            }
+            ui.on_key(plain('j'));
         }
         ui.on_key(enter());
         assert!(ui.apply_pending_workstream(&mut planning));

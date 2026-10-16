@@ -3354,6 +3354,33 @@ mod tests {
     }
 
     #[test]
+    fn picker_marks_ready_to_close_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        copy_dir(Path::new("sample/workstreams"), dir.path());
+        let root = dir.path().join(".planning");
+        let ready = root.join("workstreams/ready");
+        std::fs::create_dir_all(ready.join("milestones/archived-20261001-phases")).unwrap();
+        std::fs::write(
+            ready.join("STATE.md"),
+            "---\nmilestone: v1.5\nstatus: complete\n---\n",
+        )
+        .unwrap();
+
+        let mut ui = ui_for(&root.join("workstreams/beta"));
+        ui.on_key(plain('S'));
+        let s = screen(&mut ui);
+        let line = |needle: &str| {
+            s.lines()
+                .find(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} on screen: {s}"))
+                .to_string()
+        };
+        assert!(line("ready").contains("⚑ ready to close"), "{s}");
+        assert!(!line("alpha").contains("ready to close"), "{s}");
+        assert!(!line("beta").contains("ready to close"), "{s}");
+    }
+
+    #[test]
     fn the_picker_draws_a_complete_rule_between_active_and_finished_workstreams() {
         let mut ui = workstream_ui();
         ui.on_key(plain('S'));

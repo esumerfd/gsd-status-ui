@@ -222,6 +222,19 @@ pub(crate) fn picker_entries(root: &Path) -> (Vec<String>, Option<usize>) {
     (active, separator_at)
 }
 
+/// Open/complete verdict for a workstream (or root) directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Classification {
+    Open { ready_to_close: bool },
+    Complete,
+}
+
+pub(crate) fn classify_dir(_dir: &Path) -> Classification {
+    Classification::Open {
+        ready_to_close: false,
+    }
+}
+
 /// The planning directory one `S`-picker selection re-scopes to.
 ///
 /// [`BASE_LABEL`] means the workspace root itself; anything else is a
@@ -310,6 +323,24 @@ mod tests {
         let (items, separator_at) = picker_entries(root);
         assert_eq!(items, vec!["alpha".to_string(), "beta".to_string()]);
         assert_eq!(separator_at, None);
+    }
+
+    #[test]
+    fn classify_ready_to_close_when_status_is_bare_complete_and_no_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        fs::create_dir_all(ws.join("milestones/archived-20261001-phases")).unwrap();
+        fs::write(
+            ws.join("STATE.md"),
+            "---\nmilestone: v1.5\nstatus: complete\n---\n",
+        )
+        .unwrap();
+        assert_eq!(
+            classify_dir(&ws),
+            Classification::Open {
+                ready_to_close: true
+            }
+        );
     }
 
     #[test]

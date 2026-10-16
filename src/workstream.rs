@@ -222,18 +222,60 @@ pub(crate) fn classify_dir(dir: &Path) -> Classification {
     OPEN
 }
 
-/// One selectable row of the `S` picker. Plan 01-02 adds a completed variant.
+/// Where one archived milestone's files live, so it can be opened read-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArchiveLayout {
+    /// The dir the event loop's `planning` is re-scoped to.
+    pub(crate) anchor: PathBuf,
+    /// Banner path, relative to `.planning`.
+    pub(crate) display: String,
+    pub(crate) state: Option<PathBuf>,
+    pub(crate) roadmap: Option<PathBuf>,
+    pub(crate) requirements: Option<PathBuf>,
+    pub(crate) phases_dir: Option<PathBuf>,
+    pub(crate) quick_dir: Option<PathBuf>,
+}
+
+/// One completed milestone: one flat record regardless of where it was stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArchivedMilestone {
+    pub(crate) workstream: String,
+    pub(crate) version: Option<String>,
+    pub(crate) date: Option<String>,
+    pub(crate) layout: ArchiveLayout,
+}
+
+/// What the `S` picker hands back on Enter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Selection {
+    Live(String),
+    Archive(ArchivedMilestone),
+}
+
+/// One selectable row of the `S` picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PickerRow {
     Open { label: String, ready_to_close: bool },
+    Completed(ArchivedMilestone),
 }
 
 impl PickerRow {
     pub(crate) fn label(&self) -> &str {
         match self {
             PickerRow::Open { label, .. } => label,
+            PickerRow::Completed(m) => &m.workstream,
         }
     }
+}
+
+/// `ws-release-french-2026-10-15[-n]` -> ("release-french", "2026-10-15").
+pub(crate) fn parse_ws_archive_name(_name: &str) -> Option<(String, String)> {
+    None
+}
+
+/// Completed milestones from every archive location, newest first.
+pub(crate) fn discover_completed(_root: &Path) -> Vec<ArchivedMilestone> {
+    Vec::new()
 }
 
 /// The open rows of the `S` picker: the workspace root first when it carries
@@ -679,5 +721,62 @@ mod tests {
         // the literal parent directory name) is unchanged.
         let odd = Path::new("/x/my-workstreams-tool/.planning");
         assert_eq!(root_of(odd), odd.to_path_buf());
+    }
+
+    #[test]
+    fn root_of_climbs_out_of_milestones_archives() {
+        assert_eq!(
+            root_of(Path::new("/w/.planning/milestones/ws-x-2026-01-01")),
+            PathBuf::from("/w/.planning")
+        );
+        assert_eq!(
+            root_of(Path::new("/w/.planning/milestones")),
+            PathBuf::from("/w/.planning")
+        );
+        assert_eq!(
+            root_of(Path::new("/w/.planning/workstreams/a/milestones")),
+            PathBuf::from("/w/.planning")
+        );
+    }
+
+    #[test]
+    fn root_of_returns_root_for_a_workstream_named_milestones() {
+        assert_eq!(
+            root_of(Path::new("/w/.planning/workstreams/milestones")),
+            PathBuf::from("/w/.planning")
+        );
+    }
+
+    #[test]
+    fn parse_ws_archive_name_extracts_name_and_date() {
+        assert_eq!(
+            parse_ws_archive_name("ws-release-french-2026-10-15"),
+            Some(("release-french".into(), "2026-10-15".into()))
+        );
+        assert_eq!(
+            parse_ws_archive_name("ws-a-b-2026-09-25-2"),
+            Some(("a-b".into(), "2026-09-25".into()))
+        );
+        assert_eq!(parse_ws_archive_name("ws-x"), None);
+        assert_eq!(parse_ws_archive_name("v1.0-phases"), None);
+    }
+
+    #[test]
+    fn discover_finds_workstream_archive_with_date_from_dir_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".planning");
+        let a = root.join("milestones/ws-release-french-2026-10-15");
+        fixtures::write_state(&a, "status: complete");
+        fs::write(a.join("ROADMAP.md"), "# r").unwrap();
+        fs::create_dir_all(a.join("phases/41-x")).unwrap();
+
+        let found = discover_completed(&root);
+        assert_eq!(found.len(), 1, "{found:?}");
+        let m = &found[0];
+        assert_eq!(m.workstream, "release-french");
+        assert_eq!(m.version, None);
+        assert_eq!(m.date.as_deref(), Some("2026-10-15"));
+        assert_eq!(m.layout.anchor, a);
+        assert_eq!(m.layout.display, "milestones/ws-release-french-2026-10-15");
     }
 }

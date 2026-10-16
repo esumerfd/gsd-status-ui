@@ -57,6 +57,12 @@ impl<'a> Report<'a> {
         self.use_color = use_color;
         self
     }
+
+    /// Mark the report as a read-only archived view; `display` replaces the
+    /// banner path.
+    pub(crate) fn archived(self, _display: Option<&'a str>) -> Self {
+        self
+    }
 }
 
 /// Column width of the banner box, border characters included.
@@ -1516,5 +1522,25 @@ mod tests {
             offsets.windows(2).all(|w| w[0] == w[1]),
             "stage column starts at the same offset on every row, got {offsets:?}:\n{out}"
         );
+    }
+
+    #[test]
+    fn render_archived_overrides_status_and_path() {
+        let state = StateMeta {
+            status: "executing".into(),
+            ..StateMeta::default()
+        };
+        let mut buf = Vec::new();
+        render(
+            &mut buf,
+            &Report::new(Path::new("sample/normal/.planning"), &state)
+                .archived(Some("milestones/v1.0"))
+                .use_color(false),
+        )
+        .unwrap();
+        let out = String::from_utf8(buf).unwrap();
+        assert!(out.contains("path: milestones/v1.0"), "{out}");
+        assert!(out.contains("ARCHIVED (read-only)"), "{out}");
+        assert!(!out.contains("executing"), "{out}");
     }
 }

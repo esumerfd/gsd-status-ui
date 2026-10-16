@@ -3484,4 +3484,64 @@ mod tests {
             report_string(&ui)
         );
     }
+
+    fn archived_workspace() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        copy_dir(Path::new("sample/workstreams"), dir.path());
+        let root = dir.path().join(".planning");
+        let a = root.join("milestones/ws-release-french-2026-10-15");
+        std::fs::create_dir_all(a.join("phases/41-x")).unwrap();
+        std::fs::write(a.join("STATE.md"), "---\nstatus: complete\n---\n").unwrap();
+        std::fs::write(
+            a.join("ROADMAP.md"),
+            "## Phases\n\n- [x] **Phase 41: French strings** - done.\n",
+        )
+        .unwrap();
+        (dir, root)
+    }
+
+    #[test]
+    fn picker_h_reveals_completed_rows_below_separator() {
+        let (_dir, root) = archived_workspace();
+        let mut ui = ui_for(&root.join("workstreams/beta"));
+        ui.on_key(plain('S'));
+        let s = screen(&mut ui);
+        assert!(!s.contains("release-french"), "{s}");
+        assert!(!s.contains(crate::workstream::COMPLETE_SEPARATOR), "{s}");
+
+        ui.on_key(plain('H'));
+        let s = screen(&mut ui);
+        let sep = s
+            .lines()
+            .position(|l| l.contains(crate::workstream::COMPLETE_SEPARATOR))
+            .unwrap_or_else(|| panic!("separator shown: {s}"));
+        let row = s
+            .lines()
+            .position(|l| l.contains("release-french"))
+            .unwrap_or_else(|| panic!("row shown: {s}"));
+        assert!(row > sep, "row below separator: {s}");
+
+        ui.on_key(plain('H'));
+        let s = screen(&mut ui);
+        assert!(!s.contains("release-french"), "{s}");
+        assert!(!s.contains(crate::workstream::COMPLETE_SEPARATOR), "{s}");
+    }
+
+    #[test]
+    fn selecting_a_completed_row_shows_archived_read_only_banner() {
+        let (_dir, root) = archived_workspace();
+        let mut planning = root.join("workstreams/beta");
+        let mut ui = ui_for(&planning);
+        ui.on_key(plain('S'));
+        ui.on_key(plain('H'));
+        for _ in 0..6 {
+            ui.on_key(plain('j')); // clamps on the archived row
+        }
+        ui.on_key(enter());
+        assert!(ui.apply_pending_workstream(&mut planning));
+        let s = screen_tall(&mut ui, 40);
+        assert!(s.contains("ARCHIVED (read-only)"), "{s}");
+        assert!(s.contains("milestones/ws-release-french-2026-10-15"), "{s}");
+        assert!(s.contains("French strings") || s.contains("41"), "{s}");
+    }
 }

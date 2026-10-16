@@ -3781,4 +3781,72 @@ mod tests {
         assert!(s.contains("milestones/ws-release-french-2026-10-15"), "{s}");
         assert!(s.contains("French strings") || s.contains("41"), "{s}");
     }
+
+    /// Open the picker, reveal completed rows, move onto the first completed
+    /// row `want` accepts, press Enter and apply the selection.
+    fn select_completed(
+        ui: &mut Ui,
+        planning: &mut std::path::PathBuf,
+        want: impl Fn(&crate::workstream::ArchivedMilestone) -> bool,
+    ) {
+        ui.on_key(plain('S'));
+        ui.on_key(plain('H'));
+        for _ in 0..30 {
+            let d = ui.app.workstream_dialog().unwrap();
+            if let crate::workstream::PickerRow::Completed(m) = &d.items[d.selected] {
+                if want(m) {
+                    break;
+                }
+            }
+            ui.on_key(plain('j'));
+        }
+        ui.on_key(enter());
+        assert!(ui.apply_pending_workstream(planning));
+    }
+
+    fn is_root_v1(m: &crate::workstream::ArchivedMilestone) -> bool {
+        m.layout
+            .roadmap
+            .as_ref()
+            .is_some_and(|r| r.ends_with("v1.0-ROADMAP.md"))
+    }
+
+    fn versioned_archive_ui() -> (tempfile::TempDir, Ui, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workstream::fixtures::archive_permutations(dir.path());
+        let ms = root.join("milestones");
+        std::fs::write(
+            ms.join("v1.0-ROADMAP.md"),
+            "## Phases\n\n- [x] **Phase 1: Zebra stripes**\n",
+        )
+        .unwrap();
+        std::fs::write(ms.join("v1.0-phases/01-x/01-01-PLAN.md"), "# plan\n").unwrap();
+        let planning = root.join("workstreams/open-ms");
+        let ui = ui_for(&planning);
+        (dir, ui, planning)
+    }
+
+    #[test]
+    fn selecting_a_versioned_archive_lists_its_phases() {
+        let (_dir, mut ui, mut planning) = versioned_archive_ui();
+        select_completed(&mut ui, &mut planning, is_root_v1);
+        let s = screen_tall(&mut ui, 40);
+        assert!(s.contains("ARCHIVED (read-only)"), "{s}");
+        assert!(s.contains("milestones/v1.0"), "{s}");
+        assert!(s.contains("Zebra stripes"), "{s}");
+    }
+
+    #[test]
+    fn archived_roadmap_row_opens_the_versioned_roadmap() {
+        let (_dir, mut ui, mut planning) = versioned_archive_ui();
+        select_completed(&mut ui, &mut planning, is_root_v1);
+        let idx = ui.app.roadmap_index().expect("roadmap row");
+        ui.app.current = idx;
+        let req = ui.app.open_doc(0).expect("open roadmap");
+        assert!(
+            req.path.ends_with("milestones/v1.0-ROADMAP.md"),
+            "{}",
+            req.path.display()
+        );
+    }
 }

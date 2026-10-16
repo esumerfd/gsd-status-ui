@@ -259,6 +259,23 @@ pub(crate) fn load_phases(planning: &Path) -> Vec<Phase> {
     phases
 }
 
+/// Everything an archived milestone shows, loaded read-only.
+pub(crate) struct ArchiveView {
+    pub(crate) state: StateMeta,
+    pub(crate) phases: Vec<Phase>,
+    pub(crate) quick_tasks: Vec<QuickTask>,
+    pub(crate) notes: Vec<String>,
+}
+
+pub(crate) fn load_archive(_layout: &crate::workstream::ArchiveLayout) -> ArchiveView {
+    ArchiveView {
+        state: StateMeta::default(),
+        phases: Vec::new(),
+        quick_tasks: Vec::new(),
+        notes: Vec::new(),
+    }
+}
+
 /// How a `## Phases` index row marks its phase. GSD writes only `[x]` and `[ ]`;
 /// `[~]` is what a hand-written shutdown leaves behind, and dropping those rows
 /// was what made an abandoned roadmap render as six untouched phases.
@@ -3207,5 +3224,64 @@ mod tests {
 
         let meta = load_state(&scoped);
         assert_eq!(meta.project_title, "Scoped Title");
+    }
+
+    #[test]
+    fn load_phases_is_unchanged_for_live_views() {
+        let ids = |p: &str| -> Vec<(String, Stage)> {
+            load_phases(Path::new(p))
+                .into_iter()
+                .map(|ph| (ph.id, ph.stage))
+                .collect()
+        };
+        let s = |id: &str, st: Stage| (id.to_string(), st);
+        assert_eq!(
+            ids("sample/normal/.planning"),
+            vec![
+                s("1", Stage::Verified),
+                s("2", Stage::Executing),
+                s("3", Stage::NotStarted),
+                s("4", Stage::Executed),
+                s("5", Stage::Planned),
+                s("6", Stage::Discussed),
+                s("7", Stage::Discussing),
+                s("8", Stage::Abandoned),
+                s("9", Stage::Planned),
+                s("10", Stage::NotStarted),
+            ]
+        );
+        assert_eq!(ids("sample/workstreams/.planning"), vec![]);
+        assert_eq!(
+            ids("sample/workstreams/.planning/workstreams/alpha"),
+            vec![s("1", Stage::Planned)]
+        );
+    }
+
+    #[test]
+    fn load_archive_reads_versioned_root_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workstream::fixtures::archive_permutations(dir.path());
+        let ms = root.join("milestones");
+        std::fs::write(
+            ms.join("v1.0-ROADMAP.md"),
+            "## Phases\n\n- [x] **Phase 1: X**\n",
+        )
+        .unwrap();
+        std::fs::write(ms.join("v1.0-phases/01-x/01-01-PLAN.md"), "# plan\n").unwrap();
+        let m = crate::workstream::discover_completed(&root)
+            .into_iter()
+            .find(|m| {
+                m.layout
+                    .roadmap
+                    .as_ref()
+                    .is_some_and(|r| r.ends_with("v1.0-ROADMAP.md"))
+            })
+            .expect("root v1.0 row");
+        let view = load_archive(&m.layout);
+        assert_eq!(view.phases.len(), 1, "{:?}", view.phases);
+        assert_eq!(view.phases[0].id, "1");
+        assert_eq!(view.phases[0].title, "X");
+        assert!(view.phases[0].dir.is_some(), "{:?}", view.phases[0]);
+        assert!(view.notes.is_empty(), "{:?}", view.notes);
     }
 }

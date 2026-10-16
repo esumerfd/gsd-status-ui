@@ -60,6 +60,10 @@ impl<'a> Report<'a> {
         self
     }
 
+    pub(crate) fn notes(self, _notes: &'a [String]) -> Self {
+        self
+    }
+
     /// Mark the report as a read-only archived view; `display` replaces the
     /// banner path.
     pub(crate) fn archived(mut self, display: Option<&'a str>) -> Self {
@@ -1551,5 +1555,32 @@ mod tests {
         assert!(out.contains("path: milestones/v1.0"), "{out}");
         assert!(out.contains("ARCHIVED (read-only)"), "{out}");
         assert!(!out.contains("executing"), "{out}");
+    }
+
+    #[test]
+    fn render_archived_notes_dim_under_banner() {
+        let state = StateMeta::default();
+        let notes = vec!["no archived ROADMAP".to_string()];
+        let run = |color: bool| {
+            let mut buf = Vec::new();
+            render(
+                &mut buf,
+                &Report::new(Path::new("sample/normal/.planning"), &state)
+                    .archived(Some("milestones/archived-20260901"))
+                    .notes(&notes)
+                    .use_color(color),
+            )
+            .unwrap();
+            String::from_utf8(buf).unwrap()
+        };
+        let plain = run(false);
+        assert!(plain.contains("ARCHIVED (read-only)"), "{plain}");
+        assert!(plain.contains("no archived ROADMAP"), "{plain}");
+        let colored = run(true);
+        let line = colored
+            .lines()
+            .find(|l| l.contains("no archived ROADMAP"))
+            .unwrap_or_else(|| panic!("note line: {colored}"));
+        assert!(line.contains(color::DIM), "{line:?}");
     }
 }

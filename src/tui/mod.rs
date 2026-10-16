@@ -3853,4 +3853,33 @@ mod tests {
             req.path.display()
         );
     }
+
+    #[test]
+    fn selecting_an_archived_phases_row_shows_phases_and_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workstream::fixtures::archive_permutations(dir.path());
+        let mut planning = root.join("workstreams/open-ms");
+        let mut ui = ui_for(&planning);
+        select_completed(&mut ui, &mut planning, |m| {
+            m.workstream == "open-ms" && m.version.is_none()
+        });
+        let s = screen_tall(&mut ui, 40);
+        assert!(s.contains("ARCHIVED (read-only)"), "{s}");
+        assert!(s.contains("old"), "{s}");
+        assert!(s.contains("no archived ROADMAP"), "{s}");
+    }
+
+    #[test]
+    fn selecting_a_synthesized_row_shows_the_live_dir_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workstream::fixtures::archive_permutations(dir.path());
+        let mut planning = root.join("workstreams/open-ms");
+        let mut ui = ui_for(&planning);
+        select_completed(&mut ui, &mut planning, |m| {
+            m.workstream == "milestone-complete"
+        });
+        let s = screen_tall(&mut ui, 40);
+        assert!(s.contains("ARCHIVED (read-only)"), "{s}");
+        assert!(s.contains("workstreams/milestone-complete"), "{s}");
+    }
 }

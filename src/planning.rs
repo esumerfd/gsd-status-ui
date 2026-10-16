@@ -279,6 +279,9 @@ fn load_phases_from(
     phases
 }
 
+pub(crate) const ARCHIVE_NOTE_NO_ROADMAP: &str = "no archived ROADMAP";
+pub(crate) const ARCHIVE_NOTE_EMPTY: &str = "no archived artifacts";
+
 /// Everything an archived milestone shows, loaded read-only.
 pub(crate) struct ArchiveView {
     pub(crate) state: StateMeta,
@@ -3334,6 +3337,67 @@ mod tests {
         assert_eq!(view.phases[0].id, "1");
         assert_eq!(view.phases[0].title, "X");
         assert!(view.phases[0].dir.is_some(), "{:?}", view.phases[0]);
+        assert!(view.notes.is_empty(), "{:?}", view.notes);
+    }
+
+    fn layout_in(dir: &Path) -> crate::workstream::ArchiveLayout {
+        crate::workstream::ArchiveLayout {
+            anchor: dir.to_path_buf(),
+            display: "milestones/test".into(),
+            state: None,
+            roadmap: None,
+            requirements: None,
+            phases_dir: None,
+            quick_dir: None,
+        }
+    }
+
+    #[test]
+    fn archive_without_roadmap_lists_phase_dirs_as_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let phases = dir.path().join("archived-phases");
+        std::fs::create_dir_all(phases.join("01-alpha")).unwrap();
+        std::fs::create_dir_all(phases.join("02-beta")).unwrap();
+        let mut layout = layout_in(dir.path());
+        layout.phases_dir = Some(phases);
+        let view = load_archive(&layout);
+        let got: Vec<(&str, &str, Stage)> = view
+            .phases
+            .iter()
+            .map(|p| (p.id.as_str(), p.title.as_str(), p.stage))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("1", "alpha", Stage::Verified),
+                ("2", "beta", Stage::Verified)
+            ]
+        );
+        assert_eq!(view.notes, vec![ARCHIVE_NOTE_NO_ROADMAP.to_string()]);
+    }
+
+    #[test]
+    fn archive_with_nothing_explains_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let view = load_archive(&layout_in(dir.path()));
+        assert!(view.phases.is_empty());
+        assert!(
+            view.notes.contains(&ARCHIVE_NOTE_EMPTY.to_string()),
+            "{:?}",
+            view.notes
+        );
+    }
+
+    #[test]
+    fn archive_without_state_still_loads_phases() {
+        let dir = tempfile::tempdir().unwrap();
+        let roadmap = dir.path().join("v2.0-ROADMAP.md");
+        std::fs::write(&roadmap, "## Phases\n\n- [x] **Phase 1: Solo**\n").unwrap();
+        let mut layout = layout_in(dir.path());
+        layout.roadmap = Some(roadmap);
+        let view = load_archive(&layout);
+        assert_eq!(view.phases.len(), 1);
+        assert_eq!(view.state.status, "");
         assert!(view.notes.is_empty(), "{:?}", view.notes);
     }
 }

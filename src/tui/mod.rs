@@ -3809,6 +3809,71 @@ mod tests {
         assert!(ui.apply_pending_workstream(planning));
     }
 
+    fn is_french(m: &crate::workstream::ArchivedMilestone) -> bool {
+        m.workstream == "release-french"
+    }
+
+    /// An archived view (release-french) with the cursor on a row whose
+    /// status the live view could edit.
+    fn archived_on_editable_row() -> (tempfile::TempDir, Ui, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workstream::fixtures::archive_permutations(dir.path());
+        let mut planning = root.join("workstreams/open-ms");
+        let mut ui = ui_for(&planning);
+        select_completed(&mut ui, &mut planning, is_french);
+        for _ in 0..10 {
+            ui.app.open_status_dialog();
+            if ui.app.status_dialog().is_some() {
+                ui.app.close_status_dialog();
+                ui.app.flash = None;
+                return (dir, ui, root);
+            }
+            ui.on_key(plain('j'));
+        }
+        panic!("no editable row in the archived view");
+    }
+
+    /// Every file under `dir` with its bytes, sorted by path.
+    fn snapshot(dir: &Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        fn walk(dir: &Path, out: &mut Vec<(std::path::PathBuf, Vec<u8>)>) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    out.push((p.clone(), Vec::new()));
+                    walk(&p, out);
+                } else {
+                    let bytes = std::fs::read(&p).unwrap();
+                    out.push((p, bytes));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(dir, &mut out);
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn archived_view_refuses_status_edit() {
+        let (_dir, mut ui, _root) = archived_on_editable_row();
+        ui.on_key(plain('s'));
+        assert!(ui.app.status_dialog().is_none(), "no status dialog");
+        assert_eq!(ui.app.flash.as_deref(), Some("archived view is read-only"));
+    }
+
+    #[test]
+    fn archived_view_status_dialog_enter_writes_nothing() {
+        let (_dir, mut ui, root) = archived_on_editable_row();
+        let before = snapshot(&root);
+        ui.app.open_status_dialog();
+        assert!(ui.app.status_dialog().is_some(), "forced open");
+        ui.on_key(plain('j'));
+        ui.on_key(enter());
+        assert_eq!(ui.app.flash.as_deref(), Some("archived view is read-only"));
+        assert!(ui.app.status_dialog().is_none(), "dialog closed");
+        assert_eq!(snapshot(&root), before, "archive bytes unchanged");
+    }
+
     fn is_root_v1(m: &crate::workstream::ArchivedMilestone) -> bool {
         m.layout
             .roadmap

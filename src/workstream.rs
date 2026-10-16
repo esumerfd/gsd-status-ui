@@ -53,8 +53,12 @@ pub(crate) const STALE_STATE_JSON: &str = "\u{26a0} stale .planning/state.json (
 
 /// True when workstreams exist and the root holds a `state.json` but none of
 /// the root `STATE.md`/`ROADMAP.md`/`phases/` that would make it live (D-12).
-pub(crate) fn root_state_json_is_stale(_root: &Path) -> bool {
-    false
+pub(crate) fn root_state_json_is_stale(root: &Path) -> bool {
+    !list(root).is_empty()
+        && root.join("state.json").is_file()
+        && !(root.join("STATE.md").is_file()
+            || root.join("ROADMAP.md").is_file()
+            || root.join("phases").is_dir())
 }
 
 /// GSD's workstream name policy: `[A-Za-z0-9._-]` only, non-empty, no path

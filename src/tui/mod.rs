@@ -1116,10 +1116,17 @@ impl Ui {
                 .max()
                 .unwrap_or(0)
                 .max(crate::workstream::COMPLETE_SEPARATOR.chars().count())
+                .max(if dialog.stale_footer {
+                    crate::workstream::STALE_STATE_JSON.chars().count()
+                } else {
+                    0
+                })
                 .max(16);
             let width = (name_width as u16 + 8).min(frame.area().width);
             // The separator occupies a row of its own without being an entry.
-            let rows = dialog.items.len() + usize::from(dialog.separator_at.is_some());
+            let rows = dialog.items.len()
+                + usize::from(dialog.separator_at.is_some())
+                + usize::from(dialog.stale_footer);
             let height = (rows as u16 + 2).min(frame.area().height);
             let popup = Rect {
                 x: frame.area().x + (frame.area().width.saturating_sub(width)) / 2,
@@ -1173,6 +1180,15 @@ impl Ui {
                     )),
                 }
                 lines.push(Line::from(spans));
+            }
+            if dialog.stale_footer {
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "   {footer:<name_width$} ",
+                        footer = crate::workstream::STALE_STATE_JSON
+                    ),
+                    Style::default().add_modifier(Modifier::DIM),
+                )));
             }
             frame.render_widget(
                 Paragraph::new(lines).block(Block::bordered().title(" Switch workstream ")),

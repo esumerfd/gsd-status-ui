@@ -197,6 +197,8 @@ pub(crate) struct WorkstreamDialog {
     pub(crate) show_completed: bool,
     /// How many leading `items` are open rows; completed rows follow.
     pub(crate) open_len: usize,
+    /// Render hint: a dim stale-`state.json` warning after all rows (never an item).
+    pub(crate) stale_footer: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1130,7 +1132,8 @@ impl App {
         self.flash = None;
         let root = crate::workstream::root_of(&self.planning);
         let items = crate::workstream::open_rows(&root);
-        if items.is_empty() {
+        let stale_footer = crate::workstream::root_state_json_is_stale(&root);
+        if items.is_empty() && !stale_footer {
             self.flash = Some("no workstreams in this workspace".into());
             return;
         }
@@ -1158,6 +1161,7 @@ impl App {
             separator_at: None,
             show_completed: false,
             open_len,
+            stale_footer,
         });
     }
 

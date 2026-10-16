@@ -44,6 +44,8 @@ struct CompletedColumns {
 }
 
 const MISSING_CELL: &str = "\u{2014}";
+/// Flash shown when a write is attempted in an archived view (D-05).
+const ARCHIVE_READ_ONLY: &str = "archived view is read-only";
 
 fn completed_columns(items: &[crate::workstream::PickerRow]) -> CompletedColumns {
     let mut cols = CompletedColumns {
@@ -683,6 +685,11 @@ impl Ui {
                 let Some((target, choice)) = self.app.status_dialog_take() else {
                     return;
                 };
+                // Defence in depth: archived views are read-only (D-05).
+                if self.archive.is_some() {
+                    self.app.flash = Some(ARCHIVE_READ_ONLY.into());
+                    return;
+                }
                 match crate::status_edit::apply(&target, choice) {
                     Ok(_) => {
                         self.app.flash = Some(format!("status: {}", choice.label()));
@@ -843,6 +850,9 @@ impl Ui {
                 // phase has no document, so it opens the roadmap at its heading.
                 KeyCode::Enter => self.open_selected(),
                 KeyCode::Char('o') => self.app.open_dialog(),
+                KeyCode::Char('s') if self.archive.is_some() => {
+                    self.app.flash = Some(ARCHIVE_READ_ONLY.into());
+                }
                 KeyCode::Char('s') => self.app.open_status_dialog(),
                 KeyCode::Char('S') => self.app.open_workstream_dialog(),
                 KeyCode::Char('c') => self.copy_selection(),

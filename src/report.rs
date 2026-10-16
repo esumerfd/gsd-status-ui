@@ -18,6 +18,7 @@ pub(crate) struct Report<'a> {
     todos: &'a [Todo],
     show_completed: bool,
     use_color: bool,
+    archived: Option<&'a str>,
 }
 
 impl<'a> Report<'a> {
@@ -30,6 +31,7 @@ impl<'a> Report<'a> {
             todos: &[],
             show_completed: false,
             use_color: false,
+            archived: None,
         }
     }
 
@@ -60,7 +62,8 @@ impl<'a> Report<'a> {
 
     /// Mark the report as a read-only archived view; `display` replaces the
     /// banner path.
-    pub(crate) fn archived(self, _display: Option<&'a str>) -> Self {
+    pub(crate) fn archived(mut self, display: Option<&'a str>) -> Self {
+        self.archived = display;
         self
     }
 }
@@ -77,6 +80,7 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
         todos,
         show_completed,
         use_color,
+        archived,
     } = report;
     let c = |code: &'static str| if use_color { code } else { "" };
 
@@ -104,7 +108,10 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
         top = top,
         reset = c(color::RESET),
     )?;
-    writeln!(out, "  path: {p}", p = short_planning(planning))?;
+    match archived {
+        Some(display) => writeln!(out, "  path: {display}")?,
+        None => writeln!(out, "  path: {p}", p = short_planning(planning))?,
+    }
 
     let milestone = if state.milestone.is_empty() {
         "—".to_string()
@@ -119,10 +126,12 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
         "verified" | "complete" | "completed" | "shipped" => color::GREEN,
         _ => color::MAGENTA,
     };
-    let status_str = if state.status.is_empty() {
-        "—"
+    let (status_color, status_str) = if archived.is_some() {
+        (color::MAGENTA, "ARCHIVED (read-only)")
+    } else if state.status.is_empty() {
+        (status_color, "—")
     } else {
-        state.status.as_str()
+        (status_color, state.status.as_str())
     };
     // Trailing the milestone, the status needs no `status:` prompt — the color
     // carries the meaning, and dropping the label buys back nine columns on the

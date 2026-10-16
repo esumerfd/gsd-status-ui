@@ -192,6 +192,11 @@ pub(crate) struct WorkstreamDialog {
     /// The index of `items` the `--- complete ---` rule is drawn *before*, or
     /// `None` when nothing is complete. A render hint, not an entry.
     pub(crate) separator_at: Option<usize>,
+    /// Whether the completed rows are currently appended (picker-local `H`).
+    /// Always false when the dialog opens (D-04).
+    pub(crate) show_completed: bool,
+    /// How many leading `items` are open rows; completed rows follow.
+    pub(crate) open_len: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1145,11 +1150,14 @@ impl App {
                 .and_then(position)
                 .unwrap_or(0)
         };
+        let open_len = items.len();
         self.workstream_dialog = Some(WorkstreamDialog {
             items,
             selected: focused,
             focused,
             separator_at: None,
+            show_completed: false,
+            open_len,
         });
     }
 
@@ -1168,15 +1176,41 @@ impl App {
         }
     }
 
-    /// Take (consume) the selected workstream name, closing the dialog. The
-    /// actual re-scoping happens one level up (the event loop owns the
-    /// mutable `planning: PathBuf` this feeds into).
-    pub(crate) fn workstream_dialog_take(&mut self) -> Option<String> {
+    /// Picker-local `H`: append (or drop) the completed rows below the
+    /// `--- complete ---` rule. Discovery runs only on the turn-on toggle.
+    pub(crate) fn workstream_dialog_toggle_completed(&mut self) {
+        let root = crate::workstream::root_of(&self.planning);
+        let Some(dialog) = self.workstream_dialog.as_mut() else {
+            return;
+        };
+        if dialog.show_completed {
+            dialog.items.truncate(dialog.open_len);
+            dialog.separator_at = None;
+            dialog.show_completed = false;
+        } else {
+            let rows = crate::workstream::discover_completed(&root);
+            if !rows.is_empty() {
+                dialog.separator_at = Some(dialog.open_len);
+            }
+            dialog.items.extend(
+                rows.into_iter()
+                    .map(crate::workstream::PickerRow::Completed),
+            );
+            dialog.show_completed = true;
+        }
+        dialog.selected = dialog.selected.min(dialog.items.len().saturating_sub(1));
+    }
+
+    /// Take (consume) the selected row, closing the dialog. The actual
+    /// re-scoping happens one level up (the event loop owns the mutable
+    /// `planning: PathBuf` this feeds into).
+    pub(crate) fn workstream_dialog_take(&mut self) -> Option<crate::workstream::Selection> {
+        use crate::workstream::{PickerRow, Selection};
         let dialog = self.workstream_dialog.take()?;
-        dialog
-            .items
-            .get(dialog.selected)
-            .map(|row| row.label().to_string())
+        dialog.items.get(dialog.selected).map(|row| match row {
+            PickerRow::Open { label, .. } => Selection::Live(label.clone()),
+            PickerRow::Completed(m) => Selection::Archive(m.clone()),
+        })
     }
 
     /// Open the selected document and close the dialog. As with `open_doc`,
@@ -2841,7 +2875,10 @@ mod tests {
         app.open_workstream_dialog();
         app.workstream_dialog_move(-1); // beta(1) -> alpha(0)
         let name = app.workstream_dialog_take();
-        assert_eq!(name, Some("alpha".to_string()));
+        assert_eq!(
+            name,
+            Some(crate::workstream::Selection::Live("alpha".into()))
+        );
         assert!(app.workstream_dialog().is_none());
     }
 
@@ -2899,7 +2936,9 @@ mod tests {
         app.workstream_dialog_move(-1); // alpha(1) -> (base)(0)
         assert_eq!(
             app.workstream_dialog_take(),
-            Some(crate::workstream::BASE_LABEL.to_string())
+            Some(crate::workstream::Selection::Live(
+                crate::workstream::BASE_LABEL.to_string()
+            ))
         );
     }
 
@@ -2956,7 +2995,10 @@ mod tests {
         app.workstream_dialog_move(5); // clamp to the last real entry
         let dialog = app.workstream_dialog().expect("dialog open");
         assert_eq!(dialog.items[dialog.selected].label(), "beta");
-        assert_eq!(app.workstream_dialog_take(), Some("beta".to_string()));
+        assert_eq!(
+            app.workstream_dialog_take(),
+            Some(crate::workstream::Selection::Live("beta".into()))
+        );
     }
 
     #[test]

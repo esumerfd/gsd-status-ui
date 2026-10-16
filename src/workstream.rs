@@ -246,6 +246,8 @@ pub(crate) struct ArchivedMilestone {
 }
 
 /// What the `S` picker hands back on Enter.
+// Rows are short-lived UI values; boxing would only complicate the shared interface.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Selection {
     Live(String),
@@ -253,6 +255,8 @@ pub(crate) enum Selection {
 }
 
 /// One selectable row of the `S` picker.
+// Rows are short-lived UI values; boxing would only complicate the shared interface.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PickerRow {
     Open { label: String, ready_to_close: bool },
@@ -269,13 +273,73 @@ impl PickerRow {
 }
 
 /// `ws-release-french-2026-10-15[-n]` -> ("release-french", "2026-10-15").
-pub(crate) fn parse_ws_archive_name(_name: &str) -> Option<(String, String)> {
-    None
+pub(crate) fn parse_ws_archive_name(name: &str) -> Option<(String, String)> {
+    let rest = name.strip_prefix("ws-")?;
+    let tokens: Vec<&str> = rest.split('-').collect();
+    let digits = |t: &str, n: usize| t.len() == n && t.bytes().all(|b| b.is_ascii_digit());
+    // The date is the last yyyy-mm-dd, optionally followed by one `-<n>`.
+    (1..tokens.len().saturating_sub(2)).rev().find_map(|i| {
+        let tail = &tokens[i + 3..];
+        let tail_ok = tail.is_empty() || (tail.len() == 1 && digits(tail[0], tail[0].len()));
+        (tail_ok && digits(tokens[i], 4) && digits(tokens[i + 1], 2) && digits(tokens[i + 2], 2))
+            .then(|| {
+                (
+                    tokens[..i].join("-"),
+                    format!("{}-{}-{}", tokens[i], tokens[i + 1], tokens[i + 2]),
+                )
+            })
+    })
+}
+
+fn existing(path: PathBuf) -> Option<PathBuf> {
+    path.exists().then_some(path)
 }
 
 /// Completed milestones from every archive location, newest first.
-pub(crate) fn discover_completed(_root: &Path) -> Vec<ArchivedMilestone> {
-    Vec::new()
+pub(crate) fn discover_completed(root: &Path) -> Vec<ArchivedMilestone> {
+    let mut found = Vec::new();
+    let Ok(entries) = fs::read_dir(root.join("milestones")) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !is_valid_name(&name) {
+            continue;
+        }
+        let Some((workstream, date)) = parse_ws_archive_name(&name) else {
+            continue;
+        };
+        if !entry.path().is_dir() || !is_valid_name(&workstream) {
+            continue;
+        }
+        let dir = entry.path();
+        let version = fs::read_to_string(dir.join("STATE.md"))
+            .ok()
+            .and_then(|b| frontmatter_value(&b, "milestone"))
+            .filter(|v| v != "null" && !v.is_empty());
+        found.push(ArchivedMilestone {
+            workstream,
+            version,
+            date: Some(date),
+            layout: ArchiveLayout {
+                display: format!("milestones/{name}"),
+                state: existing(dir.join("STATE.md")),
+                roadmap: existing(dir.join("ROADMAP.md")),
+                requirements: existing(dir.join("REQUIREMENTS.md")),
+                phases_dir: existing(dir.join("phases")),
+                quick_dir: existing(dir.join("quick")),
+                anchor: dir,
+            },
+        });
+    }
+    found.sort_by(|a, b| {
+        b.date
+            .cmp(&a.date)
+            .then_with(|| a.workstream.cmp(&b.workstream))
+    });
+    found
 }
 
 /// The open rows of the `S` picker: the workspace root first when it carries
@@ -319,12 +383,28 @@ pub(crate) fn selection_dir(root: &Path, selection: &str) -> PathBuf {
 /// Recover the workspace root from a scoped directory. In flat mode (or any
 /// path whose parent is not literally named `workstreams`) this is a no-op.
 pub(crate) fn root_of(scoped: &Path) -> PathBuf {
+    let leaf = |p: Option<&Path>| {
+        p.and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+    };
     let parent = scoped.parent();
-    let parent_is_workstreams =
-        parent.and_then(|p| p.file_name()).and_then(|n| n.to_str()) == Some("workstreams");
-    if parent_is_workstreams {
+    // A workstream literally named `milestones` is still a workstream, so the
+    // `workstreams/` rule wins over the archive rules below.
+    if leaf(parent).as_deref() == Some("workstreams") {
         if let Some(root) = parent.and_then(|p| p.parent()) {
             return root.to_path_buf();
+        }
+    }
+    if let Some(parent) = parent {
+        // `<dir>/milestones` itself, or an archive directly inside one.
+        if leaf(Some(scoped)).as_deref() == Some("milestones") {
+            return root_of(parent);
+        }
+        if leaf(Some(parent)).as_deref() == Some("milestones") {
+            if let Some(grand) = parent.parent() {
+                return root_of(grand);
+            }
         }
     }
     scoped.to_path_buf()

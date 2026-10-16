@@ -115,7 +115,10 @@ pub(crate) struct Ui {
     /// A workstream name confirmed by Enter on the `S` picker, queued for the
     /// event loop to act on (it owns the mutable `planning: PathBuf` that
     /// needs re-scoping). Drained by `take_pending_workstream`.
-    pending_workstream: Option<String>,
+    pending_workstream: Option<crate::workstream::Selection>,
+    /// The completed milestone being viewed read-only, when the panel was
+    /// re-scoped to an archive from the `S` picker.
+    archive: Option<crate::workstream::ArchivedMilestone>,
     /// PID of the shell that launched gsd-status. When set, a confirmed `S`
     /// switch is remembered in `.planning/gsd-status/gsd-state-<pid>.json`.
     /// `None` (the default) writes nothing — every test that builds a `Ui`
@@ -263,6 +266,7 @@ impl Ui {
             find_draft: None,
             pending_find: None,
             pending_workstream: None,
+            archive: None,
             session_pid: None,
         }
     }
@@ -276,6 +280,25 @@ impl Ui {
     /// entry list, honoring the current `show_completed` toggle. Shared by the
     /// periodic refresh and the on-demand `H` toggle.
     pub(crate) fn reload_from_disk(&mut self, planning: &Path) {
+        if let Some(display) = self.archive.as_ref().map(|m| m.layout.display.clone()) {
+            // Archived view: read-only, no todos or quick tasks, and every
+            // phase listed so an all-complete archive is not an empty panel.
+            let state = crate::planning::load_state(planning);
+            let phases = crate::planning::load_phases(planning);
+            let mut buf = Vec::new();
+            crate::report::render(
+                &mut buf,
+                &crate::report::Report::new(planning, &state)
+                    .phases(&phases)
+                    .show_completed(true)
+                    .archived(Some(&display))
+                    .use_color(true),
+            )
+            .ok();
+            self.set_report(ansi::ansi_to_text(&String::from_utf8_lossy(&buf)));
+            self.refresh_entries(planning, &phases, &[], &[]);
+            return;
+        }
         let state = crate::planning::load_state(planning);
         let phases = crate::planning::load_phases(planning);
         let quick_tasks = crate::planning::load_quick_tasks(planning, self.show_completed);
@@ -295,7 +318,7 @@ impl Ui {
     }
 
     /// Drain a workstream switch confirmed by Enter (see `pending_workstream`).
-    pub(crate) fn take_pending_workstream(&mut self) -> Option<String> {
+    pub(crate) fn take_pending_workstream(&mut self) -> Option<crate::workstream::Selection> {
         self.pending_workstream.take()
     }
 
@@ -308,9 +331,25 @@ impl Ui {
     /// `.planning/active-workstream`; it only writes its own
     /// `.planning/gsd-status/` state, and only when a session pid is set.
     pub(crate) fn apply_pending_workstream(&mut self, planning: &mut std::path::PathBuf) -> bool {
-        let Some(name) = self.take_pending_workstream() else {
+        let Some(selection) = self.take_pending_workstream() else {
             return false;
         };
+        let name = match selection {
+            crate::workstream::Selection::Live(name) => name,
+            crate::workstream::Selection::Archive(m) => {
+                // Read-only view: never writes session state or the pointer.
+                *planning = m.layout.anchor.clone();
+                self.app.flash = Some(format!(
+                    "viewing archived milestone: {} {}",
+                    m.workstream,
+                    m.version.as_deref().unwrap_or("—")
+                ));
+                self.archive = Some(m);
+                self.reload_from_disk(planning);
+                return true;
+            }
+        };
+        self.archive = None;
         let root = crate::workstream::root_of(planning);
         *planning = crate::workstream::selection_dir(&root, &name);
         let is_base = name == crate::workstream::BASE_LABEL;
@@ -481,10 +520,10 @@ impl Ui {
         let remap = self.app.refresh_with_roadmap_row(
             planning,
             !phases.is_empty(),
-            &navigable_phases(phases, self.show_completed),
+            &navigable_phases(phases, self.show_completed || self.archive.is_some()),
             quick_tasks,
             todos,
-            self.show_completed,
+            self.show_completed || self.archive.is_some(),
         );
         let old_views = std::mem::take(&mut self.views);
         for ((old_idx, doc), view) in old_views {
@@ -614,6 +653,7 @@ impl Ui {
             KeyCode::Esc | KeyCode::Char('q') => self.app.close_workstream_dialog(),
             KeyCode::Char('j') | KeyCode::Down => self.app.workstream_dialog_move(1),
             KeyCode::Char('k') | KeyCode::Up => self.app.workstream_dialog_move(-1),
+            KeyCode::Char('H') => self.app.workstream_dialog_toggle_completed(),
             KeyCode::Enter => {
                 self.pending_workstream = self.app.workstream_dialog_take();
             }
@@ -3236,7 +3276,10 @@ mod tests {
             ui.app.workstream_dialog().is_none(),
             "Enter closes the picker"
         );
-        assert_eq!(ui.take_pending_workstream(), Some("alpha".to_string()));
+        assert_eq!(
+            ui.take_pending_workstream(),
+            Some(crate::workstream::Selection::Live("alpha".into()))
+        );
     }
 
     #[test]
@@ -3268,7 +3311,9 @@ mod tests {
         ui.on_key(plain('S'));
         ui.on_key(plain('k')); // beta -> alpha
         ui.on_key(enter());
-        let name = ui.take_pending_workstream().expect("a switch was queued");
+        let Some(crate::workstream::Selection::Live(name)) = ui.take_pending_workstream() else {
+            panic!("a live switch was queued");
+        };
         let new_planning =
             crate::workstream::scoped_dir(&crate::workstream::root_of(&scoped), Some(&name));
         ui.reload_from_disk(&new_planning);
@@ -3461,7 +3506,9 @@ mod tests {
         ui.on_key(plain('S'));
         ui.on_key(plain('k')); // beta -> alpha
         ui.on_key(enter());
-        let name = ui.take_pending_workstream().expect("a switch was queued");
+        let Some(crate::workstream::Selection::Live(name)) = ui.take_pending_workstream() else {
+            panic!("a live switch was queued");
+        };
 
         let scoped = Path::new("sample/workstreams/.planning/workstreams/beta");
         let new_planning =

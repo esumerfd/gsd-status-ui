@@ -468,6 +468,7 @@ pub(crate) fn discover_completed(root: &Path) -> Vec<ArchivedMilestone> {
         }
         let version = state_milestone(&dir);
         let display = format!("milestones/{name}");
+        let inner_from = found.len();
         scan_milestones_dir(
             &dir.join("milestones"),
             &format!("{display}/milestones"),
@@ -475,6 +476,20 @@ pub(crate) fn discover_completed(root: &Path) -> Vec<ArchivedMilestone> {
             &valid_entries(&dir.join("milestones")),
             &mut found,
         );
+        // `milestone complete` then `workstream complete`: the inner
+        // `<v>-*` archive and the moved dir are the same milestone. Keep the
+        // inner row (it holds the archived ROADMAP/phases), dated by the
+        // archive directory name (D-02).
+        let mut covered = false;
+        for inner in &mut found[inner_from..] {
+            if version.is_some() && inner.version == version {
+                inner.date = Some(date.clone());
+                covered = true;
+            }
+        }
+        if covered {
+            continue;
+        }
         found.push(ArchivedMilestone {
             workstream,
             version,
@@ -523,9 +538,12 @@ pub(crate) fn discover_completed(root: &Path) -> Vec<ArchivedMilestone> {
             continue;
         }
         let version = state_milestone(&dir);
-        if found
-            .iter()
-            .any(|m| m.workstream == workstream && m.version == version)
+        // Only a versioned row is the same milestone; unversioned
+        // `archived-<date>-phases` rows are earlier milestones' residue.
+        if version.is_some()
+            && found
+                .iter()
+                .any(|m| m.workstream == workstream && m.version == version)
         {
             continue;
         }
@@ -1155,6 +1173,42 @@ mod tests {
         let found = discover_completed(&root);
         let row = found.iter().find(|m| m.workstream == "beta").unwrap();
         assert_eq!(row.version, None);
+    }
+
+    #[test]
+    fn discover_completed_lists_a_ws_archive_once_when_its_milestone_was_closed_inside() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".planning");
+        let ws = root.join("milestones/ws-alpha-2026-10-01");
+        fixtures::write_state(&ws, "milestone: v1.2\nstatus: milestone complete");
+        fs::create_dir_all(ws.join("milestones/v1.2-phases/01-x")).unwrap();
+        fs::write(ws.join("milestones/v1.2-ROADMAP.md"), "# v1.2").unwrap();
+
+        let rows: Vec<_> = discover_completed(&root)
+            .into_iter()
+            .filter(|m| m.workstream == "alpha")
+            .collect();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].version.as_deref(), Some("v1.2"));
+        // The archive directory's date wins over the inner file's mtime (D-02).
+        assert_eq!(rows[0].date.as_deref(), Some("2026-10-01"));
+    }
+
+    #[test]
+    fn discover_completed_keeps_an_unversioned_live_dir_beside_its_archived_phases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".planning");
+        let gamma = root.join("workstreams/gamma");
+        fixtures::write_state(&gamma, "status: milestone complete");
+        fs::create_dir_all(gamma.join("milestones/archived-20261001-phases/01-x")).unwrap();
+
+        let found = discover_completed(&root);
+        assert!(
+            found
+                .iter()
+                .any(|m| m.workstream == "gamma" && m.layout.anchor == gamma),
+            "{found:?}"
+        );
     }
 
     #[test]

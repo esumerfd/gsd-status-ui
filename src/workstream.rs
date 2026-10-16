@@ -158,6 +158,9 @@ pub(crate) fn scoped_dir(root: &Path, ws: Option<&str>) -> PathBuf {
     }
 }
 
+/// The workspace root's directory name (see `planning::find_planning_dir`).
+const PLANNING_DIR: &str = ".planning";
+
 /// Separator drawn between the open rows and the completed ones in
 /// the `S` picker. Never selectable — it is a rendered rule, not an entry.
 pub(crate) const COMPLETE_SEPARATOR: &str = "--- complete ---";
@@ -586,12 +589,19 @@ pub(crate) fn selection_dir(root: &Path, selection: &str) -> PathBuf {
 
 /// Recover the workspace root from a scoped directory. In flat mode (or any
 /// path whose parent is not literally named `workstreams`) this is a no-op.
+///
+/// Never climbs above a `.planning` directory: the archive rules only fire
+/// for a `milestones` directory that sits inside `.planning`, so a project
+/// folder that happens to be named `milestones` is not mistaken for one.
 pub(crate) fn root_of(scoped: &Path) -> PathBuf {
     let leaf = |p: Option<&Path>| {
         p.and_then(|p| p.file_name())
             .and_then(|n| n.to_str())
             .map(str::to_string)
     };
+    if leaf(Some(scoped)).as_deref() == Some(PLANNING_DIR) {
+        return scoped.to_path_buf();
+    }
     let parent = scoped.parent();
     // A workstream literally named `milestones` is still a workstream, so the
     // `workstreams/` rule wins over the archive rules below.
@@ -600,7 +610,11 @@ pub(crate) fn root_of(scoped: &Path) -> PathBuf {
             return root.to_path_buf();
         }
     }
-    if let Some(parent) = parent {
+    let inside_planning = scoped
+        .ancestors()
+        .skip(1)
+        .any(|a| leaf(Some(a)).as_deref() == Some(PLANNING_DIR));
+    if let Some(parent) = parent.filter(|_| inside_planning) {
         // `<dir>/milestones` itself, or an archive directly inside one.
         if leaf(Some(scoped)).as_deref() == Some("milestones") {
             return root_of(parent);
@@ -1094,6 +1108,17 @@ mod tests {
             root_of(Path::new("/w/.planning/workstreams/a/milestones")),
             PathBuf::from("/w/.planning")
         );
+    }
+
+    #[test]
+    fn root_of_never_climbs_above_planning_in_a_project_named_milestones() {
+        let root = PathBuf::from("/x/milestones/.planning");
+        assert_eq!(root_of(&root), root);
+        assert_eq!(root_of(&root.join("workstreams/a")), root);
+        assert_eq!(root_of(&root.join("milestones")), root);
+        assert_eq!(root_of(&root.join("milestones/ws-a-2026-01-01")), root);
+        assert_eq!(root_of(&root.join("workstreams/a/milestones")), root);
+        assert_eq!(root_of(&root.join("workstreams/milestones")), root);
     }
 
     #[test]

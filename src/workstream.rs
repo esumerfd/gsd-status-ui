@@ -145,94 +145,111 @@ pub(crate) fn scoped_dir(root: &Path, ws: Option<&str>) -> PathBuf {
     }
 }
 
-/// Separator drawn between the active workstreams and the complete ones in
+/// Separator drawn between the open rows and the completed ones in
 /// the `S` picker. Never selectable — it is a rendered rule, not an entry.
 pub(crate) const COMPLETE_SEPARATOR: &str = "--- complete ---";
 
-/// How far through its life a workstream is, read from its own `STATE.md`
-/// frontmatter `status:`.
+/// Open/complete verdict for a workstream (or root) directory, read from its
+/// own `STATE.md` and, for a bare `complete`, from whether the milestone was
+/// actually archived on disk.
 ///
-/// Mirrors gsd-core's `isCompletedInventory`
-/// (`workstream-inventory-builder.cts`), which treats a status matching
-/// `milestone complete` or `archived` as done. A bare `complete` is accepted
-/// too, since that is what a hand-written STATE.md tends to say — but only as
-/// a whole-word match, so `incomplete` and `not complete` stay `Active`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Completion {
-    /// Live work. Also the verdict for a workstream with no readable
-    /// STATE.md: "unknown" must never render as done, or live work hides.
-    Active,
-    /// Finished but still present — sorted below the separator.
-    Complete,
-    /// Retired. Hidden from the picker outright, and NOT revealed by the
-    /// `H` show/hide-completed toggle: `H` governs completed work inside a
-    /// workspace, not whether a retired workspace is offered at all.
-    Archived,
-}
-
-/// Classify one workstream by its `STATE.md` frontmatter `status:`.
-pub(crate) fn completion(root: &Path, name: &str) -> Completion {
-    let Ok(body) = fs::read_to_string(root.join("workstreams").join(name).join("STATE.md")) else {
-        return Completion::Active;
-    };
-    let Some(status) = body
-        .lines()
-        .take_while(|l| l.trim() != "---" || body.starts_with("---"))
-        .find_map(|l| l.strip_prefix("status:"))
-    else {
-        return Completion::Active;
-    };
-    let status = status.trim().to_ascii_lowercase();
-    // Deliberately narrower than gsd-core's `\barchived\b` / `\bmilestone
-    // complete\b` regexes: a bare word match anywhere also fires on the
-    // negations a hand-written STATE.md can contain ("not complete"), and
-    // reading live work as done is the expensive direction to be wrong in.
-    // Exact forms, plus the `milestone …` phrase gsd-core itself emits.
-    if status == "archived" || status.contains("milestone archived") {
-        Completion::Archived
-    } else if matches!(status.as_str(), "complete" | "completed")
-        || status.contains("milestone complete")
-    {
-        Completion::Complete
-    } else {
-        Completion::Active
-    }
-}
-
-/// The workstream rows of the `S` picker, in display order: active ones
-/// sorted, then complete ones sorted. Archived workstreams are omitted.
-///
-/// The second element is the index the [`COMPLETE_SEPARATOR`] belongs
-/// *before*, or `None` when nothing is complete. Keeping the separator out
-/// of the returned list is deliberate: `selected`/`focused` then index only
-/// real entries, so cursor movement and selection need no skip-the-rule
-/// special case.
-pub(crate) fn picker_entries(root: &Path) -> (Vec<String>, Option<usize>) {
-    let mut active = Vec::new();
-    let mut complete = Vec::new();
-    for name in list(root) {
-        match completion(root, &name) {
-            Completion::Active => active.push(name),
-            Completion::Complete => complete.push(name),
-            Completion::Archived => {}
-        }
-    }
-    let separator_at = (!complete.is_empty()).then_some(active.len());
-    active.extend(complete);
-    (active, separator_at)
-}
-
-/// Open/complete verdict for a workstream (or root) directory.
+/// Ambiguity always resolves to `Open`: reading live work as done hides it,
+/// which is the expensive direction to be wrong in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Classification {
+    /// Live work. `ready_to_close` is true when STATE.md says a bare
+    /// `complete` but no `milestones/<milestone>-ROADMAP.md` proves the
+    /// milestone was closed (gsd-core's `milestone complete` writes it).
     Open { ready_to_close: bool },
+    /// Closed: `milestone complete` / `archived` status, or a bare
+    /// `complete` backed by an archived `<milestone>-ROADMAP.md`.
     Complete,
 }
 
-pub(crate) fn classify_dir(_dir: &Path) -> Classification {
-    Classification::Open {
+/// First `key:` value in the leading frontmatter-ish lines of a STATE.md body.
+fn frontmatter_value(body: &str, key: &str) -> Option<String> {
+    let prefix = format!("{key}:");
+    body.lines()
+        .take_while(|l| l.trim() != "---" || body.starts_with("---"))
+        .find_map(|l| l.strip_prefix(prefix.as_str()))
+        .map(|v| v.trim().to_string())
+}
+
+/// Classify a root or `root/workstreams/<name>` directory. Pure read: this
+/// never writes anything (D2).
+///
+/// 1. STATE.md missing/unreadable or without `status:` -> open.
+/// 2. status `archived`, or containing `milestone archived` /
+///    `milestone complete` -> complete. Deliberately narrower than
+///    gsd-core's word regexes so `not complete` stays open.
+/// 3. status `complete`/`completed`: complete only when the STATE
+///    `milestone:` is a valid name and `milestones/<milestone>-ROADMAP.md`
+///    is a file; otherwise open and flagged ready to close.
+/// 4. anything else -> open.
+pub(crate) fn classify_dir(dir: &Path) -> Classification {
+    const OPEN: Classification = Classification::Open {
         ready_to_close: false,
+    };
+    let Ok(body) = fs::read_to_string(dir.join("STATE.md")) else {
+        return OPEN;
+    };
+    let Some(status) = frontmatter_value(&body, "status") else {
+        return OPEN;
+    };
+    let status = status.to_ascii_lowercase();
+    if status == "archived"
+        || status.contains("milestone archived")
+        || status.contains("milestone complete")
+    {
+        return Classification::Complete;
     }
+    if matches!(status.as_str(), "complete" | "completed") {
+        let archived = frontmatter_value(&body, "milestone")
+            .filter(|m| m != "null" && is_valid_name(m))
+            .is_some_and(|m| {
+                dir.join("milestones")
+                    .join(format!("{m}-ROADMAP.md"))
+                    .is_file()
+            });
+        return if archived {
+            Classification::Complete
+        } else {
+            Classification::Open {
+                ready_to_close: true,
+            }
+        };
+    }
+    OPEN
+}
+
+/// One selectable row of the `S` picker. Plan 01-02 adds a completed variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PickerRow {
+    Open { label: String, ready_to_close: bool },
+}
+
+impl PickerRow {
+    pub(crate) fn label(&self) -> &str {
+        match self {
+            PickerRow::Open { label, .. } => label,
+        }
+    }
+}
+
+/// The open rows of the `S` picker, sorted by workstream name.
+pub(crate) fn open_rows(root: &Path) -> Vec<PickerRow> {
+    list(root)
+        .into_iter()
+        .filter_map(
+            |name| match classify_dir(&root.join("workstreams").join(&name)) {
+                Classification::Open { ready_to_close } => Some(PickerRow::Open {
+                    label: name,
+                    ready_to_close,
+                }),
+                Classification::Complete => None,
+            },
+        )
+        .collect()
 }
 
 /// The planning directory one `S`-picker selection re-scopes to.
@@ -278,51 +295,34 @@ mod tests {
     }
 
     #[test]
-    fn completion_classifies_from_the_workstreams_own_state_status() {
-        let root = Path::new("sample/workstreams/.planning");
-        assert_eq!(completion(root, "alpha"), Completion::Active);
-        assert_eq!(completion(root, "gamma"), Completion::Complete);
-        assert_eq!(completion(root, "zeta"), Completion::Archived);
-        // No STATE.md at all must read as Active. "Unknown" can never be
-        // allowed to mean "done" — that would hide live work.
-        assert_eq!(completion(root, "nonexistent"), Completion::Active);
-    }
-
-    #[test]
-    fn completion_does_not_mistake_incomplete_or_not_complete_for_done() {
+    fn classify_keeps_incomplete_and_not_complete_open() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join(".planning");
         for (name, status) in [("a", "incomplete"), ("b", "not complete")] {
             let ws = root.join("workstreams").join(name);
             fs::create_dir_all(&ws).unwrap();
             fs::write(ws.join("STATE.md"), format!("---\nstatus: {status}\n---\n")).unwrap();
+            assert_eq!(
+                classify_dir(&ws),
+                Classification::Open {
+                    ready_to_close: false
+                },
+                "{status}"
+            );
         }
-        assert_eq!(completion(&root, "a"), Completion::Active);
-        assert_eq!(completion(&root, "b"), Completion::Active);
     }
 
     #[test]
-    fn picker_entries_sort_complete_to_the_bottom_and_drop_archived() {
-        let root = Path::new("sample/workstreams/.planning");
-        let (items, separator_at) = picker_entries(root);
-        assert_eq!(
-            items,
-            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
-            "zeta is archived and must not appear at all"
-        );
-        assert_eq!(
-            separator_at,
-            Some(2),
-            "the separator sits immediately before the first complete workstream"
-        );
-    }
-
-    #[test]
-    fn picker_entries_have_no_separator_when_nothing_is_complete() {
-        let root = Path::new("sample/project-and-workstreams/.planning");
-        let (items, separator_at) = picker_entries(root);
-        assert_eq!(items, vec!["alpha".to_string(), "beta".to_string()]);
-        assert_eq!(separator_at, None);
+    fn classify_sample_workstreams_from_their_own_state_status() {
+        let root = Path::new("sample/workstreams/.planning/workstreams");
+        let open = Classification::Open {
+            ready_to_close: false,
+        };
+        assert_eq!(classify_dir(&root.join("alpha")), open);
+        assert_eq!(classify_dir(&root.join("gamma")), Classification::Complete);
+        assert_eq!(classify_dir(&root.join("zeta")), Classification::Complete);
+        // No STATE.md at all is unknown, and unknown must read as open.
+        assert_eq!(classify_dir(&root.join("nonexistent")), open);
     }
 
     #[test]

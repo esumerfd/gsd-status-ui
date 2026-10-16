@@ -23,6 +23,19 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
+/// Dim suffix on an open picker row whose milestone is done but not closed.
+const READY_TO_CLOSE: &str = " ⚑ ready to close";
+
+fn ready_marker_width(row: &crate::workstream::PickerRow) -> usize {
+    match row {
+        crate::workstream::PickerRow::Open {
+            ready_to_close: true,
+            ..
+        } => READY_TO_CLOSE.chars().count(),
+        _ => 0,
+    }
+}
+
 /// True when a rendered (lowercased) viewer line is the heading `want`
 /// (lowercased), or the first wrapped line of it.
 fn is_rendered_heading(line: &str, want: &str) -> bool {
@@ -1007,7 +1020,7 @@ impl Ui {
             let name_width = dialog
                 .items
                 .iter()
-                .map(|n| n.chars().count())
+                .map(|r| r.label().chars().count() + ready_marker_width(r))
                 .max()
                 .unwrap_or(0)
                 .max(crate::workstream::COMPLETE_SEPARATOR.chars().count())
@@ -1024,9 +1037,9 @@ impl Ui {
             };
             frame.render_widget(Clear, popup);
             let mut lines: Vec<Line> = Vec::with_capacity(rows);
-            for (i, name) in dialog.items.iter().enumerate() {
+            for (i, row) in dialog.items.iter().enumerate() {
                 // Drawn before the row it precedes, so it separates the
-                // active workstreams above from the complete ones below.
+                // open workstreams above from any section below.
                 if dialog.separator_at == Some(i) {
                     lines.push(Line::from(Span::styled(
                         format!(
@@ -1045,10 +1058,25 @@ impl Ui {
                 } else {
                     Style::default()
                 };
-                lines.push(Line::from(Span::styled(
-                    format!(" {marker} {name:<name_width$} "),
-                    style,
-                )));
+                let name = row.label();
+                let mut spans = Vec::new();
+                match row {
+                    crate::workstream::PickerRow::Open {
+                        ready_to_close: true,
+                        ..
+                    } => {
+                        spans.push(Span::styled(format!(" {marker} {name}"), style));
+                        spans.push(Span::styled(
+                            READY_TO_CLOSE,
+                            style.add_modifier(Modifier::DIM),
+                        ));
+                    }
+                    _ => spans.push(Span::styled(
+                        format!(" {marker} {name:<name_width$} "),
+                        style,
+                    )),
+                }
+                lines.push(Line::from(spans));
             }
             frame.render_widget(
                 Paragraph::new(lines).block(Block::bordered().title(" Switch workstream ")),
@@ -3173,14 +3201,11 @@ mod tests {
     fn workstream_dialog_j_k_clamp_and_esc_cancels_with_no_state_change() {
         let mut ui = workstream_ui();
         ui.on_key(plain('S'));
-        // Rows: alpha(0), beta(1), then the rule, then gamma(2) — beta is
-        // pre-selected. j steps onto gamma; a second j clamps there.
-        ui.on_key(plain('j'));
-        assert_eq!(ui.app.workstream_dialog().unwrap().selected, 2);
+        // Rows: alpha(0), beta(1) — beta is pre-selected. j clamps there.
         ui.on_key(plain('j'));
         assert_eq!(
             ui.app.workstream_dialog().unwrap().selected,
-            2,
+            1,
             "clamps at bottom"
         );
         ui.on_key(plain('k'));
@@ -3381,32 +3406,16 @@ mod tests {
     }
 
     #[test]
-    fn the_picker_draws_a_complete_rule_between_active_and_finished_workstreams() {
+    fn the_picker_draws_no_complete_rule_and_no_finished_workstreams() {
         let mut ui = workstream_ui();
         ui.on_key(plain('S'));
         let s = screen(&mut ui);
-        let rows: Vec<&str> = s
-            .lines()
-            .filter(|l| {
-                l.contains("alpha")
-                    || l.contains("beta")
-                    || l.contains("gamma")
-                    || l.contains(crate::workstream::COMPLETE_SEPARATOR)
-            })
-            .collect();
-        let idx = |needle: &str| {
-            rows.iter()
-                .position(|l| l.contains(needle))
-                .unwrap_or_else(|| panic!("{needle} on screen: {s}"))
-        };
+        assert!(s.contains("alpha") && s.contains("beta"), "{s}");
         assert!(
-            idx("beta") < idx(crate::workstream::COMPLETE_SEPARATOR),
-            "the rule sits below the active workstreams: {rows:?}"
+            !s.contains(crate::workstream::COMPLETE_SEPARATOR),
+            "no completed section: {s}"
         );
-        assert!(
-            idx(crate::workstream::COMPLETE_SEPARATOR) < idx("gamma"),
-            "and above the complete ones: {rows:?}"
-        );
+        assert!(!s.contains("gamma"), "complete workstream hidden: {s}");
         assert!(!s.contains("zeta"), "archived never renders: {s}");
     }
 

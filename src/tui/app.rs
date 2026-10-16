@@ -174,14 +174,15 @@ pub(crate) struct StatusDialog {
 }
 
 /// The `S` switch-workstream picker: an optional `(base)` root entry, then
-/// the workspace's active workstreams sorted, then its complete ones — with
-/// the currently focused entry pre-selected rather than defaulting to index
-/// 0. Archived workstreams never appear (see [`crate::workstream::Completion`]).
+/// the workspace's open workstreams sorted (ready-to-close ones carry a
+/// marker) — with the currently focused entry pre-selected rather than
+/// defaulting to index 0. Completed workstreams never appear (see
+/// [`crate::workstream::classify_dir`]).
 #[derive(Debug)]
 pub(crate) struct WorkstreamDialog {
     /// Selectable rows only. The separator is NOT one of these, which is why
     /// `selected`/`focused` need no skip-the-rule special case.
-    pub(crate) items: Vec<String>,
+    pub(crate) items: Vec<crate::workstream::PickerRow>,
     pub(crate) selected: usize,
     /// The index of the workstream focused when the dialog opened — distinct
     /// from `selected`, which moves with j/k. Lets the popup mark the
@@ -1132,17 +1133,17 @@ impl App {
             self.flash = Some("no workstreams in this workspace".into());
             return;
         }
-        // Active first, then complete below the rule; archived are dropped.
-        let (workstreams, complete_at) = crate::workstream::picker_entries(&root);
+        // Open rows only; completed workstreams are not offered.
         let has_base = crate::workstream::base_has_content(&root);
-        let offset = usize::from(has_base);
-        let mut items: Vec<String> = Vec::with_capacity(workstreams.len() + offset);
+        let mut items: Vec<crate::workstream::PickerRow> = Vec::new();
         if has_base {
-            items.push(crate::workstream::BASE_LABEL.to_string());
+            items.push(crate::workstream::PickerRow::Open {
+                label: crate::workstream::BASE_LABEL.to_string(),
+                ready_to_close: false,
+            });
         }
-        items.extend(workstreams);
-        // `(base)` shifts every workstream row down by one.
-        let separator_at = complete_at.map(|i| i + offset);
+        items.extend(crate::workstream::open_rows(&root));
+        let position = |label: &str| items.iter().position(|r| r.label() == label);
 
         // Viewing the root itself (`planning == root`, i.e. switched to
         // base) focuses the base entry. Otherwise the focused workstream is
@@ -1150,22 +1151,19 @@ impl App {
         // `root/workstreams/<name>`. Falls back to index 0 when neither
         // matches.
         let focused = if self.planning == root {
-            items
-                .iter()
-                .position(|n| n == crate::workstream::BASE_LABEL)
-                .unwrap_or(0)
+            position(crate::workstream::BASE_LABEL).unwrap_or(0)
         } else {
             self.planning
                 .file_name()
                 .and_then(|n| n.to_str())
-                .and_then(|name| items.iter().position(|n| n == name))
+                .and_then(position)
                 .unwrap_or(0)
         };
         self.workstream_dialog = Some(WorkstreamDialog {
             items,
             selected: focused,
             focused,
-            separator_at,
+            separator_at: None,
         });
     }
 
@@ -1189,7 +1187,10 @@ impl App {
     /// mutable `planning: PathBuf` this feeds into).
     pub(crate) fn workstream_dialog_take(&mut self) -> Option<String> {
         let dialog = self.workstream_dialog.take()?;
-        dialog.items.get(dialog.selected).cloned()
+        dialog
+            .items
+            .get(dialog.selected)
+            .map(|row| row.label().to_string())
     }
 
     /// Open the selected document and close the dialog. As with `open_doc`,
@@ -2765,6 +2766,10 @@ mod tests {
 
     // ─────────────────────────────── workstream switch dialog (Task 3) ──
 
+    fn labels(dialog: &WorkstreamDialog) -> Vec<&str> {
+        dialog.items.iter().map(|r| r.label()).collect()
+    }
+
     fn workstream_app() -> App {
         let planning = Path::new("sample/workstreams/.planning/workstreams/beta");
         let phases = crate::planning::load_phases(planning);
@@ -2779,9 +2784,9 @@ mod tests {
             .workstream_dialog()
             .expect("dialog opens in a workstream workspace");
         assert_eq!(
-            dialog.items,
-            vec!["alpha".to_string(), "beta".to_string(), "gamma".to_string()],
-            "active ones first, complete gamma last, archived zeta absent"
+            labels(dialog),
+            ["alpha", "beta"],
+            "open ones only: complete gamma and archived zeta are absent"
         );
         assert_eq!(dialog.selected, 1, "beta is the focused workstream");
     }
@@ -2807,8 +2812,8 @@ mod tests {
         app.workstream_dialog_move(5);
         assert_eq!(
             app.workstream_dialog().unwrap().selected,
-            2,
-            "clamps at the last selectable row (gamma)"
+            1,
+            "clamps at the last selectable row (beta)"
         );
         app.workstream_dialog_move(-5);
         assert_eq!(app.workstream_dialog().unwrap().selected, 0);
@@ -2838,12 +2843,8 @@ mod tests {
         app.open_workstream_dialog();
         let dialog = app.workstream_dialog().expect("dialog opens");
         assert_eq!(
-            dialog.items,
-            vec![
-                crate::workstream::BASE_LABEL.to_string(),
-                "alpha".to_string(),
-                "beta".to_string(),
-            ]
+            labels(dialog),
+            [crate::workstream::BASE_LABEL, "alpha", "beta"]
         );
         assert_eq!(dialog.selected, 1, "the focused workstream is alpha");
     }
@@ -2855,9 +2856,7 @@ mod tests {
         app.open_workstream_dialog();
         let dialog = app.workstream_dialog().expect("dialog opens");
         assert!(
-            !dialog
-                .items
-                .contains(&crate::workstream::BASE_LABEL.to_string()),
+            !labels(dialog).contains(&crate::workstream::BASE_LABEL),
             "no dead base entry: {:?}",
             dialog.items
         );
@@ -2870,7 +2869,10 @@ mod tests {
         let mut app = partial_app("sample/project-and-workstreams/.planning");
         app.open_workstream_dialog();
         let dialog = app.workstream_dialog().expect("dialog opens");
-        assert_eq!(dialog.items[dialog.focused], crate::workstream::BASE_LABEL);
+        assert_eq!(
+            dialog.items[dialog.focused].label(),
+            crate::workstream::BASE_LABEL
+        );
         assert_eq!(dialog.selected, dialog.focused);
     }
 
@@ -2886,20 +2888,18 @@ mod tests {
     }
 
     #[test]
-    fn complete_workstreams_sort_below_a_separator_and_archived_ones_vanish() {
+    fn completed_and_archived_workstreams_are_not_offered_and_no_rule_is_drawn() {
         let mut app = workstream_app();
         app.open_workstream_dialog();
         let dialog = app.workstream_dialog().expect("dialog opens");
-        assert_eq!(
-            dialog.separator_at,
-            Some(2),
-            "the rule sits before gamma, the first complete workstream"
-        );
-        assert!(
-            !dialog.items.contains(&"zeta".to_string()),
-            "an archived workstream is not offered at all: {:?}",
-            dialog.items
-        );
+        assert_eq!(dialog.separator_at, None, "no completed section (D-11)");
+        for gone in ["gamma", "zeta"] {
+            assert!(
+                !labels(dialog).contains(&gone),
+                "{gone} is not offered: {:?}",
+                dialog.items
+            );
+        }
     }
 
     #[test]
@@ -2918,7 +2918,11 @@ mod tests {
                 show_completed,
             );
             app.open_workstream_dialog();
-            app.workstream_dialog().expect("dialog opens").items.clone()
+            let dialog = app.workstream_dialog().expect("dialog opens");
+            labels(dialog)
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>()
         };
         let hidden = items_with(false);
         let shown = items_with(true);
@@ -2930,15 +2934,13 @@ mod tests {
     }
 
     #[test]
-    fn the_separator_is_not_an_entry_so_the_cursor_never_lands_on_it() {
-        // separator_at is a render hint; items holds only selectable rows,
-        // so movement and selection need no skip-the-rule special case.
+    fn the_cursor_clamps_at_the_last_open_row() {
         let mut app = workstream_app();
         app.open_workstream_dialog();
         app.workstream_dialog_move(5); // clamp to the last real entry
         let dialog = app.workstream_dialog().expect("dialog open");
-        assert_eq!(dialog.items[dialog.selected], "gamma");
-        assert_eq!(app.workstream_dialog_take(), Some("gamma".to_string()));
+        assert_eq!(dialog.items[dialog.selected].label(), "beta");
+        assert_eq!(app.workstream_dialog_take(), Some("beta".to_string()));
     }
 
     #[test]

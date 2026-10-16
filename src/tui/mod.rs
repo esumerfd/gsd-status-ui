@@ -36,6 +36,52 @@ fn ready_marker_width(row: &crate::workstream::PickerRow) -> usize {
     }
 }
 
+/// Column widths for the completed rows of the `S` picker.
+struct CompletedColumns {
+    name: usize,
+    version: usize,
+    date: usize,
+}
+
+const MISSING_CELL: &str = "\u{2014}";
+
+fn completed_columns(items: &[crate::workstream::PickerRow]) -> CompletedColumns {
+    let mut cols = CompletedColumns {
+        name: 0,
+        version: 0,
+        date: 0,
+    };
+    for row in items {
+        if let crate::workstream::PickerRow::Completed(m) = row {
+            cols.name = cols.name.max(m.workstream.chars().count());
+            cols.version = cols
+                .version
+                .max(m.version.as_deref().unwrap_or(MISSING_CELL).chars().count());
+            cols.date = cols
+                .date
+                .max(m.date.as_deref().unwrap_or(MISSING_CELL).chars().count());
+        }
+    }
+    cols
+}
+
+impl CompletedColumns {
+    fn total(&self) -> usize {
+        self.name + 2 + self.version + 2 + self.date
+    }
+
+    fn format(&self, m: &crate::workstream::ArchivedMilestone) -> String {
+        format!(
+            "{name:<nw$}  {version:<vw$}  {date}",
+            name = m.workstream,
+            nw = self.name,
+            version = m.version.as_deref().unwrap_or(MISSING_CELL),
+            vw = self.version,
+            date = m.date.as_deref().unwrap_or(MISSING_CELL),
+        )
+    }
+}
+
 /// True when a rendered (lowercased) viewer line is the heading `want`
 /// (lowercased), or the first wrapped line of it.
 fn is_rendered_heading(line: &str, want: &str) -> bool {
@@ -1057,10 +1103,16 @@ impl Ui {
 
         // ── workstream switch dialog ──
         if let Some(dialog) = self.app.workstream_dialog() {
+            // Completed rows are `name  version  date` in aligned columns;
+            // `—` stands in for a missing version or date.
+            let cols = completed_columns(&dialog.items);
             let name_width = dialog
                 .items
                 .iter()
-                .map(|r| r.label().chars().count() + ready_marker_width(r))
+                .map(|r| match r {
+                    crate::workstream::PickerRow::Completed(_) => cols.total(),
+                    _ => r.label().chars().count() + ready_marker_width(r),
+                })
                 .max()
                 .unwrap_or(0)
                 .max(crate::workstream::COMPLETE_SEPARATOR.chars().count())
@@ -1111,6 +1163,10 @@ impl Ui {
                             style.add_modifier(Modifier::DIM),
                         ));
                     }
+                    crate::workstream::PickerRow::Completed(m) => spans.push(Span::styled(
+                        format!(" {marker} {text:<name_width$} ", text = cols.format(m)),
+                        style,
+                    )),
                     _ => spans.push(Span::styled(
                         format!(" {marker} {name:<name_width$} "),
                         style,
@@ -3606,7 +3662,10 @@ mod tests {
             col_of(french, "release-french") < col_of(french, "\u{2014}"),
             "{french}"
         );
-        assert!(col_of(french, "\u{2014}") < col_of(french, "2026-10-15"), "{french}");
+        assert!(
+            col_of(french, "\u{2014}") < col_of(french, "2026-10-15"),
+            "{french}"
+        );
         assert_eq!(
             col_of(french, "\u{2014}"),
             col_of(root_row, "v1.0"),

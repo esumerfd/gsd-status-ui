@@ -274,7 +274,15 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
     // stands in for the Roadmap row, which is what reaches those files once a
     // ROADMAP.md exists, so it is included only while no phases parse; otherwise
     // a workspace mid-research has no way to open its requirements.
-    let docs_sections = crate::planning::discover_docs_sections(planning, phases.is_empty());
+    //
+    // An archived view lists none: its anchor is a `milestones/` directory or
+    // a moved workstream, and discovery there (plus the live root it
+    // federates) would offer sibling archives and live folders as its docs.
+    let docs_sections = if archived.is_some() {
+        Vec::new()
+    } else {
+        crate::planning::discover_docs_sections(planning, phases.is_empty())
+    };
     for section in &docs_sections {
         docs_folder_row(out, &section.title, section.documents.len(), use_color)?;
     }
@@ -432,8 +440,13 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
 
     // Others — notes, ideas, and seeds combined into a single section below the
     // Todos, above Next. One row per file, each tagged with its kind. Rendered
-    // only when at least one of the three capture folders has files.
-    let others = crate::planning::load_others(planning, show_completed);
+    // only when at least one of the three capture folders has files. They are
+    // live root captures, so an archived view never shows them.
+    let others = if archived.is_some() {
+        Vec::new()
+    } else {
+        crate::planning::load_others(planning, show_completed)
+    };
     if !others.is_empty() {
         writeln!(
             out,
@@ -462,10 +475,20 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
         writeln!(out)?;
     }
 
+    // An archive is history: it shows what its STATE.md recorded as next, but
+    // never suggests a write workflow (D-05).
+    if archived.is_some() && state.next_action.is_empty() {
+        return Ok(());
+    }
     writeln!(
         out,
-        "  {bold}Next{reset}",
+        "  {bold}{heading}{reset}",
         bold = c(color::BOLD),
+        heading = if archived.is_some() {
+            "Recorded next action"
+        } else {
+            "Next"
+        },
         reset = c(color::RESET)
     )?;
     writeln!(
@@ -480,6 +503,9 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
             writeln!(out, "  {}", line)?;
         }
         writeln!(out)?;
+    }
+    if archived.is_some() {
+        return Ok(());
     }
 
     for hint in suggest_commands(state, phases) {
@@ -1569,6 +1595,37 @@ mod tests {
         assert!(out.contains("path: milestones/v1.0"), "{out}");
         assert!(out.contains("ARCHIVED (read-only)"), "{out}");
         assert!(!out.contains("executing"), "{out}");
+    }
+
+    #[test]
+    fn render_archived_omits_live_captures_docs_and_write_suggestions() {
+        let state = StateMeta {
+            next_action: "Ship the French strings".into(),
+            ..StateMeta::default()
+        };
+        let run = |archived: Option<&str>| {
+            let mut buf = Vec::new();
+            render(
+                &mut buf,
+                &Report::new(Path::new("sample/normal/.planning"), &state)
+                    .archived(archived)
+                    .use_color(false),
+            )
+            .unwrap();
+            String::from_utf8(buf).unwrap()
+        };
+        // Control: the same workspace live shows all three.
+        let live = run(None);
+        assert!(live.contains("Others"), "{live}");
+        assert!(live.contains("Research"), "{live}");
+        assert!(live.contains("/gsd-"), "{live}");
+
+        let out = run(Some("milestones/v1.0"));
+        assert!(!out.contains("Others"), "{out}");
+        assert!(!out.contains("Research"), "{out}");
+        assert!(!out.contains("/gsd-"), "{out}");
+        assert!(out.contains("Recorded next action"), "{out}");
+        assert!(out.contains("Ship the French strings"), "{out}");
     }
 
     #[test]

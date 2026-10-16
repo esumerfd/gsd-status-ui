@@ -348,6 +348,7 @@ impl Ui {
             .ok();
             self.set_report(ansi::ansi_to_text(&String::from_utf8_lossy(&buf)));
             self.app.set_roadmap_override(layout.roadmap.clone());
+            self.app.set_archived(true);
             self.refresh_entries(planning, &view.phases, &view.quick_tasks, &[]);
             return;
         }
@@ -403,6 +404,7 @@ impl Ui {
         };
         self.archive = None;
         self.app.set_roadmap_override(None);
+        self.app.set_archived(false);
         let root = crate::workstream::root_of(planning);
         *planning = crate::workstream::selection_dir(&root, &name);
         let is_base = name == crate::workstream::BASE_LABEL;
@@ -3795,6 +3797,29 @@ mod tests {
         assert!(s.contains("ARCHIVED (read-only)"), "{s}");
         assert!(s.contains("milestones/ws-release-french-2026-10-15"), "{s}");
         assert!(s.contains("French strings") || s.contains("41"), "{s}");
+    }
+
+    #[test]
+    fn archived_view_has_no_live_captures_or_docs_rows() {
+        let (_dir, root) = archived_workspace();
+        let mut planning = root.join("workstreams/beta");
+        let mut ui = ui_for(&planning);
+        // Control: the live view federates the root's notes and research.
+        let s = screen_tall(&mut ui, 40);
+        assert!(s.contains("Others") && s.contains("Research"), "{s}");
+
+        select_completed(&mut ui, &mut planning, is_french);
+        let s = screen_tall(&mut ui, 40);
+        assert!(!s.contains("Others"), "{s}");
+        assert!(!s.contains("Research"), "{s}");
+        assert!(!s.contains("/gsd-"), "{s}");
+        assert!(
+            ui.app
+                .entries()
+                .iter()
+                .all(|e| !e.is_other() && e.docs_folder().is_none()),
+            "no live capture or docs rows in an archived view"
+        );
     }
 
     /// Open the picker, reveal completed rows, move onto the first completed

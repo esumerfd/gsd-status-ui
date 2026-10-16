@@ -78,7 +78,7 @@ impl StepEntry {
 
     /// The docs-folder this row surfaces, if it is one. Private to this module:
     /// callers outside need only the title, via [`StepEntry::docs_title`].
-    fn docs_folder(&self) -> Option<&DocsFolder> {
+    pub(crate) fn docs_folder(&self) -> Option<&DocsFolder> {
         self.docs_folder.as_ref()
     }
 
@@ -233,6 +233,9 @@ pub(crate) struct App {
     /// The roadmap file to open for the Roadmap row when it is not
     /// `planning/ROADMAP.md` — an archived milestone's `v1.0-ROADMAP.md`.
     roadmap_override: Option<PathBuf>,
+    /// Re-scoped to an archived milestone: no docs-folder or Others rows,
+    /// mirroring the report, which draws neither in an archived view.
+    archived: bool,
 }
 
 impl App {
@@ -262,7 +265,13 @@ impl App {
             quit: false,
             planning: PathBuf::new(),
             roadmap_override: None,
+            archived: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entries(&self) -> &[StepEntry] {
+        &self.entries
     }
 
     /// Point the Roadmap row (and heading lookups) at `path` instead of
@@ -270,6 +279,12 @@ impl App {
     /// on the next `refresh_with_roadmap_row`.
     pub(crate) fn set_roadmap_override(&mut self, path: Option<PathBuf>) {
         self.roadmap_override = path;
+    }
+
+    /// Mark the view as archived (or live again). Takes effect on the next
+    /// `refresh_with_roadmap_row`.
+    pub(crate) fn set_archived(&mut self, archived: bool) {
+        self.archived = archived;
     }
 
     fn roadmap_file(&self) -> PathBuf {
@@ -580,7 +595,7 @@ impl App {
         let selected = self.entries.get(self.current).map(&key);
         self.planning = planning.to_path_buf();
 
-        let new_entries = Self::build_entries(
+        let mut new_entries = Self::build_entries(
             planning,
             has_roadmap,
             phases,
@@ -589,6 +604,9 @@ impl App {
             show_completed,
             self.roadmap_override.as_deref(),
         );
+        if self.archived {
+            new_entries.retain(|e| !e.is_other() && e.docs_folder().is_none());
+        }
         let new_index: HashMap<(String, String), usize> = new_entries
             .iter()
             .enumerate()

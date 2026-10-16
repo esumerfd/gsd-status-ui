@@ -2777,7 +2777,7 @@ mod tests {
     }
 
     #[test]
-    fn open_workstream_dialog_lists_every_workstream_sorted_with_the_focused_one_preselected() {
+    fn open_workstream_dialog_lists_only_open_rows() {
         let mut app = workstream_app();
         app.open_workstream_dialog();
         let dialog = app
@@ -2789,6 +2789,39 @@ mod tests {
             "open ones only: complete gamma and archived zeta are absent"
         );
         assert_eq!(dialog.selected, 1, "beta is the focused workstream");
+        assert_eq!(dialog.separator_at, None);
+    }
+
+    fn root_app(root: &Path) -> App {
+        App::with_roadmap_row(root, false, &[], &[], &[], false)
+    }
+
+    #[test]
+    fn open_workstream_dialog_opens_for_a_flat_backlog_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".planning");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("STATE.md"), "# backlog\n").unwrap();
+        let mut app = root_app(&root);
+        app.open_workstream_dialog();
+        let dialog = app.workstream_dialog().expect("backlog root opens picker");
+        assert_eq!(labels(dialog), [crate::workstream::BASE_LABEL]);
+        assert_eq!(app.flash, None);
+    }
+
+    #[test]
+    fn open_workstream_dialog_flashes_when_nothing_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".planning");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("PROJECT.md"), "# p").unwrap();
+        let mut app = root_app(&root);
+        app.open_workstream_dialog();
+        assert!(app.workstream_dialog().is_none());
+        assert_eq!(
+            app.flash.as_deref(),
+            Some("no workstreams in this workspace")
+        );
     }
 
     #[test]

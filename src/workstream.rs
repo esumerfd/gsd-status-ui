@@ -279,6 +279,51 @@ pub(crate) fn root_of(scoped: &Path) -> PathBuf {
     scoped.to_path_buf()
 }
 
+/// Tempdir-built storage shapes shared by tests (not tracked sample dirs, so
+/// the shared `sample/` fixtures never shift).
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    pub(crate) fn write_state(dir: &Path, frontmatter: &str) {
+        fs::create_dir_all(dir).unwrap();
+        fs::write(dir.join("STATE.md"), format!("---\n{frontmatter}\n---\n")).unwrap();
+    }
+
+    /// Builds `<dir>/.planning` holding every live storage permutation and
+    /// returns that root.
+    pub(crate) fn live_permutations(dir: &Path) -> PathBuf {
+        let root = dir.join(".planning");
+        let ws = root.join("workstreams");
+        // Backlog-only root: STATE.md without frontmatter, plus a todo.
+        fs::create_dir_all(root.join("todos/pending")).unwrap();
+        fs::write(root.join("STATE.md"), "# backlog\n").unwrap();
+        fs::write(root.join("todos/pending/one.md"), "x").unwrap();
+
+        write_state(
+            &ws.join("no-milestone"),
+            "milestone: null\nstatus: planning",
+        );
+        write_state(&ws.join("open-ms"), "milestone: v1.1\nstatus: executing");
+        fs::create_dir_all(ws.join("open-ms/phases/01-x")).unwrap();
+
+        let ready = ws.join("ready");
+        write_state(&ready, "milestone: v1.5\nstatus: complete");
+        fs::create_dir_all(ready.join("milestones/archived-20261001-phases")).unwrap();
+
+        let done = ws.join("done-in-place");
+        write_state(&done, "milestone: v1.6\nstatus: complete");
+        fs::create_dir_all(done.join("milestones/v1.6-phases/40-x")).unwrap();
+        fs::write(done.join("milestones/v1.6-ROADMAP.md"), "# v1.6").unwrap();
+
+        write_state(&ws.join("milestone-complete"), "status: milestone complete");
+        write_state(&ws.join("archived-status"), "status: archived");
+        fs::create_dir_all(ws.join("no-state/phases")).unwrap();
+        root
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,6 +386,89 @@ mod tests {
                 ready_to_close: true
             }
         );
+    }
+
+    const OPEN: Classification = Classification::Open {
+        ready_to_close: false,
+    };
+    const READY: Classification = Classification::Open {
+        ready_to_close: true,
+    };
+
+    fn permutations() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fixtures::live_permutations(dir.path());
+        (dir, root)
+    }
+
+    #[test]
+    fn classify_matrix_covers_every_live_permutation() {
+        let (_d, root) = permutations();
+        let c = |n: &str| classify_dir(&root.join("workstreams").join(n));
+        assert_eq!(c("no-milestone"), OPEN);
+        assert_eq!(c("open-ms"), OPEN);
+        assert_eq!(c("no-state"), OPEN);
+        assert_eq!(c("ready"), READY);
+        assert_eq!(c("done-in-place"), Classification::Complete);
+        assert_eq!(c("milestone-complete"), Classification::Complete);
+        assert_eq!(c("archived-status"), Classification::Complete);
+    }
+
+    #[test]
+    fn classify_rejects_traversal_in_milestone_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("a/b/ws");
+        fixtures::write_state(&ws, "milestone: ../../x\nstatus: complete");
+        // A file exists at the traversed path: milestones/../../x-ROADMAP.md.
+        fs::create_dir_all(ws.join("milestones")).unwrap();
+        fs::write(dir.path().join("a/b/x-ROADMAP.md"), "# x").unwrap();
+        assert_eq!(classify_dir(&ws), READY, "never Complete via traversal");
+    }
+
+    #[test]
+    fn classify_root_backlog_is_open() {
+        let (_d, root) = permutations();
+        assert_eq!(classify_dir(&root), OPEN);
+    }
+
+    fn labels(rows: &[PickerRow]) -> Vec<&str> {
+        rows.iter().map(|r| r.label()).collect()
+    }
+
+    #[test]
+    fn open_rows_list_default_first_then_open_workstreams() {
+        let (_d, root) = permutations();
+        assert_eq!(
+            labels(&open_rows(&root)),
+            [BASE_LABEL, "no-milestone", "no-state", "open-ms", "ready"]
+        );
+    }
+
+    #[test]
+    fn open_rows_omit_default_when_root_milestone_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixtures::write_state(root, "status: milestone complete");
+        fs::write(root.join("ROADMAP.md"), "# r").unwrap();
+        assert!(!labels(&open_rows(root)).contains(&BASE_LABEL));
+    }
+
+    #[test]
+    fn open_rows_keep_default_when_root_milestone_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixtures::write_state(root, "status: executing");
+        fs::write(root.join("ROADMAP.md"), "# r").unwrap();
+        assert_eq!(labels(&open_rows(root)), [BASE_LABEL]);
+    }
+
+    #[test]
+    fn open_rows_omit_default_when_root_has_only_shared_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("todos")).unwrap();
+        fs::write(root.join("PROJECT.md"), "# p").unwrap();
+        assert!(open_rows(root).is_empty());
     }
 
     #[test]

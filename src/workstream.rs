@@ -236,20 +236,29 @@ impl PickerRow {
     }
 }
 
-/// The open rows of the `S` picker, sorted by workstream name.
+/// The open rows of the `S` picker: the workspace root first when it carries
+/// workstream-shaped content and is itself open (D-08, D-10), then the open
+/// workstreams sorted by name.
 pub(crate) fn open_rows(root: &Path) -> Vec<PickerRow> {
-    list(root)
-        .into_iter()
-        .filter_map(
-            |name| match classify_dir(&root.join("workstreams").join(&name)) {
-                Classification::Open { ready_to_close } => Some(PickerRow::Open {
-                    label: name,
-                    ready_to_close,
-                }),
-                Classification::Complete => None,
-            },
-        )
-        .collect()
+    let mut rows = Vec::new();
+    if base_has_content(root) {
+        if let Classification::Open { ready_to_close } = classify_dir(root) {
+            rows.push(PickerRow::Open {
+                label: BASE_LABEL.to_string(),
+                ready_to_close,
+            });
+        }
+    }
+    rows.extend(list(root).into_iter().filter_map(|name| {
+        match classify_dir(&root.join("workstreams").join(&name)) {
+            Classification::Open { ready_to_close } => Some(PickerRow::Open {
+                label: name,
+                ready_to_close,
+            }),
+            Classification::Complete => None,
+        }
+    }));
+    rows
 }
 
 /// The planning directory one `S`-picker selection re-scopes to.

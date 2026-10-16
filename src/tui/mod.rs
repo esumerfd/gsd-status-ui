@@ -3184,17 +3184,16 @@ mod tests {
     }
 
     #[test]
-    fn capital_s_in_a_flat_workspace_flashes_instead_of_opening_an_empty_picker() {
+    fn capital_s_in_a_flat_workspace_opens_the_picker_with_the_root_row() {
         let mut ui = sample_ui(); // sample/normal/.planning has no workstreams/
         ui.on_key(plain('S'));
-        assert!(
-            ui.app.workstream_dialog().is_none(),
-            "no picker opens in a flat workspace"
-        );
-        assert_eq!(
-            ui.app.flash.as_deref(),
-            Some("no workstreams in this workspace")
-        );
+        let dialog = ui
+            .app
+            .workstream_dialog()
+            .expect("a flat root with content is an open row");
+        assert_eq!(dialog.items.len(), 1);
+        assert_eq!(dialog.items[0].label(), crate::workstream::BASE_LABEL);
+        assert_eq!(ui.app.flash, None, "no flash");
     }
 
     #[test]

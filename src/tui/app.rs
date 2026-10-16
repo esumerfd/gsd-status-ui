@@ -1111,38 +1111,24 @@ impl App {
         Some((dialog.target, choice))
     }
 
-    /// Open the `S` switch-workstream picker: every workstream under the
-    /// workspace root, sorted, with the currently focused one pre-selected.
-    /// A flat workspace (no `.planning/workstreams/`) has nothing to switch
-    /// between, so this flashes instead of opening an empty picker —
-    /// mirroring `open_dialog`'s "nothing to open" shape. D2: this never
+    /// Open the `S` switch-workstream picker: the open rows only — the
+    /// workspace root first when it carries its own `ROADMAP.md`/`STATE.md`/
+    /// `REQUIREMENTS.md`/`phases/` and is itself open, then each open
+    /// workstream sorted. Ready-to-close workstreams stay open and carry a
+    /// marker; completed ones are not offered. The currently focused row is
+    /// pre-selected. It flashes instead of opening only when no row is open
+    /// (mirroring `open_dialog`'s "nothing to open" shape). D2: this never
     /// writes `.planning/active-workstream`; it only writes its own
     /// `.planning/gsd-status/` state, and that write happens later, in
     /// `Ui::apply_pending_workstream`.
-    ///
-    /// A partially-migrated workspace — one whose root still carries its own
-    /// `ROADMAP.md`/`STATE.md`/`phases/` beside `workstreams/` — gains a
-    /// leading `(base)` entry. Those root files are strictly scoped, so
-    /// while a workstream is focused nothing else can reach them; `(base)`
-    /// is the only way in. It is omitted when the root holds nothing scoped,
-    /// where it would only open an empty panel.
     pub(crate) fn open_workstream_dialog(&mut self) {
         self.flash = None;
         let root = crate::workstream::root_of(&self.planning);
-        if crate::workstream::list(&root).is_empty() {
+        let items = crate::workstream::open_rows(&root);
+        if items.is_empty() {
             self.flash = Some("no workstreams in this workspace".into());
             return;
         }
-        // Open rows only; completed workstreams are not offered.
-        let has_base = crate::workstream::base_has_content(&root);
-        let mut items: Vec<crate::workstream::PickerRow> = Vec::new();
-        if has_base {
-            items.push(crate::workstream::PickerRow::Open {
-                label: crate::workstream::BASE_LABEL.to_string(),
-                ready_to_close: false,
-            });
-        }
-        items.extend(crate::workstream::open_rows(&root));
         let position = |label: &str| items.iter().position(|r| r.label() == label);
 
         // Viewing the root itself (`planning == root`, i.e. switched to
@@ -2825,17 +2811,14 @@ mod tests {
     }
 
     #[test]
-    fn open_workstream_dialog_in_a_flat_workspace_flashes_instead_of_opening() {
+    fn open_workstream_dialog_in_a_flat_workspace_offers_only_the_root_row() {
+        // A flat workspace whose root has STATE.md/ROADMAP.md is itself open
+        // work: the picker opens with the default row instead of flashing.
         let mut app = App::from_phases_and_todos(sample_planning(), &sample_phases(), &[], &[]);
         app.open_workstream_dialog();
-        assert!(
-            app.workstream_dialog().is_none(),
-            "no dialog in a flat workspace"
-        );
-        assert_eq!(
-            app.flash.as_deref(),
-            Some("no workstreams in this workspace")
-        );
+        let dialog = app.workstream_dialog().expect("flat root opens the picker");
+        assert_eq!(labels(dialog), [crate::workstream::BASE_LABEL]);
+        assert_eq!(app.flash, None);
     }
 
     #[test]

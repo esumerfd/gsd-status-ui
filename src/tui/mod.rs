@@ -1153,6 +1153,7 @@ impl Ui {
             };
             frame.render_widget(Clear, popup);
             let mut lines: Vec<Line> = Vec::with_capacity(rows);
+            let mut selected_line = 0usize;
             for (i, row) in dialog.items.iter().enumerate() {
                 // Drawn before the row it precedes, so it separates the
                 // open workstreams above from any section below.
@@ -1174,6 +1175,9 @@ impl Ui {
                 } else {
                     Style::default()
                 };
+                if i == dialog.selected {
+                    selected_line = lines.len();
+                }
                 let name = row.label();
                 let mut spans = Vec::new();
                 match row {
@@ -1207,8 +1211,14 @@ impl Ui {
                     Style::default().add_modifier(Modifier::DIM),
                 )));
             }
+            // More rows than fit (H adds every archived milestone): scroll
+            // just far enough that the selected row is the last one drawn.
+            let inner_height = usize::from(height.saturating_sub(2)).max(1);
+            let scroll = selected_line.saturating_sub(inner_height - 1);
             frame.render_widget(
-                Paragraph::new(lines).block(Block::bordered().title(" Switch workstream ")),
+                Paragraph::new(lines)
+                    .block(Block::bordered().title(" Switch workstream "))
+                    .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
                 popup,
             );
         }
@@ -3819,6 +3829,30 @@ mod tests {
                 .iter()
                 .all(|e| !e.is_other() && e.docs_folder().is_none()),
             "no live capture or docs rows in an archived view"
+        );
+    }
+
+    #[test]
+    fn picker_scrolls_to_keep_the_selected_row_visible() {
+        let (_dir, mut ui) = archive_ui();
+        ui.on_key(plain('S'));
+        ui.on_key(plain('H'));
+        let last = ui.app.workstream_dialog().unwrap().items.len() - 1;
+        for _ in 0..last {
+            ui.on_key(plain('j'));
+        }
+        let d = ui.app.workstream_dialog().unwrap();
+        assert_eq!(d.selected, last);
+        let crate::workstream::PickerRow::Completed(m) = &d.items[d.selected] else {
+            panic!("last row is completed");
+        };
+        let date = m.date.clone().expect("dated row");
+        let label = m.workstream.clone();
+        // Far fewer lines than the picker has rows.
+        let s = screen_tall(&mut ui, 8);
+        assert!(
+            s.lines().any(|l| l.contains(&date) && l.contains(&label)),
+            "selected {label} {date} visible:\n{s}"
         );
     }
 

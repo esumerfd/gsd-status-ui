@@ -19,6 +19,7 @@ pub(crate) struct Report<'a> {
     show_completed: bool,
     use_color: bool,
     archived: Option<&'a str>,
+    notes: &'a [String],
 }
 
 impl<'a> Report<'a> {
@@ -32,6 +33,7 @@ impl<'a> Report<'a> {
             show_completed: false,
             use_color: false,
             archived: None,
+            notes: &[],
         }
     }
 
@@ -60,7 +62,10 @@ impl<'a> Report<'a> {
         self
     }
 
-    pub(crate) fn notes(self, _notes: &'a [String]) -> Self {
+    /// Dim explanatory lines drawn directly under the banner, e.g. what an
+    /// archived milestone is missing.
+    pub(crate) fn notes(mut self, notes: &'a [String]) -> Self {
+        self.notes = notes;
         self
     }
 
@@ -85,6 +90,7 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
         show_completed,
         use_color,
         archived,
+        notes,
     } = report;
     let c = |code: &'static str| if use_color { code } else { "" };
 
@@ -199,6 +205,14 @@ pub(crate) fn render(out: &mut impl Write, report: &Report<'_>) -> io::Result<()
         cyan = c(color::CYAN),
         reset = c(color::RESET),
     )?;
+    for note in notes {
+        writeln!(
+            out,
+            "{dim}  {note}{reset}",
+            dim = c(color::DIM),
+            reset = c(color::RESET),
+        )?;
+    }
     writeln!(out)?;
 
     // Roadmap section — the project-level ROADMAP.md, openable from the TUI.

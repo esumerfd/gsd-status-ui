@@ -205,6 +205,11 @@ fn load_phases_from(
     dirs_as_completed: bool,
 ) -> Vec<Phase> {
     let body = roadmap.and_then(|p| fs::read_to_string(p).ok());
+    let dir_mark = if body.is_none() && dirs_as_completed {
+        PhaseMark::Done
+    } else {
+        PhaseMark::Open
+    };
     let body = match body {
         Some(b) => b,
         None if dirs_as_completed => String::new(),
@@ -262,12 +267,7 @@ fn load_phases_from(
     for dir in &phase_dirs {
         if let Some(raw) = phase_id_from_dir(dir) {
             let title = title_from_dir(dir);
-            push_phase(
-                &mut phases,
-                normalize_phase_id(&raw),
-                title,
-                PhaseMark::Open,
-            );
+            push_phase(&mut phases, normalize_phase_id(&raw), title, dir_mark);
         }
     }
 
@@ -287,8 +287,6 @@ pub(crate) struct ArchiveView {
     pub(crate) state: StateMeta,
     pub(crate) phases: Vec<Phase>,
     pub(crate) quick_tasks: Vec<QuickTask>,
-    // Rendered by the report in the next commit.
-    #[allow(dead_code)]
     pub(crate) notes: Vec<String>,
 }
 
@@ -319,11 +317,22 @@ pub(crate) fn load_archive(layout: &crate::workstream::ArchiveLayout) -> Archive
             tasks
         })
         .unwrap_or_default();
+    let mut notes = Vec::new();
+    let roadmap_readable = layout
+        .roadmap
+        .as_deref()
+        .is_some_and(|p| fs::read_to_string(p).is_ok());
+    if !roadmap_readable && !phases.is_empty() {
+        notes.push(ARCHIVE_NOTE_NO_ROADMAP.to_string());
+    }
+    if layout.state.is_none() && !roadmap_readable && phases.is_empty() && quick_tasks.is_empty() {
+        notes.push(ARCHIVE_NOTE_EMPTY.to_string());
+    }
     ArchiveView {
         state,
         phases,
         quick_tasks,
-        notes: Vec::new(),
+        notes,
     }
 }
 

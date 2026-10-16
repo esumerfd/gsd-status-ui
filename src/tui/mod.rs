@@ -340,6 +340,7 @@ impl Ui {
                     .quick_tasks(&view.quick_tasks)
                     .show_completed(true)
                     .archived(Some(&display))
+                    .notes(&view.notes)
                     .use_color(true),
             )
             .ok();

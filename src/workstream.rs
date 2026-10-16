@@ -182,13 +182,21 @@ pub(crate) enum Classification {
     Complete,
 }
 
-/// First `key:` value in the leading frontmatter-ish lines of a STATE.md body.
-fn frontmatter_value(body: &str, key: &str) -> Option<String> {
-    let prefix = format!("{key}:");
-    body.lines()
-        .take_while(|l| l.trim() != "---" || body.starts_with("---"))
-        .find_map(|l| l.strip_prefix(prefix.as_str()))
-        .map(|v| v.trim().to_string())
+/// `(status, milestone)` from `dir/STATE.md`'s frontmatter, via the same
+/// parser `load_state` uses. `None` when STATE.md is missing or unreadable.
+/// Empty values come back as `None`; `milestone` is only kept when it is a
+/// valid name (so it can be joined into a path) and not `null`.
+fn state_fields(dir: &Path) -> Option<(Option<String>, Option<String>)> {
+    let body = fs::read_to_string(dir.join("STATE.md")).ok()?;
+    let meta = crate::planning::state_frontmatter(&body);
+    let status = Some(meta.status).filter(|s| !s.is_empty());
+    let milestone = Some(meta.milestone).filter(|m| m != "null" && is_valid_name(m));
+    Some((status, milestone))
+}
+
+/// The valid `milestone:` of `dir/STATE.md`, if any.
+fn state_milestone(dir: &Path) -> Option<String> {
+    state_fields(dir).and_then(|(_, m)| m)
 }
 
 /// Classify a root or `root/workstreams/<name>` directory. Pure read: this
@@ -206,10 +214,7 @@ pub(crate) fn classify_dir(dir: &Path) -> Classification {
     const OPEN: Classification = Classification::Open {
         ready_to_close: false,
     };
-    let Ok(body) = fs::read_to_string(dir.join("STATE.md")) else {
-        return OPEN;
-    };
-    let Some(status) = frontmatter_value(&body, "status") else {
+    let Some((Some(status), milestone)) = state_fields(dir) else {
         return OPEN;
     };
     let status = status.to_ascii_lowercase();
@@ -220,13 +225,11 @@ pub(crate) fn classify_dir(dir: &Path) -> Classification {
         return Classification::Complete;
     }
     if matches!(status.as_str(), "complete" | "completed") {
-        let archived = frontmatter_value(&body, "milestone")
-            .filter(|m| m != "null" && is_valid_name(m))
-            .is_some_and(|m| {
-                dir.join("milestones")
-                    .join(format!("{m}-ROADMAP.md"))
-                    .is_file()
-            });
+        let archived = milestone.is_some_and(|m| {
+            dir.join("milestones")
+                .join(format!("{m}-ROADMAP.md"))
+                .is_file()
+        });
         return if archived {
             Classification::Complete
         } else {
@@ -463,10 +466,7 @@ pub(crate) fn discover_completed(root: &Path) -> Vec<ArchivedMilestone> {
         if !dir.is_dir() || !is_valid_name(&workstream) {
             continue;
         }
-        let version = fs::read_to_string(dir.join("STATE.md"))
-            .ok()
-            .and_then(|b| frontmatter_value(&b, "milestone"))
-            .filter(|v| v != "null" && !v.is_empty());
+        let version = state_milestone(&dir);
         let display = format!("milestones/{name}");
         scan_milestones_dir(
             &dir.join("milestones"),
@@ -522,10 +522,7 @@ pub(crate) fn discover_completed(root: &Path) -> Vec<ArchivedMilestone> {
         if classify_dir(&dir) != Classification::Complete {
             continue;
         }
-        let version = fs::read_to_string(dir.join("STATE.md"))
-            .ok()
-            .and_then(|b| frontmatter_value(&b, "milestone"))
-            .filter(|v| v != "null" && is_valid_name(v));
+        let version = state_milestone(&dir);
         if found
             .iter()
             .any(|m| m.workstream == workstream && m.version == version)
@@ -1108,6 +1105,56 @@ mod tests {
             root_of(Path::new("/w/.planning/workstreams/a/milestones")),
             PathBuf::from("/w/.planning")
         );
+    }
+
+    #[test]
+    fn classify_dir_strips_quoted_frontmatter_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ws");
+        fixtures::write_state(&dir, "milestone: \"v1.6\"\nstatus: \"complete\"");
+        fs::create_dir_all(dir.join("milestones")).unwrap();
+        fs::write(dir.join("milestones/v1.6-ROADMAP.md"), "# v1.6").unwrap();
+        assert_eq!(classify_dir(&dir), Classification::Complete);
+
+        let mc = tmp.path().join("mc");
+        fixtures::write_state(&mc, "status: 'milestone complete'");
+        assert_eq!(classify_dir(&mc), Classification::Complete);
+    }
+
+    #[test]
+    fn classify_dir_ignores_status_lines_in_the_body() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("ws");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("STATE.md"),
+            "---\nmilestone: v1.1\n---\n# body\nstatus: milestone complete\n",
+        )
+        .unwrap();
+        assert_eq!(
+            classify_dir(&dir),
+            Classification::Open {
+                ready_to_close: false
+            }
+        );
+    }
+
+    #[test]
+    fn discover_completed_strips_quotes_from_ws_archive_versions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".planning");
+        let ws = root.join("milestones/ws-alpha-2026-10-01");
+        fixtures::write_state(&ws, "milestone: \"v1.3\"\nstatus: complete");
+        let found = discover_completed(&root);
+        let row = found.iter().find(|m| m.workstream == "alpha").unwrap();
+        assert_eq!(row.version.as_deref(), Some("v1.3"));
+
+        // An invalid version is rejected here exactly as in the live path.
+        let bad = root.join("milestones/ws-beta-2026-10-02");
+        fixtures::write_state(&bad, "milestone: \"v1/../x\"\nstatus: complete");
+        let found = discover_completed(&root);
+        let row = found.iter().find(|m| m.workstream == "beta").unwrap();
+        assert_eq!(row.version, None);
     }
 
     #[test]

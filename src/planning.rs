@@ -82,6 +82,15 @@ pub(crate) fn load_state(planning: &Path) -> StateMeta {
     meta
 }
 
+/// Only the fenced STATE.md frontmatter of `body`, parsed by the same rules
+/// as [`load_state`] (BOM, closing fence, quotes) but without its body or
+/// PROJECT.md lookups.
+pub(crate) fn state_frontmatter(body: &str) -> StateMeta {
+    let mut meta = StateMeta::default();
+    parse_frontmatter(split_frontmatter(body).0, &mut meta);
+    meta
+}
+
 fn split_frontmatter(body: &str) -> (&str, &str) {
     let trimmed = body.trim_start_matches('\u{feff}');
     let rest = match trimmed.strip_prefix("---\n") {

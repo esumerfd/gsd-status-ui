@@ -312,16 +312,21 @@ pub(crate) fn load_archive(layout: &crate::workstream::ArchiveLayout) -> Archive
         layout.phases_dir.as_deref(),
         true,
     );
-    // An archive's quick tasks are all history; only a recorded failure keeps
-    // its own status.
+    // A `<v>-quick` snapshot has no STATE.md completion table beside it, so
+    // its tasks are all history; only a recorded failure keeps its own status.
+    // A quick dir next to a real STATE.md (a completed live dir, a moved
+    // `ws-*` archive) keeps the statuses that table records.
     let quick_tasks = layout
         .quick_dir
         .as_deref()
         .map(|dir| {
             let mut tasks = load_quick_tasks_in(dir, true);
-            for t in &mut tasks {
-                if t.status == QuickTaskStatus::InProgress {
-                    t.status = QuickTaskStatus::Completed;
+            let snapshot = !dir.parent().is_some_and(|p| p.join("STATE.md").is_file());
+            if snapshot {
+                for t in &mut tasks {
+                    if t.status == QuickTaskStatus::InProgress {
+                        t.status = QuickTaskStatus::Completed;
+                    }
                 }
             }
             tasks
@@ -3410,6 +3415,40 @@ mod tests {
             "{:?}",
             view.notes
         );
+    }
+
+    fn quick_task_in(quick: &Path) {
+        let task = quick.join("260101-abc-fix-thing");
+        std::fs::create_dir_all(&task).unwrap();
+        std::fs::write(task.join("260101-abc-PLAN.md"), "# Fix thing\n").unwrap();
+    }
+
+    #[test]
+    fn archive_snapshot_quick_tasks_read_as_completed() {
+        let dir = tempfile::tempdir().unwrap();
+        let quick = dir.path().join("milestones/v1.0-quick");
+        quick_task_in(&quick);
+        let mut layout = layout_in(&dir.path().join("milestones"));
+        layout.quick_dir = Some(quick);
+        let view = load_archive(&layout);
+        assert_eq!(view.quick_tasks.len(), 1);
+        assert_eq!(view.quick_tasks[0].status, QuickTaskStatus::Completed);
+    }
+
+    #[test]
+    fn completed_live_dir_keeps_in_progress_quick_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".planning");
+        let ws = root.join("workstreams/gamma");
+        crate::workstream::fixtures::write_state(&ws, "status: milestone complete");
+        quick_task_in(&ws.join("quick"));
+        let m = crate::workstream::discover_completed(&root)
+            .into_iter()
+            .find(|m| m.layout.anchor == ws)
+            .expect("gamma live row");
+        let view = load_archive(&m.layout);
+        assert_eq!(view.quick_tasks.len(), 1);
+        assert_eq!(view.quick_tasks[0].status, QuickTaskStatus::InProgress);
     }
 
     #[test]

@@ -290,6 +290,7 @@ fn load_phases_from(
 
 pub(crate) const ARCHIVE_NOTE_NO_ROADMAP: &str = "no archived ROADMAP";
 pub(crate) const ARCHIVE_NOTE_EMPTY: &str = "no archived artifacts";
+pub(crate) const ARCHIVE_NOTE_NO_PHASES: &str = "archived ROADMAP lists no phases";
 
 /// Everything an archived milestone shows, loaded read-only.
 pub(crate) struct ArchiveView {
@@ -334,8 +335,13 @@ pub(crate) fn load_archive(layout: &crate::workstream::ArchiveLayout) -> Archive
     if !roadmap_readable && !phases.is_empty() {
         notes.push(ARCHIVE_NOTE_NO_ROADMAP.to_string());
     }
-    if layout.state.is_none() && !roadmap_readable && phases.is_empty() && quick_tasks.is_empty() {
-        notes.push(ARCHIVE_NOTE_EMPTY.to_string());
+    // Never an empty panel without explanation (D-07), whatever else exists.
+    if phases.is_empty() && quick_tasks.is_empty() {
+        notes.push(if roadmap_readable {
+            ARCHIVE_NOTE_NO_PHASES.to_string()
+        } else {
+            ARCHIVE_NOTE_EMPTY.to_string()
+        });
     }
     ArchiveView {
         state,
@@ -3404,6 +3410,32 @@ mod tests {
             "{:?}",
             view.notes
         );
+    }
+
+    #[test]
+    fn archive_with_only_state_explains_itself() {
+        // wk-i18n `ws-stk-38154-*` shape: STATE.md, no ROADMAP, no phases.
+        let dir = tempfile::tempdir().unwrap();
+        let root = crate::workstream::fixtures::archive_permutations(dir.path());
+        let m = crate::workstream::discover_completed(&root)
+            .into_iter()
+            .find(|m| m.layout.display == "milestones/ws-old-2026-09-25")
+            .expect("ws-old row");
+        let view = load_archive(&m.layout);
+        assert!(view.phases.is_empty() && view.quick_tasks.is_empty());
+        assert_eq!(view.notes, vec![ARCHIVE_NOTE_EMPTY.to_string()]);
+    }
+
+    #[test]
+    fn archive_with_a_phaseless_roadmap_explains_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let roadmap = dir.path().join("v2.0-ROADMAP.md");
+        std::fs::write(&roadmap, "# v2.0\n\nNothing here.\n").unwrap();
+        let mut layout = layout_in(dir.path());
+        layout.roadmap = Some(roadmap);
+        let view = load_archive(&layout);
+        assert!(view.phases.is_empty());
+        assert_eq!(view.notes, vec![ARCHIVE_NOTE_NO_PHASES.to_string()]);
     }
 
     #[test]

@@ -104,7 +104,7 @@ const HELP_TEXT: &str = "\
             Enter    open the step's plan (unstarted phase: its roadmap section)
             o        open-document dialog (phase row: ROADMAP.md on top)
             s        set status (todo/task/phase/note)
-            S        switch workstream / (base) root (remembered per shell)
+            S        switch workstream / (default) root (remembered per shell)
             c        copy selected todo's name
             /        find a requirement by ID
             q        quit
@@ -372,7 +372,7 @@ impl Ui {
     /// and reload. Returns false when nothing was pending.
     ///
     /// Factored out of `event_loop` — which owns a terminal and so cannot be
-    /// unit-tested — so the `(base)`-vs-workstream mapping and the reload
+    /// unit-tested — so the `(default)`-vs-workstream mapping and the reload
     /// that follows it are actually covered. D2: this never writes
     /// `.planning/active-workstream`; it only writes its own
     /// `.planning/gsd-status/` state, and only when a session pid is set.
@@ -3459,7 +3459,7 @@ mod tests {
         let mut ui = ui_for(&scoped);
         ui.set_session_pid(99);
         ui.on_key(plain('S'));
-        ui.on_key(plain('k')); // alpha(1) -> (base)(0)
+        ui.on_key(plain('k')); // alpha(1) -> (default)(0)
         ui.on_key(enter());
         let mut planning = scoped.clone();
         assert!(ui.apply_pending_workstream(&mut planning));
@@ -3548,7 +3548,7 @@ mod tests {
         );
 
         ui.on_key(plain('S'));
-        ui.on_key(plain('k')); // alpha(1) -> (base)(0)
+        ui.on_key(plain('k')); // alpha(1) -> (default)(0)
         ui.on_key(enter());
 
         // Drive the SAME entry point the event loop uses, so this covers the

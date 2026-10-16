@@ -7,7 +7,7 @@
 //! `.planning/active-workstream` pointer (D2).
 //!
 //! The file holds a single key: `{"workstream": "<name>"}`, or
-//! `{"workstream": null}` for the `(base)` view. Workstream names are
+//! `{"workstream": null}` for the `(default)` view. Workstream names are
 //! restricted to `[A-Za-z0-9._-]`, so no JSON escaping is ever needed and a
 //! small hand-rolled reader and writer is enough.
 use std::fs;
@@ -22,7 +22,7 @@ const SUFFIX: &str = ".json";
 /// What a shell last chose in the `S` picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Remembered {
-    /// The workspace root (`(base)` in the picker).
+    /// The workspace root (`(default)` in the picker).
     Base,
     /// A named workstream. Not validated here — `workstream::resolve` checks
     /// it against the names that actually exist.

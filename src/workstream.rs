@@ -27,7 +27,7 @@ use crate::session_state::Remembered;
 /// Deliberately parenthesised: `is_valid_name` rejects `(` and `)`, so this
 /// can never collide with a real `.planning/workstreams/<name>/` directory,
 /// and no name-validity check has to special-case it.
-pub(crate) const BASE_LABEL: &str = "(base)";
+pub(crate) const BASE_LABEL: &str = "(default)";
 
 /// Does the workspace root carry workstream-shaped content of its own?
 ///
@@ -98,7 +98,7 @@ fn resolves(names: &[String], candidate: &str) -> bool {
 /// shell's remembered `S` choice (`session`, see `session_state`) > the
 /// `.planning/active-workstream` pointer file > the first name in sorted
 /// order. Returns `None` when `.planning/workstreams/` is absent or empty
-/// (flat mode), or when `session` remembers the `(base)` view and the base
+/// (flat mode), or when `session` remembers the `(default)` view and the base
 /// has content of its own. An invalid or missing-directory
 /// `env`/session/pointer-file value, or a remembered base with nothing in
 /// it, falls through to the next source instead of resolving; an invalid or

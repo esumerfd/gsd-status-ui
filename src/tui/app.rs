@@ -173,7 +173,7 @@ pub(crate) struct StatusDialog {
     pub(crate) target: crate::status_edit::StatusTarget,
 }
 
-/// The `S` switch-workstream picker: an optional `(base)` root entry, then
+/// The `S` switch-workstream picker: an optional `(default)` root entry, then
 /// the workspace's open workstreams sorted (ready-to-close ones carry a
 /// marker) — with the currently focused entry pre-selected rather than
 /// defaulting to index 0. Completed workstreams never appear (see
@@ -2895,7 +2895,7 @@ mod tests {
     #[test]
     fn open_workstream_dialog_offers_base_first_in_a_partially_migrated_workspace() {
         // The root still carries ROADMAP.md/STATE.md/phases/, which no
-        // workstream view can reach, so the picker leads with (base).
+        // workstream view can reach, so the picker leads with (default).
         let mut app = partial_app("sample/project-and-workstreams/.planning/workstreams/alpha");
         app.open_workstream_dialog();
         let dialog = app.workstream_dialog().expect("dialog opens");
@@ -2922,7 +2922,7 @@ mod tests {
     #[test]
     fn base_is_marked_focused_while_the_root_is_the_one_being_viewed() {
         // After switching to base, `planning` IS the root — reopening the
-        // picker must mark (base), not fall back to the first workstream.
+        // picker must mark (default), not fall back to the first workstream.
         let mut app = partial_app("sample/project-and-workstreams/.planning");
         app.open_workstream_dialog();
         let dialog = app.workstream_dialog().expect("dialog opens");
@@ -2937,7 +2937,7 @@ mod tests {
     fn workstream_dialog_take_can_return_the_base_label() {
         let mut app = partial_app("sample/project-and-workstreams/.planning/workstreams/alpha");
         app.open_workstream_dialog();
-        app.workstream_dialog_move(-1); // alpha(1) -> (base)(0)
+        app.workstream_dialog_move(-1); // alpha(1) -> (default)(0)
         assert_eq!(
             app.workstream_dialog_take(),
             Some(crate::workstream::Selection::Live(

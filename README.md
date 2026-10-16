@@ -86,11 +86,19 @@ workspace, not whether a retired one is offered. An explicit `--ws <name>`
 still reaches an archived workstream, so nothing becomes unreadable.
 
 A partially-migrated workspace — one whose `.planning/` root still holds its
-own `ROADMAP.md`, `STATE.md`, or `phases/` beside `workstreams/` — also gets a
-`(base)` entry at the top of the picker. Those root files are workstream-scoped
-by GSD's rules, so nothing else can reach them; `(base)` is the way in. It is
-omitted when the root has nothing scoped of its own, where it would only open
-an empty panel.
+own `STATE.md`, `ROADMAP.md`, `REQUIREMENTS.md`, or `phases/` beside
+`workstreams/` — gets a `(default)` row at the top of the picker. Those root
+files are workstream-scoped by GSD's rules, so nothing else can reach them;
+`(default)` is the way in. It is omitted when the root has nothing scoped of
+its own, where it would only open an empty panel.
+
+Inside the picker, `H` reveals completed milestones below a `--- complete ---`
+rule as aligned `name  version  date` rows (`—` when a version or date is
+unknown). The reveal is local to the picker and resets every time `S` is
+opened. When workstreams exist and the root holds a `state.json` but no root
+`STATE.md`, `ROADMAP.md`, or `phases/`, the picker ends with a dim
+`⚠ stale .planning/state.json (no root STATE.md)` line; it is a warning only,
+never selectable, and gsd-status never deletes the file.
 
 ## Install
 

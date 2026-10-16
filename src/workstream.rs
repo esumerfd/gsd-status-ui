@@ -48,6 +48,15 @@ pub(crate) fn base_has_content(root: &Path) -> bool {
         || root.join("phases").is_dir()
 }
 
+/// Footer the picker shows when the root carries a leftover `state.json`.
+pub(crate) const STALE_STATE_JSON: &str = "\u{26a0} stale .planning/state.json (no root STATE.md)";
+
+/// True when workstreams exist and the root holds a `state.json` but none of
+/// the root `STATE.md`/`ROADMAP.md`/`phases/` that would make it live (D-12).
+pub(crate) fn root_state_json_is_stale(_root: &Path) -> bool {
+    false
+}
+
 /// GSD's workstream name policy: `[A-Za-z0-9._-]` only, non-empty, no path
 /// separators, no `..`.
 pub(crate) fn is_valid_name(name: &str) -> bool {
@@ -837,6 +846,47 @@ mod tests {
         // Cleanly migrated: the root holds only shared content, which every
         // workstream view already federates in — a base entry would be dead.
         assert!(!base_has_content(Path::new("sample/workstreams/.planning")));
+    }
+
+    fn stale_root(dir: &Path) -> PathBuf {
+        let root = dir.join(".planning");
+        fs::create_dir_all(root.join("workstreams/a")).unwrap();
+        fs::write(root.join("state.json"), "{}").unwrap();
+        root
+    }
+
+    #[test]
+    fn root_state_json_is_stale_when_workstreams_exist_and_root_has_no_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = stale_root(dir.path());
+        assert!(root_state_json_is_stale(&root));
+    }
+
+    #[test]
+    fn root_state_json_is_not_stale_when_root_has_state_md() {
+        for make in ["STATE.md", "ROADMAP.md", "phases"] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = stale_root(dir.path());
+            if make == "phases" {
+                fs::create_dir_all(root.join(make)).unwrap();
+            } else {
+                fs::write(root.join(make), "# x").unwrap();
+            }
+            assert!(!root_state_json_is_stale(&root), "{make}");
+        }
+    }
+
+    #[test]
+    fn root_state_json_is_not_stale_without_workstreams_or_state_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let flat = dir.path().join("flat/.planning");
+        fs::create_dir_all(&flat).unwrap();
+        fs::write(flat.join("state.json"), "{}").unwrap();
+        assert!(!root_state_json_is_stale(&flat));
+
+        let no_json = dir.path().join("nojson/.planning");
+        fs::create_dir_all(no_json.join("workstreams/a")).unwrap();
+        assert!(!root_state_json_is_stale(&no_json));
     }
 
     #[test]

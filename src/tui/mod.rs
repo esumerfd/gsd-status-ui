@@ -3681,6 +3681,42 @@ mod tests {
     }
 
     #[test]
+    fn picker_shows_stale_state_json_footer() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join(".planning");
+        let a = root.join("workstreams/a");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::write(a.join("STATE.md"), "---\nstatus: executing\n---\n").unwrap();
+        std::fs::write(root.join("state.json"), "{}").unwrap();
+        let mut ui = ui_for(&a);
+        ui.on_key(plain('S'));
+        let s = screen_tall(&mut ui, 30);
+        let footer = s
+            .lines()
+            .position(|l| l.contains(crate::workstream::STALE_STATE_JSON))
+            .unwrap_or_else(|| panic!("footer shown: {s}"));
+        let a_row = s.lines().position(|l| l.contains("\u{25cf} a")).unwrap();
+        assert!(footer > a_row, "{s}");
+        assert!(
+            s.lines().nth(footer + 1).unwrap().contains('\u{2514}'),
+            "footer is the last row inside the popup: {s}"
+        );
+        for _ in 0..5 {
+            ui.on_key(plain('j'));
+        }
+        let d = ui.app.workstream_dialog().unwrap();
+        assert!(d.selected < d.items.len());
+    }
+
+    #[test]
+    fn picker_has_no_footer_for_a_healthy_root() {
+        let mut ui = ui_for(Path::new("sample/workstreams/.planning/workstreams/alpha"));
+        ui.on_key(plain('S'));
+        let s = screen_tall(&mut ui, 30);
+        assert!(!s.contains("stale .planning/state.json"), "{s}");
+    }
+
+    #[test]
     fn picker_h_resets_on_every_open() {
         let (_dir, mut ui) = archive_ui();
         ui.on_key(plain('S'));

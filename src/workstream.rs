@@ -834,6 +834,11 @@ mod tests {
     }
 
     #[test]
+    fn base_label_reads_default() {
+        assert_eq!(BASE_LABEL, "(default)");
+    }
+
+    #[test]
     fn base_label_is_not_a_legal_workstream_name() {
         // The synthetic picker entry must be structurally unable to collide
         // with a real `.planning/workstreams/<name>/` directory.

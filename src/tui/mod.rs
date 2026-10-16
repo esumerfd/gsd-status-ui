@@ -3725,6 +3725,11 @@ mod tests {
     }
 
     #[test]
+    fn help_text_names_the_default_root() {
+        assert!(HELP_TEXT.contains("(default) root"), "{HELP_TEXT}");
+    }
+
+    #[test]
     fn picker_has_no_footer_for_a_healthy_root() {
         let mut ui = ui_for(Path::new("sample/workstreams/.planning/workstreams/alpha"));
         ui.on_key(plain('S'));

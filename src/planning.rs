@@ -297,13 +297,14 @@ pub(crate) fn find_phase_dir(planning: &Path, phase_id: &str) -> Option<PathBuf>
         .find(|p| dir_matches_phase(p, phase_id))
 }
 
-/// The phase id encoded in a directory name, i.e. the leading alphanumeric run
-/// (`"03-apply-fix"` → `"03"`). Returns None for names with no leading id.
+/// The phase id encoded in a directory name, i.e. the leading run of
+/// alphanumerics and dots (`"03-apply-fix"` → `"03"`, `"03.1-other"` →
+/// `"03.1"`). Returns None for names with no leading id.
 pub(crate) fn phase_id_from_dir(dir: &Path) -> Option<String> {
     let name = dir.file_name().and_then(|n| n.to_str())?;
     let leading: String = name
         .chars()
-        .take_while(|c| c.is_ascii_alphanumeric())
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '.')
         .collect();
     if leading.is_empty() {
         None
@@ -497,19 +498,7 @@ fn scan_phase_dirs(planning: &Path) -> Vec<PathBuf> {
 }
 
 fn dir_matches_phase(dir: &Path, phase_id: &str) -> bool {
-    let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    let leading: String = name
-        .chars()
-        .take_while(|c| c.is_ascii_alphanumeric())
-        .collect();
-    let normalized_dir = leading.trim_start_matches('0');
-    let normalized_id = phase_id.trim_start_matches('0');
-    if normalized_dir.is_empty() && normalized_id.is_empty() {
-        return true;
-    }
-    normalized_dir.eq_ignore_ascii_case(normalized_id)
+    phase_id_from_dir(dir).is_some_and(|id| normalize_phase_id(&id) == normalize_phase_id(phase_id))
 }
 
 fn infer_stage(dir: Option<&Path>, plans: &[Plan], roadmap_checked: bool) -> Stage {
@@ -1834,6 +1823,60 @@ mod tests {
             .expect("phase 4 present");
         assert_eq!(p4.title, "polish and ship");
         assert_eq!(p4.stage, Stage::NotStarted);
+    }
+
+    #[test]
+    fn load_phases_matches_decimal_phase_to_its_own_directory() {
+        // Regression: an inserted phase `03.1` lives in `03.1-…/`. The directory
+        // id stopped at the `.`, so `03.1-…` read as phase 3: phase 3.1 found no
+        // directory and showed "not started" with every plan summarised, and
+        // phase 3 could pick up 3.1's directory instead of its own.
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        let p3_dir = planning.join("phases/03-expand-and-collapse");
+        let p31_dir = planning.join("phases/03.1-other-prominence");
+        std::fs::create_dir_all(&p3_dir).unwrap();
+        std::fs::create_dir_all(&p31_dir).unwrap();
+        std::fs::write(p3_dir.join("03-CONTEXT.md"), "").unwrap();
+        for f in [
+            "03.1-01-PLAN.md",
+            "03.1-01-SUMMARY.md",
+            "03.1-VERIFICATION.md",
+        ] {
+            std::fs::write(p31_dir.join(f), "").unwrap();
+        }
+        std::fs::write(
+            planning.join("ROADMAP.md"),
+            "## Phases\n\n\
+             - [ ] **Phase 3: Expand and collapse** - x.\n\
+             - [ ] **Phase 03.1: Other prominence** (INSERTED) - y.\n",
+        )
+        .unwrap();
+
+        let phases = load_phases(planning);
+
+        let ids: Vec<&str> = phases.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["3", "03.1"]);
+        assert_eq!(phases[0].dir.as_deref(), Some(p3_dir.as_path()));
+        assert_eq!(phases[0].stage, Stage::Discussed);
+        assert_eq!(phases[1].dir.as_deref(), Some(p31_dir.as_path()));
+        assert_eq!(phases[1].stage, Stage::Verified);
+    }
+
+    #[test]
+    fn load_phases_keeps_decimal_phase_present_only_as_directory() {
+        // A `03.1-…/` directory with no roadmap entry is its own phase, not a
+        // duplicate of phase 3 that de-duplication silently drops.
+        let dir = tempfile::tempdir().unwrap();
+        let planning = dir.path();
+        std::fs::create_dir_all(planning.join("phases/03-expand")).unwrap();
+        std::fs::create_dir_all(planning.join("phases/03.1-other")).unwrap();
+        std::fs::write(planning.join("ROADMAP.md"), "## Phases\n\n").unwrap();
+
+        let phases = load_phases(planning);
+
+        let ids: Vec<&str> = phases.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["3", "3.1"]);
     }
 
     #[test]
